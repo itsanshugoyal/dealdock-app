@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Boundary checks (ADR-7, send gate)
+        run: node scripts/check-boundaries.mjs
+      - name: Build
+        run: npm run build
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm run test
+      - name: AI evals (heuristic mode — routing invariant + harness health)
+        run: npm run eval -w @dealdock/ai
+        # With ANTHROPIC_API_KEY set as a repo secret, this same step gates
+        # real-model quality: top-level ≥85%, Hinglish parity ≤3pts (M2).
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: dealdock
+          POSTGRES_PASSWORD: dealdock
+          POSTGRES_DB: dealdock
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dealdock"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://dealdock:dealdock@localhost:5432/dealdock
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Apply migrations
+        run: npm run db:migrate -w @dealdock/db
+      - name: Migration drift check (schema == migrations)
+        run: |
+          cd packages/db
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "$DATABASE_URL" \
+            --exit-code
+      - name: Seed demo org
+        run: npm run db:seed -w @dealdock/db
+      - name: "M0/M1 exit demo: corpus → queue → classify → Postgres"
+        run: |
+          node apps/worker/dist/index.js &
+          WORKER_PID=$!
+          sleep 2
+          node apps/worker/dist/demo-ingest.js
+          kill $WORKER_PID
+      - name: "M5 deletion drill: export → delete → prove gone"
+        run: node apps/worker/dist/deletion-drill.js
+      - name: "M5 load test: 2000 DMs vs 60s ingestion budget (p95)"
+        env:
+          LOAD_N: "2000"
+        run: |
+          node apps/worker/dist/index.js &
+          WORKER_PID=$!
+          sleep 2
+          node apps/worker/dist/load-test.js
+          kill $WORKER_PID
