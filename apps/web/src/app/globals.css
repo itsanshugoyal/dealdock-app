@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+/* DealDock product design tokens — DESIGN.md §2. */
+@theme {
+  --color-bg-primary: #050505;
+  --color-bg-secondary: #0a0a0a;
+  --color-bg-elevated: #111111;
+  --color-bg-input: #161616;
+
+  --color-gold-400: #ffc107;
+  --color-gold-500: #e5a800;
+
+  --color-badge-brand: #22c55e;
+  --color-badge-coaching: #3b82f6;
+  --color-badge-course: #a855f7;
+  --color-badge-other: #f97316;
+  --color-badge-neutral: #525252;
+
+  --color-state-waiting: #f59e0b;
+  --color-confidence-low: #eab308;
+  --color-success: #22c55e;
+  --color-danger: #ef4444;
+
+  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+}
+
+html {
+  background: var(--color-bg-primary);
+  color: #fafafa;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Money is always mono + tabular (DESIGN.md §2.2). */
+.money {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Quiet scrollbars on the OLED canvas. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #262626 transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
