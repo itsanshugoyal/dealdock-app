@@ -1,0 +1,470 @@
+// DealDock data model — implements ARCHITECTURE.md §3 (PRD v1.1).
+// Money: integer minor units, org-level currency (ADR-9). Tenancy: every
+// query goes through the org-scoped repository layer in src/repos (ADR-7).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────
+
+enum Tier {
+  solo
+  studio
+  roster
+}
+
+enum SeatRole {
+  creator
+  assistant
+  manager
+}
+
+enum IgAccountStatus {
+  active
+  disconnected
+  token_expired
+}
+
+enum Platform {
+  instagram
+  whatsapp
+}
+
+enum MessagingProviderKind {
+  mock
+  instagram_graph
+}
+
+enum ThreadState {
+  open
+  waiting
+  closed
+}
+
+enum MessageDirection {
+  inbound
+  outbound
+}
+
+enum ContentType {
+  text
+  audio
+  attachment
+}
+
+enum ClassificationLabel {
+  brand_deal
+  coaching_lead
+  course_inquiry
+  other_commerce
+  fan
+  spam
+  personal
+  uncertain
+}
+
+enum MessageLanguage {
+  en
+  hi
+  hinglish
+  mixed
+}
+
+enum RoutedTo {
+  inbox
+  review_queue
+}
+
+enum ReviewOutcome {
+  confirmed
+  overridden
+}
+
+enum ClassificationSource {
+  live
+  leak_scan
+}
+
+enum DraftStatus {
+  ready
+  edited
+  sending // claimed by an in-flight send — the double-send lock (M5 audit)
+  sent
+  discarded
+}
+
+enum DraftKind {
+  reply
+  nudge
+}
+
+enum DealType {
+  brand
+  coaching
+  course
+  other
+}
+
+enum SubscriptionStatus {
+  pending_first_invoice
+  active
+  past_due
+  cancelled
+}
+
+enum BillingRail {
+  razorpay
+  paddle
+}
+
+// ── Tenancy root ─────────────────────────────────────────────────────────
+
+model Organization {
+  id             String   @id @default(cuid())
+  name           String
+  tier           Tier     @default(solo)
+  pilotCohort    Boolean  @default(true)
+  pricingLockedAt DateTime?
+
+  // Region (PRD §6.1, ADR-9) — one currency per org.
+  currencyCode  String @default("INR") // ISO 4217: INR | USD | GBP | EUR | AED
+  locale        String @default("en-IN")
+  timezone      String @default("Asia/Kolkata")
+  nudgeDelayDays Int   @default(3)
+
+  // Onboarding questionnaire (PRD §5.1.5): businessSummary + typical deal-size
+  // ranges in org-currency minor units — feeds value estimation (§6.2).
+  businessContext Json?
+
+  // Account deletion: 7-day grace, then the retention job hard-deletes (PRD §6.11).
+  deletionRequestedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  seats            Seat[]
+  igAccounts       IgAccount[]
+  ignoreList       IgnoreListEntry[]
+  auditLogs        AuditLog[]
+  subscription     Subscription?
+}
+
+model User {
+  id          String @id @default(cuid())
+  clerkUserId String @unique
+  email       String
+  name        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  seats Seat[]
+}
+
+model Seat {
+  id     String   @id @default(cuid())
+  orgId  String
+  userId String
+  role   SeatRole
+
+  createdAt DateTime @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  sentDrafts     Draft[]         @relation("SentBy")
+  ledgerEntries  LedgerEntry[]
+  reviews        Classification[] @relation("ReviewedBy")
+  auditLogs      AuditLog[]
+  pushSubs       PushSubscription[]
+
+  @@unique([orgId, userId])
+  @@index([orgId])
+}
+
+// ── Instagram connection ─────────────────────────────────────────────────
+
+model IgAccount {
+  id             String          @id @default(cuid())
+  orgId          String
+  platform       Platform        @default(instagram)
+  provider       MessagingProviderKind @default(mock)
+  igUserId       String
+  handle         String
+  accountType    String // "business" | "creator" — personal rejected at connect (PRD §6.1)
+  // AES-256-GCM encrypted at the application layer (ARCHITECTURE.md §8).
+  accessTokenEnc String?
+  status         IgAccountStatus @default(active)
+  connectedAt    DateTime        @default(now())
+  disconnectedAt DateTime?
+
+  org        Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  threads    Thread[]
+  voice      VoiceProfile?
+  checkpoint IngestionCheckpoint?
+
+  @@unique([platform, igUserId])
+  @@index([orgId])
+}
+
+// ── Threads & messages ───────────────────────────────────────────────────
+
+model Thread {
+  id                   String      @id @default(cuid())
+  orgId                String
+  igAccountId          String
+  igThreadId           String
+  participantHandle    String
+  participantIgId      String
+  lastMessageAt        DateTime
+  lastInboundAt        DateTime?
+  lastOutboundAt       DateTime?
+  state                ThreadState @default(open)
+  waitingSince         DateTime? // set on open→waiting; drives the nudge clock (PRD §6.5)
+  nudgeDismissedAt     DateTime?
+  // Denormalized for inbox sorting without joins (ARCHITECTURE.md §3.2).
+  topLabel             ClassificationLabel?
+  estValueMaxMinor     BigInt?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  igAccount IgAccount     @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+  messages  Message[]
+  drafts    Draft[]
+  ledger    LedgerEntry[]
+
+  @@unique([igAccountId, igThreadId])
+  @@index([orgId, state, estValueMaxMinor(sort: Desc)]) // Revenue Inbox default sort
+  @@index([orgId, state, waitingSince]) // nudge scheduler scan
+}
+
+model Message {
+  id          String           @id @default(cuid())
+  orgId       String
+  threadId    String
+  igMessageId String           @unique // idempotency key for webhook replays
+  direction   MessageDirection
+  contentType ContentType      @default(text)
+  text        String
+  sentAt      DateTime
+  raw         Json?
+
+  createdAt DateTime @default(now())
+
+  thread         Thread          @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  classification Classification?
+  sentFromDraft  Draft?          @relation("SentAs")
+
+  @@index([orgId, threadId, sentAt])
+}
+
+model Classification {
+  id         String               @id @default(cuid())
+  orgId      String
+  messageId  String               @unique
+  label      ClassificationLabel
+  confidence Float
+  language   MessageLanguage
+  // Value estimate in org currency minor units (commerce labels only).
+  valueMinMinor BigInt?
+  valueMaxMinor BigInt?
+  // One-line model explanation (DESIGN.md principle 9).
+  rationale     String?
+  modelVersion  String
+  promptVersion String
+  routedTo      RoutedTo
+  source        ClassificationSource @default(live)
+
+  reviewedBySeatId String?
+  reviewOutcome    ReviewOutcome?
+  overrideLabel    ClassificationLabel?
+  reviewedAt       DateTime?
+
+  createdAt DateTime @default(now())
+
+  message    Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  reviewedBy Seat?   @relation("ReviewedBy", fields: [reviewedBySeatId], references: [id])
+
+  @@index([orgId, routedTo, createdAt]) // review queue scan
+  @@index([orgId, modelVersion]) // accuracy per model/prompt version
+}
+
+// ── Drafts & sends ───────────────────────────────────────────────────────
+
+model Draft {
+  id           String      @id @default(cuid())
+  orgId        String
+  threadId     String
+  replyToMessageId String?
+  kind         DraftKind   @default(reply)
+  body         String
+  version      Int         @default(1)
+  status       DraftStatus @default(ready)
+  modelVersion String
+  promptVersion String
+
+  // Set at send time by the API-layer send gate (ARCHITECTURE.md §6.2).
+  sentAt         DateTime?
+  sentBySeatId   String?
+  sentMessageId  String?   @unique
+  finalText      String?
+  editDistance   Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  thread      Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  sentBy      Seat?    @relation("SentBy", fields: [sentBySeatId], references: [id])
+  sentMessage Message? @relation("SentAs", fields: [sentMessageId], references: [id])
+
+  @@index([orgId, threadId, status])
+}
+
+// ── Revenue Ledger (the product's soul) ──────────────────────────────────
+
+model LedgerEntry {
+  id       String   @id @default(cuid())
+  orgId    String
+  threadId String
+  dealType DealType
+  amountMinor  BigInt
+  // Denormalized at write time — org currency changes never rewrite history (ADR-9).
+  currencyCode String
+  note     String?
+  closedAt DateTime @default(now())
+  createdBySeatId String
+  deletedAt DateTime? // soft delete for refunds (PRD §6.7)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  thread    Thread @relation(fields: [threadId], references: [id])
+  createdBy Seat   @relation(fields: [createdBySeatId], references: [id])
+
+  @@index([orgId, closedAt]) // monthly rollups
+}
+
+// ── Voice, ignore list, audit ────────────────────────────────────────────
+
+model VoiceProfile {
+  id          String  @id @default(cuid())
+  orgId       String
+  igAccountId String  @unique
+  enabled     Boolean @default(true)
+  styleCard   Json?
+  sampleMessageIds String[]
+  version     Int     @default(1)
+  refreshedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  igAccount IgAccount @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+}
+
+model IgnoreListEntry {
+  id     String @id @default(cuid())
+  orgId  String
+  handle String
+  reason String?
+
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, handle])
+}
+
+model AuditLog {
+  id         String @id @default(cuid())
+  orgId      String
+  seatId     String?
+  action     String // e.g. "message.sent", "ledger.created", "settings.region_changed"
+  entityType String
+  entityId   String
+  detail     Json? // for sends: original draft, final text, edit distance (PRD §7.5)
+
+  createdAt DateTime @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  seat Seat?        @relation(fields: [seatId], references: [id])
+
+  @@index([orgId, createdAt])
+}
+
+// ── Billing (dual-rail, ADR-4) ───────────────────────────────────────────
+
+model Subscription {
+  id    String @id @default(cuid())
+  orgId String @unique
+  rail  BillingRail
+  externalId String? @unique // razorpaySubscriptionId | paddleSubscriptionId
+  // Hosted mandate/checkout page the creator opens once the 7-day gate fires.
+  checkoutUrl String?
+  tier  Tier
+  status SubscriptionStatus @default(pending_first_invoice)
+  activeUseStartedAt DateTime?
+  firstInvoiceRequestedAt DateTime?
+  currentPeriodEnd   DateTime?
+  cancelledAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+// ── Ingestion self-healing & notifications ───────────────────────────────
+
+model IngestionCheckpoint {
+  id          String   @id @default(cuid())
+  orgId       String
+  igAccountId String   @unique
+  lastWebhookAt          DateTime?
+  lastBackfillAt         DateTime?
+  lastIgMessageTimestamp DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  igAccount IgAccount @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+}
+
+model PushSubscription {
+  id     String @id @default(cuid())
+  orgId  String
+  seatId String
+  endpoint String @unique
+  p256dh   String
+  auth     String
+  // Individually toggleable notification types (PRD §6.8).
+  notifyHighValue     Boolean @default(true)
+  notifyNudge         Boolean @default(true)
+  notifyWeeklySummary Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  seat Seat @relation(fields: [seatId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, seatId])
+}
+
+// ── Raw webhook audit/replay ─────────────────────────────────────────────
+
+model WebhookEvent {
+  id        String   @id @default(cuid())
+  provider  String // "instagram" | "razorpay" | "paddle" | "mock"
+  payload   Json
+  processedAt DateTime?
+  error     String?
+
+  createdAt DateTime @default(now())
+
+  @@index([provider, createdAt])
+}

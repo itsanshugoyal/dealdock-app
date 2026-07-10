@@ -1,0 +1,29 @@
+{
+  "name": "@dealdock/api",
+  "version": "0.0.1",
+  "private": true,
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsc -p tsconfig.json --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@clerk/backend": "^1.24.0",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/helmet": "^13.0.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "@dealdock/ai": "*",
+    "@dealdock/billing": "*",
+    "@dealdock/core": "*",
+    "@dealdock/db": "*",
+    "@dealdock/messaging": "*",
+    "bullmq": "^5.34.0",
+    "fastify": "^5.2.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}
