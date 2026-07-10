@@ -1,0 +1,62 @@
+import type { SeatRole } from "./index";
+
+/**
+ * Role–permission matrix (PRD §6.10, §5.6). The single source of truth —
+ * route guards call can(); the matrix test pins every cell so a permission
+ * change is always a deliberate, reviewed diff.
+ *
+ *  - creator: the org owner. Everything.
+ *  - assistant (Studio): triage operator — send/review/close on the account,
+ *    no org administration, no data controls.
+ *  - manager (Roster): roster-wide triage + seat/report administration,
+ *    but billing and destructive data controls stay with the creator.
+ */
+
+export const PERMISSION_ACTIONS = [
+  "send",
+  "review",
+  "close",
+  "view_roster",
+  "manage_seats",
+  "manage_billing",
+  "manage_settings",
+  "export_data",
+] as const;
+export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
+
+const MATRIX: Record<SeatRole, Record<PermissionAction, boolean>> = {
+  creator: {
+    send: true,
+    review: true,
+    close: true,
+    view_roster: true,
+    manage_seats: true,
+    manage_billing: true,
+    manage_settings: true,
+    export_data: true,
+  },
+  assistant: {
+    send: true,
+    review: true,
+    close: true,
+    view_roster: false,
+    manage_seats: false,
+    manage_billing: false,
+    manage_settings: false,
+    export_data: false,
+  },
+  manager: {
+    send: true,
+    review: true,
+    close: true,
+    view_roster: true,
+    manage_seats: true,
+    manage_billing: false,
+    manage_settings: false,
+    export_data: true,
+  },
+};
+
+export function can(role: SeatRole, action: PermissionAction): boolean {
+  return MATRIX[role][action];
+}
