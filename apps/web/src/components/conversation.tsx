@@ -293,15 +293,17 @@ export function Conversation({ id }: { id: string }) {
                 {draft ? <VoiceProvenance matchPct={voiceMatch} /> : <span className="text-caption font-semibold text-ink-3">Your reply</span>}
                 <div className="flex items-center gap-1">
                   {draft && <Button size="sm" variant="ghost" icon={BookOpenText} onClick={() => setSheet("why")}>Why this draft</Button>}
-                  <IconButton
-                    label={draft ? "Regenerate draft" : "Generate draft"}
-                    icon={RefreshCw}
-                    size="sm"
-                    shortcut="r"
-                    disabled={busyChip !== null || phase !== "editing"}
-                    className={busyChip === "regenerate" ? "[&_svg]:animate-spin" : undefined}
-                    onClick={() => void regenerate("regenerate")}
-                  />
+                  {draft && (
+                    <IconButton
+                      label="Regenerate draft"
+                      icon={RefreshCw}
+                      size="sm"
+                      shortcut="r"
+                      disabled={busyChip !== null || phase !== "editing"}
+                      className={busyChip === "regenerate" ? "[&_svg]:animate-spin" : undefined}
+                      onClick={() => void regenerate("regenerate")}
+                    />
+                  )}
                 </div>
               </div>
 
