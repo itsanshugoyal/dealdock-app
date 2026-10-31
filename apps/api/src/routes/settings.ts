@@ -1,21 +1,26 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { extractStyleCard } from "@dealdock/ai";
 import {
+  cancelAccountDeletion,
   exportOrgArchive,
   getDataSummary,
   getIgnoreList,
-  getOrganization,
-  getSentSamples,
+  getOrgSettings,
   getWeeklyMetrics,
   requestAccountDeletion,
-  saveStyleCard,
   setIgnoreList,
-  setVoiceEnabled,
+  setMonthlyGoal,
   updateRegion,
 } from "@dealdock/db";
+import { listSpeakingVoicesToRevoke } from "@dealdock/db";
 import { requireAuth } from "../auth";
-import { requirePermission } from "../guards";
+import { isHumanAgentEnabled, isSpeechConfigured } from "../feature-flags";
+import { revokeSpeakingVoiceFully } from "./speaking";
+import { requirePermission, requireWritable } from "../guards";
+
+const GoalBody = z.object({
+  monthlyGoalMinor: z.number().int().positive().safe().nullable(),
+});
 
 const RegionBody = z.object({
   currencyCode: z.enum(["INR", "USD", "GBP", "EUR", "AED"]).optional(),
@@ -29,35 +34,22 @@ const IgnoreListBody = z.object({
 });
 
 export async function settingsRoutes(app: FastifyInstance) {
-  /**
-   * Voice re-sample (PRD §6.4): consented sent-DM samples → style card.
-   * Triggered at onboarding and on demand from Settings; weekly auto-refresh
-   * joins the scheduler in M5 hardening.
-   */
-  app.post("/settings/voice/resample", { preHandler: requireAuth }, async (req, reply) => {
-    const auth = req.auth!;
-    const org = await getOrganization(auth.orgId);
-    const account = org?.igAccounts[0];
-    if (!account) return reply.code(409).send({ error: "no_connected_account" });
-
-    const samples = await getSentSamples(auth.orgId, account.id);
-    if (samples === null) return reply.code(409).send({ error: "voice_modeling_disabled" });
-    if (samples.length < 3) {
-      return reply.code(409).send({
-        error: "not_enough_samples",
-        hint: "Send a few replies first — voice tuning needs at least 3 sent messages.",
-      });
-    }
-
-    const result = await extractStyleCard(samples.map((s) => s.text));
-    await saveStyleCard(
-      auth.orgId,
-      account.id,
-      result.styleCard,
-      samples.map((s) => s.id)
-    );
-    return { styleCard: result.styleCard, modelVersion: result.modelVersion };
+  /** Single settings read model for the PWA; no caller may select another org. */
+  app.get("/settings", { preHandler: requireAuth }, async (req, reply) => {
+    // One organization read (region, goal, tier, deletion, accounts with their voice consent).
+    const settings = await getOrgSettings(req.auth!.orgId);
+    if (!settings) return reply.code(404).send({ error: "org_not_found" });
+    return { ...settings, humanAgentEnabled: isHumanAgentEnabled(), speechAvailable: isSpeechConfigured() };
   });
+
+  /** Monthly confirmed-revenue goal for the Revenue goal ring; null clears it. */
+  app.put("/settings/goal", { preHandler: [requireAuth, requireWritable, requirePermission("manage_settings")] }, async (req, reply) => {
+    const parsed = GoalBody.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
+    return setMonthlyGoal(req.auth!.orgId, req.auth!.seatId, parsed.data.monthlyGoalMinor);
+  });
+
+  // PUT /settings/voice/consent lives in ./voice (refreshing the style is POST /voice/refresh).
 
   /** Weekly internal metrics (PRD §7.4) — feeds the founding-team dashboard. */
   app.get("/metrics/weekly", { preHandler: requireAuth }, async (req) => {
@@ -65,12 +57,12 @@ export async function settingsRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Region (PRD §6.11): currency change is confirmed UI-side; historical
-   * ledger entries keep their logged currency (ADR-9 — history never rewrites).
+   * Region preferences: locale/timezone may change; organization currency is
+   * frozen and every persisted monetary value retains that denomination.
    */
   app.put(
     "/settings/region",
-    { preHandler: [requireAuth, requirePermission("manage_settings")] },
+    { preHandler: [requireAuth, requireWritable, requirePermission("manage_settings")] },
     async (req, reply) => {
       const parsed = RegionBody.safeParse(req.body);
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
@@ -107,8 +99,15 @@ export async function settingsRoutes(app: FastifyInstance) {
   /** Delete account: 7-day grace, then the retention job hard-deletes (PRD §6.11). */
   app.delete(
     "/account",
-    { preHandler: [requireAuth, requirePermission("manage_settings")] },
+    { preHandler: [requireAuth, requireWritable, requirePermission("manage_settings")] },
     async (req) => {
+      // Cloned voices go first: the vendor copy lives outside our database, so
+      // the hard-delete cascade cannot reach it. Best effort; logs carry no content.
+      for (const { igAccountId } of await listSpeakingVoicesToRevoke(req.auth!.orgId)) {
+        await revokeSpeakingVoiceFully(req.auth!.orgId, igAccountId, req.auth!.seatId, req.log).catch(() =>
+          req.log.warn({ igAccountId }, "speaking voice revocation failed during account deletion")
+        );
+      }
       const gracePeriodEnds = await requestAccountDeletion(req.auth!.orgId, req.auth!.seatId);
       return {
         scheduled: true,
@@ -118,30 +117,24 @@ export async function settingsRoutes(app: FastifyInstance) {
     }
   );
 
+  app.post(
+    "/account/cancel-deletion",
+    { preHandler: [requireAuth, requireWritable, requirePermission("manage_settings")] },
+    async (req) => cancelAccountDeletion(req.auth!.orgId, req.auth!.seatId)
+  );
+
   app.get("/settings/ignore-list", { preHandler: requireAuth }, async (req) => {
     return { handles: await getIgnoreList(req.auth!.orgId) };
   });
 
   app.put(
     "/settings/ignore-list",
-    { preHandler: [requireAuth, requirePermission("manage_settings")] },
+    { preHandler: [requireAuth, requireWritable, requirePermission("manage_settings")] },
     async (req, reply) => {
       const parsed = IgnoreListBody.safeParse(req.body);
       if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
       await setIgnoreList(req.auth!.orgId, req.auth!.seatId, parsed.data.handles);
       return { handles: parsed.data.handles };
-    }
-  );
-
-  /** Voice modeling toggle (PRD §6.11) — classification-only mode when off. */
-  app.put(
-    "/settings/voice",
-    { preHandler: [requireAuth, requirePermission("manage_settings")] },
-    async (req, reply) => {
-      const { enabled } = (req.body ?? {}) as { enabled?: boolean };
-      if (typeof enabled !== "boolean") return reply.code(400).send({ error: "invalid_body" });
-      await setVoiceEnabled(req.auth!.orgId, req.auth!.seatId, enabled);
-      return { enabled };
     }
   );
 }

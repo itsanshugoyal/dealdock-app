@@ -7,6 +7,7 @@ import {
   listSubscriptionsDueFirstInvoice,
   listSubscriptionsForReconciliation,
   saveRailSubscription,
+  claimFirstInvoice,
 } from "@dealdock/db";
 import { redisConnection } from "../connection";
 
@@ -30,6 +31,8 @@ export function startBillingScheduler() {
       if (job.name === "first-invoice-tick") {
         const due = await listSubscriptionsDueFirstInvoice();
         for (const d of due) {
+          const claim = await claimFirstInvoice(asOrgId(d.orgId));
+          if (!claim) continue;
           const provider = providerForCurrency(d.currencyCode);
           const created = await provider.createSubscription({
             orgId: d.orgId,
@@ -37,8 +40,13 @@ export function startBillingScheduler() {
             currencyCode: d.currencyCode,
             customerEmail: d.creatorEmail,
             customerName: d.creatorName,
+            requestKey: `subscription:${d.orgId}:${d.tier}`,
           });
-          await saveRailSubscription(asOrgId(d.orgId), created);
+          const saved = await saveRailSubscription(asOrgId(d.orgId), created);
+          if (!saved.saved) {
+            await provider.cancelAtPeriodEnd(created.externalId);
+            continue;
+          }
           // Creator gets nudged to authorize the mandate (banner + push).
           await notifications.add("billing-checkout-ready", {
             orgId: d.orgId,
@@ -54,9 +62,9 @@ export function startBillingScheduler() {
         let reconciled = 0;
         for (const s of subs) {
           if (!s.externalId) continue;
-          const kind = await providerForRail(s.rail).fetchStatus(s.externalId);
-          if (kind === "unknown") continue;
-          const result = await applyBillingEvent({ externalId: s.externalId, kind });
+          const snapshot = await providerForRail(s.rail).fetchStatus(s.externalId);
+          if (snapshot.kind === "unknown") continue;
+          const result = await applyBillingEvent({ externalId: s.externalId, rail:s.rail, ...snapshot });
           if (result.applied) reconciled += 1;
         }
         return { reconciled };

@@ -3,6 +3,18 @@ import { z } from "zod";
 export * from "./money";
 export * from "./edit-distance";
 export * from "./permissions";
+export * from "./redis";
+export * from "./push-endpoint";
+export * from "./money-input";
+export type * from "./api-types";
+export * from "./reply-window";
+export * from "./deal-signals";
+export * from "./catalog";
+export * from "./nudges";
+export * from "./high-value";
+export * from "./speaking-voice";
+export * from "./audit-actions";
+export * from "./errors";
 
 /**
  * @dealdock/core — domain types, zod schemas, shared constants.
@@ -55,14 +67,14 @@ export const TIER_LIMITS: Record<Tier, { igAccounts: number; seats: number | nul
 
 // ── Money — integer minor units, never floats (ARCHITECTURE.md §3, ADR-9) ──
 
-export const MinorUnits = z.number().int().nonnegative();
+export const MinorUnits = z.number().int().nonnegative().safe();
 export type MinorUnits = z.infer<typeof MinorUnits>;
 
 /** Estimated value range attached to a commerce classification (org currency). */
 export const ValueRange = z.object({
   minMinor: MinorUnits,
   maxMinor: MinorUnits,
-});
+}).refine((range) => range.minMinor <= range.maxMinor, { message: "Minimum value cannot exceed maximum value." });
 export type ValueRange = z.infer<typeof ValueRange>;
 
 // ── Core message shapes (shared between messaging adapters, API, worker) ───
@@ -85,7 +97,7 @@ export type ClassificationResult = z.infer<typeof ClassificationResult>;
 export const ThreadState = z.enum(["open", "waiting", "closed"]);
 export type ThreadState = z.infer<typeof ThreadState>;
 
-export const DraftStatus = z.enum(["ready", "edited", "sent", "discarded"]);
+export const DraftStatus = z.enum(["ready", "edited", "sending", "sent", "discarded"]);
 export type DraftStatus = z.infer<typeof DraftStatus>;
 
 // ── Queue names (single registry so api/worker never drift) ────────────────
@@ -99,6 +111,8 @@ export const QUEUES = {
   notifications: "notifications",
   billing: "billing",
   retention: "retention",
+  /** Writing-style learning: per-send edit learning, voice refresh, weekly refresh tick. */
+  voiceLearning: "voice-learning",
 } as const;
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 
@@ -119,5 +133,11 @@ export const IngestionJob = z.object({
   /** live = webhook; leak_scan = onboarding backfill (PRD §5.1.6). */
   source: z.enum(["live", "leak_scan"]).default("live"),
   raw: z.unknown().optional(),
+  /** Signed, expiring CDN URL of the first attachment; audio is downloaded by the worker on receipt (F8). */
+  mediaUrl: z.string().min(1).max(4096).optional(),
+  /** Instagram attachment type of that attachment ("audio", "image", "share", …). */
+  mediaKind: z.string().min(1).max(40).optional(),
+  /** Where the conversation started when Instagram says so — Thread.source (named apart from the ingestion `source`). */
+  threadSource: z.enum(["dm", "story", "reel", "ad", "link"]).optional(),
 });
 export type IngestionJob = z.infer<typeof IngestionJob>;

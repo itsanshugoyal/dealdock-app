@@ -1,7 +1,36 @@
+import { DomainError, REVIEW_CONFIDENCE_THRESHOLD } from "@dealdock/core";
 import { prisma } from "../client";
+import type { Prisma } from "@prisma/client";
 import type { OrgId } from "../org-id";
+import { writeAudit } from "../audit-log";
+import { requireSeatInOrg } from "../seat-scope";
+import { pickTopClassification } from "../sender-context";
+import { lockThread } from "../thread-writes";
 
-const HIGH_INTENT = ["brand_deal", "coaching_lead", "course_inquiry", "other_commerce"] as const;
+/** Rebuild the inbox denormalization under the thread lock from persisted rows. */
+async function refreshThreadClassificationState(
+  tx: Prisma.TransactionClient,
+  threadId: string,
+) {
+  const classifications = await tx.classification.findMany({
+    where: { message: { threadId } },
+    select: { label: true, valueMaxMinor: true, currencyCode: true, routedTo: true, reviewOutcome: true, createdAt: true },
+  });
+  const pendingReview = classifications.some(
+    (row) => row.routedTo === "review_queue" && row.reviewOutcome === null,
+  );
+  // The same pick the inbox row and thread detail read the estimate back with.
+  const top = pickTopClassification(classifications);
+  await tx.thread.update({
+    where: { id: threadId },
+    data: {
+      hasPendingReview: pendingReview,
+      topLabel: top?.label ?? null,
+      estValueMaxMinor: top?.valueMaxMinor ?? null,
+      estCurrencyCode: top?.valueMaxMinor === null || !top ? null : top.currencyCode,
+    },
+  });
+}
 
 export interface ClassificationInput {
   messageId: string;
@@ -18,6 +47,8 @@ export interface ClassificationInput {
   language: "en" | "hi" | "hinglish" | "mixed";
   valueMinMinor: number | null;
   valueMaxMinor: number | null;
+  /** Defaults to the org's current currency for newly-created estimates. */
+  currencyCode?: string;
   rationale: string | null;
   modelVersion: string;
   promptVersion: string;
@@ -30,55 +61,73 @@ export interface ClassificationInput {
  * (topLabel + estValueMaxMinor keep the Revenue Inbox join-free).
  */
 export async function saveClassification(orgId: OrgId, input: ClassificationInput) {
+  if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) {
+    throw new Error("classification_confidence_out_of_range");
+  }
+  if (input.confidence < REVIEW_CONFIDENCE_THRESHOLD && input.routedTo !== "review_queue") {
+    throw new Error("low_confidence_must_route_to_review_queue");
+  }
+  if (input.label === "uncertain" && input.routedTo !== "review_queue") {
+    throw new Error("uncertain_must_route_to_review_queue");
+  }
+  for (const [field, value] of [["valueMinMinor", input.valueMinMinor], ["valueMaxMinor", input.valueMaxMinor]] as const) {
+    if (value !== null && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`${field}_must_be_a_nonnegative_safe_integer`);
+    }
+  }
+  if (input.valueMinMinor !== null && input.valueMaxMinor !== null && input.valueMinMinor > input.valueMaxMinor) {
+    throw new Error("classification_value_range_invalid");
+  }
   return prisma.$transaction(async (tx) => {
-    const message = await tx.message.findFirst({
+    const [message, org] = await Promise.all([
+      tx.message.findFirst({
       where: { id: input.messageId, orgId },
       select: { id: true, threadId: true },
-    });
+      }),
+      tx.organization.findUnique({ where: { id: orgId }, select: { currencyCode: true } }),
+    ]);
     if (!message) throw new Error(`message ${input.messageId} not in org`);
-
-    const classification = await tx.classification.upsert({
-      where: { messageId: message.id },
-      create: {
-        orgId,
-        messageId: message.id,
-        label: input.label,
-        confidence: input.confidence,
-        language: input.language,
-        valueMinMinor: input.valueMinMinor,
-        valueMaxMinor: input.valueMaxMinor,
-        rationale: input.rationale,
-        modelVersion: input.modelVersion,
-        promptVersion: input.promptVersion,
-        routedTo: input.routedTo,
-        source: input.source ?? "live",
-      },
-      update: {}, // idempotent: first classification wins; re-runs are no-ops
-    });
-
-    // Denormalize onto the thread when this raises its top value / adds a commerce label.
-    if (
-      input.routedTo === "inbox" &&
-      (HIGH_INTENT as readonly string[]).includes(input.label)
-    ) {
-      const thread = await tx.thread.findUnique({
-        where: { id: message.threadId },
-        select: { estValueMaxMinor: true },
-      });
-      const current = thread?.estValueMaxMinor ?? null;
-      const incoming = input.valueMaxMinor;
-      if (incoming !== null && (current === null || BigInt(incoming) > current)) {
-        await tx.thread.update({
-          where: { id: message.threadId },
-          data: { topLabel: input.label, estValueMaxMinor: BigInt(incoming) },
-        });
-      } else if (current === null) {
-        await tx.thread.update({
-          where: { id: message.threadId },
-          data: { topLabel: input.label },
-        });
-      }
+    if (!org) throw new Error(`org ${orgId} not found`);
+    if (input.currencyCode && input.currencyCode !== org.currencyCode) {
+      throw new Error("classification_currency_must_match_org_currency");
     }
+    await lockThread(tx, message.threadId);
+
+    const fields = {
+      label: input.label,
+      confidence: input.confidence,
+      language: input.language,
+      valueMinMinor: input.valueMinMinor,
+      valueMaxMinor: input.valueMaxMinor,
+      currencyCode: input.currencyCode ?? org.currencyCode,
+      rationale: input.rationale,
+      modelVersion: input.modelVersion,
+      promptVersion: input.promptVersion,
+      routedTo: input.routedTo,
+      source: input.source ?? "live",
+    };
+
+    // Upsert with a real update — a genuine classification MUST overwrite an
+    // earlier error/placeholder row (F2), so a retry that finally succeeds wins.
+    // The one thing we never clobber is a human review outcome: once a seat has
+    // confirmed/overridden, re-runs leave the reviewed row untouched.
+    const existing = await tx.classification.findUnique({
+      where: { messageId: message.id },
+      select: { reviewOutcome: true },
+    });
+    const classification =
+      existing && existing.reviewOutcome !== null
+        ? await tx.classification.findUniqueOrThrow({ where: { messageId: message.id } })
+        : await tx.classification.upsert({
+            where: { messageId: message.id },
+            create: { orgId, messageId: message.id, ...fields },
+            update: fields,
+          });
+
+    // Always derive the summary from the persisted classifications while the
+    // thread is locked. This prevents late/retried jobs from leaving a stale
+    // max estimate or exposing a thread with a newly queued review item.
+    await refreshThreadClassificationState(tx, message.threadId);
 
     return classification;
   });
@@ -95,7 +144,7 @@ export async function listReviewQueue(orgId: OrgId, limit = 50) {
           id: true,
           text: true,
           sentAt: true,
-          thread: { select: { id: true, participantHandle: true } },
+          thread: { select: { id: true, participantHandle: true, igAccountId: true } },
         },
       },
     },
@@ -103,6 +152,7 @@ export async function listReviewQueue(orgId: OrgId, limit = 50) {
   return rows.map((c) => ({
     classificationId: c.id,
     threadId: c.message.thread.id,
+    igAccountId: c.message.thread.igAccountId,
     handle: c.message.thread.participantHandle,
     text: c.message.text,
     sentAt: c.message.sentAt,
@@ -126,13 +176,25 @@ export async function reviewClassification(
   }
 ) {
   return prisma.$transaction(async (tx) => {
-    const c = await tx.classification.findFirst({
+    await requireSeatInOrg(orgId, input.seatId, tx, "reviewer_seat_not_in_org");
+    let c = await tx.classification.findFirst({
       where: { id: input.classificationId, orgId },
       include: { message: { select: { threadId: true } } },
     });
-    if (!c) throw new Error("classification not in org");
+    if (!c) throw new DomainError("classification not in org", 404);
+    await lockThread(tx, c.message.threadId);
+    // Re-read after acquiring the per-thread lock: another reviewer may have
+    // completed the decision while this transaction waited for the lock.
+    c = await tx.classification.findFirst({
+      where: { id: input.classificationId, orgId },
+      include: { message: { select: { threadId: true } } },
+    });
+    if (!c) throw new DomainError("classification not in org", 404);
+    // An HTTP retry must not overwrite the first human decision, or reassign
+    // attribution to a different seat.
+    if (c.reviewOutcome !== null) return c;
     if (input.outcome === "overridden" && !input.overrideLabel) {
-      throw new Error("override requires overrideLabel");
+      throw new DomainError("override requires overrideLabel", 400);
     }
 
     const effectiveLabel =
@@ -150,25 +212,15 @@ export async function reviewClassification(
       },
     });
 
-    if (
-      (HIGH_INTENT as readonly string[]).includes(effectiveLabel) &&
-      c.valueMaxMinor !== null
-    ) {
-      await tx.thread.update({
-        where: { id: c.message.threadId },
-        data: { topLabel: effectiveLabel, estValueMaxMinor: c.valueMaxMinor },
-      });
-    }
+    await refreshThreadClassificationState(tx, c.message.threadId);
 
-    await tx.auditLog.create({
-      data: {
-        orgId,
-        seatId: input.seatId,
-        action: "classification.reviewed",
-        entityType: "classification",
-        entityId: c.id,
-        detail: { outcome: input.outcome, from: c.label, to: effectiveLabel },
-      },
+    await writeAudit(tx, {
+      orgId,
+      seatId: input.seatId,
+      action: "classification.reviewed",
+      entityType: "classification",
+      entityId: c.id,
+      detail: { outcome: input.outcome, from: c.label, to: effectiveLabel },
     });
 
     return updated;
@@ -176,9 +228,13 @@ export async function reviewClassification(
 }
 
 /** Recent overrides → few-shot corrections for the classify prompt (ADR-5). */
-export async function listRecentOverrides(orgId: OrgId, limit = 10) {
+export async function listRecentOverrides(orgId: OrgId, igAccountId: string, limit = 10) {
   const rows = await prisma.classification.findMany({
-    where: { orgId, reviewOutcome: "overridden" },
+    where: {
+      orgId,
+      reviewOutcome: "overridden",
+      message: { thread: { igAccountId } },
+    },
     orderBy: { reviewedAt: "desc" },
     take: limit,
     include: { message: { select: { text: true } } },

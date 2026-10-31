@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { MessageSource } from "@dealdock/core";
 import {
   RateBudgetExceededError,
   SendWindowClosedError,
@@ -8,10 +9,13 @@ import {
   type MessagingProvider,
   type RemoteMessage,
   type RemoteThread,
+  type SendOptions,
   type SendReceipt,
   type SendTarget,
+  type UserProfile,
   type WebhookRequest,
 } from "../provider";
+import { InMemoryGraphRateBudget, type GraphRateBudget } from "./graph-rate-budget";
 
 /**
  * Official Instagram API with Instagram Login (ARCHITECTURE.md §4, PRD §7.2).
@@ -35,6 +39,8 @@ const GRAPH_BASE = "https://graph.instagram.com/v25.0";
 const BUDGET_CAPACITY = 180; // conservative vs Meta's ~200/hr
 const BUDGET_WINDOW_MS = 60 * 60_000;
 
+const PROFILE_FIELDS = "name,username,profile_pic,follower_count,is_verified_user,is_user_follow_business";
+
 interface GraphError {
   message?: string;
   type?: string;
@@ -42,10 +48,64 @@ interface GraphError {
   error_subcode?: number;
 }
 
+interface WebhookAttachment {
+  type?: string;
+  payload?: { url?: string };
+}
+
+interface Referral {
+  source?: string;
+  ad_id?: string;
+}
+
+/** Story reply, story mention, reel share or ad/link referral → where the conversation came from. */
+function sourceOf(
+  message: { attachments?: WebhookAttachment[]; reply_to?: { story?: unknown }; referral?: Referral },
+  referral: Referral | undefined
+): MessageSource | undefined {
+  const ref = message.referral ?? referral;
+  if (ref) return ref.ad_id || ref.source?.toUpperCase() === "ADS" ? "ad" : "link";
+  const kinds = (message.attachments ?? []).map((attachment) => attachment.type);
+  if (message.reply_to?.story || kinds.includes("story_mention")) return "story";
+  if (kinds.some((kind) => kind === "ig_reel" || kind === "reel" || kind === "share")) return "reel";
+  return undefined;
+}
+
+/**
+ * History attachments use the Conversations API node shape. How Instagram
+ * voice notes appear there is undocumented (unverified on a live account),
+ * so accept an explicit type, an audio_data url or an audio/* MIME type.
+ */
+function historyMedia(
+  attachments: { data?: Array<Record<string, unknown>> } | undefined
+): RemoteMessage["media"] {
+  const first = attachments?.data?.[0];
+  if (!first) return undefined;
+  const mime = typeof first.mime_type === "string" ? first.mime_type : "";
+  const nested = (key: string) => {
+    const value = first[key] as { url?: unknown } | undefined;
+    return typeof value?.url === "string" ? value.url : undefined;
+  };
+  const kind = typeof first.type === "string"
+    ? first.type
+    : nested("audio_data") || mime.startsWith("audio/") ? "audio"
+    : nested("video_data") || mime.startsWith("video/") ? "video"
+    : nested("image_data") || mime.startsWith("image/") ? "image"
+    : "file";
+  const url = nested("payload") ?? nested("audio_data") ?? (typeof first.file_url === "string" ? first.file_url : undefined)
+    ?? nested("video_data") ?? nested("image_data");
+  return { kind, url: url ?? null };
+}
+
+const stringOrNull = (value: unknown) => (typeof value === "string" && value ? value : null);
+const boolOrNull = (value: unknown) => (typeof value === "boolean" ? value : null);
+
 export interface InstagramGraphAdapterOptions {
   appSecret?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** API injects a Redis implementation so replicas share the same budget. */
+  rateBudget?: GraphRateBudget;
 }
 
 export class InstagramGraphAdapter implements MessagingProvider {
@@ -54,13 +114,14 @@ export class InstagramGraphAdapter implements MessagingProvider {
   private appSecret: string;
   private fetchImpl: typeof fetch;
   private now: () => number;
-  /** accountId → { tokens, lastRefill } */
-  private buckets = new Map<string, { tokens: number; lastRefill: number }>();
+  private rateBudget: GraphRateBudget;
 
   constructor(opts: InstagramGraphAdapterOptions = {}) {
     this.appSecret = opts.appSecret ?? process.env.META_APP_SECRET ?? "";
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.now = opts.now ?? Date.now;
+    this.rateBudget =
+      opts.rateBudget ?? new InMemoryGraphRateBudget(BUDGET_CAPACITY, BUDGET_WINDOW_MS, this.now);
   }
 
   // ── Webhooks ──────────────────────────────────────────────────────────────
@@ -76,7 +137,11 @@ export class InstagramGraphAdapter implements MessagingProvider {
       .digest("hex");
     const provided = signature.slice("sha256=".length);
     if (provided.length !== expected.length) return false;
-    return timingSafeEqual(Buffer.from(provided, "hex"), Buffer.from(expected, "hex"));
+    try {
+      return timingSafeEqual(Buffer.from(provided, "hex"), Buffer.from(expected, "hex"));
+    } catch {
+      return false;
+    }
   }
 
   parseWebhook(payload: unknown): InboundEvent[] {
@@ -88,11 +153,14 @@ export class InstagramGraphAdapter implements MessagingProvider {
           sender?: { id?: string };
           recipient?: { id?: string };
           timestamp?: number;
+          referral?: Referral;
           message?: {
             mid?: string;
             text?: string;
             is_echo?: boolean;
-            attachments?: Array<{ type?: string }>;
+            attachments?: WebhookAttachment[];
+            reply_to?: { story?: unknown };
+            referral?: Referral;
           };
         }>;
       }>;
@@ -109,6 +177,9 @@ export class InstagramGraphAdapter implements MessagingProvider {
         const isEcho = m.message.is_echo === true;
         const businessIgsid = isEcho ? m.sender.id : m.recipient.id;
         const counterpartyIgsid = isEcho ? m.recipient.id : m.sender.id;
+        // Voice notes arrive as attachments[].type "audio" (detect by type, not MIME).
+        const attachment = m.message.attachments?.[0];
+        const threadSource = isEcho ? undefined : sourceOf(m.message, m.referral);
 
         events.push({
           accountPlatformUserId: businessIgsid,
@@ -119,6 +190,8 @@ export class InstagramGraphAdapter implements MessagingProvider {
             text: m.message.text ?? "",
             sentAt: new Date(m.timestamp ?? entry.time ?? this.now()),
             raw: m,
+            ...(attachment ? { media: { kind: attachment.type ?? "unknown", url: attachment.payload?.url ?? null } } : {}),
+            ...(threadSource ? { threadSource } : {}),
           },
         });
       }
@@ -129,31 +202,36 @@ export class InstagramGraphAdapter implements MessagingProvider {
   // ── Reads (backfill / self-healing) ──────────────────────────────────────
 
   async listConversations(account: ConnectedAccount, since?: Date): Promise<RemoteThread[]> {
-    const data = await this.graphGet<{
-      data?: Array<{
-        id: string;
-        updated_time?: string;
-        participants?: { data?: Array<{ id: string; username?: string }> };
-      }>;
-    }>(account, `/me/conversations`, {
-      platform: "instagram",
-      fields: "id,updated_time,participants",
-      limit: "50",
-    });
+    type Conversation = {
+      id: string;
+      updated_time?: string;
+      participants?: { data?: Array<{ id: string; username?: string }> };
+    };
+    const updatedAt = (conv: Conversation) => (conv.updated_time ? new Date(conv.updated_time) : new Date(this.now()));
+    // Every page spends the budget human sends share. Meta does not document
+    // this list's order, so paging stops only once a whole page is older than
+    // `since` — not at the first old conversation.
+    const conversations = await this.graphGetAll<Conversation>(
+      account,
+      `/me/conversations`,
+      { platform: "instagram", fields: "id,updated_time,participants", limit: "50" },
+      since ? (page) => page.length > 0 && page.every((conv) => updatedAt(conv) <= since) : undefined
+    );
 
     const threads: RemoteThread[] = [];
-    for (const conv of data.data ?? []) {
+    for (const conv of conversations) {
       const counterparty = conv.participants?.data?.find(
         (p) => p.id !== account.platformUserId
       );
       if (!counterparty) continue;
-      const updatedAt = conv.updated_time ? new Date(conv.updated_time) : new Date(this.now());
-      if (since && updatedAt <= since) continue;
+      const lastMessageAt = updatedAt(conv);
+      if (since && lastMessageAt <= since) continue;
       threads.push({
         platformThreadId: counterparty.id,
         participantHandle: counterparty.username ?? counterparty.id,
         participantPlatformId: counterparty.id,
-        lastMessageAt: updatedAt,
+        lastMessageAt,
+        conversationId: conv.id,
       });
     }
     return threads;
@@ -162,35 +240,31 @@ export class InstagramGraphAdapter implements MessagingProvider {
   async fetchMessages(
     account: ConnectedAccount,
     platformThreadId: string,
-    since?: Date
+    since?: Date,
+    listedConversationId?: string
   ): Promise<RemoteMessage[]> {
-    // platformThreadId is the counterparty IGSID — resolve their conversation,
-    // then read its (API-limited, ~20 most recent) messages.
-    const conv = await this.graphGet<{ data?: Array<{ id: string }> }>(
-      account,
-      `/me/conversations`,
-      { platform: "instagram", user_id: platformThreadId }
-    );
-    const conversationId = conv.data?.[0]?.id;
+    // platformThreadId is the counterparty IGSID. Without the listing's
+    // conversation id, resolve their conversation first; then read its
+    // (API-limited, ~20 most recent) messages.
+    const conversationId = listedConversationId ?? (await this.conversationWith(account, platformThreadId));
     if (!conversationId) return [];
 
-    const data = await this.graphGet<{
-      messages?: {
-        data?: Array<{
-          id: string;
-          created_time?: string;
-          from?: { id?: string };
-          message?: string;
-        }>;
-      };
-    }>(account, `/${conversationId}`, {
-      fields: "messages{id,created_time,from,message}",
+    const messages = await this.graphGetAll<{
+      id: string;
+      created_time?: string;
+      from?: { id?: string };
+      message?: string;
+      attachments?: { data?: Array<Record<string, unknown>> };
+    }>(account, `/${conversationId}/messages`, {
+      fields: "id,created_time,from,message,attachments",
+      limit: "50",
     });
 
     const out: RemoteMessage[] = [];
-    for (const m of data.messages?.data ?? []) {
+    for (const m of messages) {
       const sentAt = m.created_time ? new Date(m.created_time) : new Date(this.now());
       if (since && sentAt <= since) continue;
+      const media = historyMedia(m.attachments);
       out.push({
         platformMessageId: m.id,
         platformThreadId,
@@ -198,9 +272,38 @@ export class InstagramGraphAdapter implements MessagingProvider {
         text: m.message ?? "",
         sentAt,
         raw: { ...m, conversationId },
+        ...(media ? { media } : {}),
       });
     }
     return out;
+  }
+
+  /**
+   * Sender context via the Instagram User Profile API — available once the
+   * person has messaged the account. Spends the same per-account budget as
+   * every Graph read. Null when Meta withholds the profile (blocked, no
+   * consent, deleted user); token and budget errors still throw.
+   */
+  async getUserProfile(account: ConnectedAccount, platformUserId: string): Promise<UserProfile | null> {
+    // IGSIDs are numeric: never build a Graph path from anything else.
+    if (!/^\d{1,32}$/.test(platformUserId)) return null;
+    let body: Record<string, unknown>;
+    try {
+      body = await this.graphGet<Record<string, unknown>>(account, `/${platformUserId}`, { fields: PROFILE_FIELDS });
+    } catch (error) {
+      if (error instanceof TokenExpiredError || error instanceof RateBudgetExceededError) throw error;
+      return null;
+    }
+    const followers = body.follower_count;
+    const picture = stringOrNull(body.profile_pic);
+    return {
+      name: stringOrNull(body.name),
+      username: stringOrNull(body.username),
+      profilePicUrl: picture?.startsWith("https://") ? picture : null,
+      followerCount: typeof followers === "number" && Number.isSafeInteger(followers) && followers >= 0 ? followers : null,
+      isVerified: boolOrNull(body.is_verified_user),
+      followsBusiness: boolOrNull(body.is_user_follow_business),
+    };
   }
 
   // ── Send (called ONLY by the API-layer send gate) ────────────────────────
@@ -208,9 +311,30 @@ export class InstagramGraphAdapter implements MessagingProvider {
   async sendMessage(
     account: ConnectedAccount,
     target: SendTarget,
-    text: string
+    text: string,
+    opts: SendOptions = {}
   ): Promise<SendReceipt> {
-    this.consumeBudget(account.accountId);
+    return this.postMessage(account, target, { text }, opts);
+  }
+
+  /** Voice note: Meta fetches `audioUrl` (aac/m4a/wav/mp4, ≤ 25 MB) — research 03 §4.1. */
+  async sendAudio(
+    account: ConnectedAccount,
+    target: SendTarget,
+    audioUrl: string,
+    opts: SendOptions = {}
+  ): Promise<SendReceipt> {
+    if (!audioUrl.startsWith("https://")) throw new Error("Instagram audio must be fetched over https");
+    return this.postMessage(account, target, { attachment: { type: "audio", payload: { url: audioUrl } } }, opts);
+  }
+
+  private async postMessage(
+    account: ConnectedAccount,
+    target: SendTarget,
+    message: Record<string, unknown>,
+    opts: SendOptions
+  ): Promise<SendReceipt> {
+    await this.consumeBudget(account.accountId);
     const res = await this.fetchImpl(`${GRAPH_BASE}/me/messages`, {
       method: "POST",
       headers: {
@@ -219,37 +343,94 @@ export class InstagramGraphAdapter implements MessagingProvider {
       },
       body: JSON.stringify({
         recipient: { id: target.recipientPlatformId },
-        message: { text },
+        message,
+        // Meta documents MESSAGE_TAG + HUMAN_AGENT on the Page (Facebook Login)
+        // messages route ("only HUMAN_AGENT is available for Instagram
+        // Messaging"); the Instagram Login docs show no syntax. Verify on a live
+        // Instagram Login account before setting META_HUMAN_AGENT_ENABLED.
+        ...(opts.humanAgentTag ? { messaging_type: "MESSAGE_TAG", tag: "HUMAN_AGENT" } : {}),
       }),
+      signal: AbortSignal.timeout(15_000),
     });
 
     const body = (await res.json()) as { message_id?: string; error?: GraphError };
     if (!res.ok || body.error) {
       throw this.mapError(body.error, account, target);
     }
+    if (!body.message_id) throw new Error("Instagram accepted no verifiable message receipt");
     return {
-      platformMessageId: body.message_id ?? `ig-${this.now()}`,
+      platformMessageId: body.message_id,
       sentAt: new Date(this.now()),
     };
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
 
+  /** The conversation id for a counterparty IGSID (one Graph read). */
+  private async conversationWith(account: ConnectedAccount, participantId: string): Promise<string | undefined> {
+    const conv = await this.graphGet<{ data?: Array<{ id: string }> }>(
+      account,
+      `/me/conversations`,
+      { platform: "instagram", user_id: participantId }
+    );
+    return conv.data?.[0]?.id;
+  }
+
   private async graphGet<T>(
     account: ConnectedAccount,
     path: string,
     params: Record<string, string>
   ): Promise<T> {
-    this.consumeBudget(account.accountId);
+    await this.consumeBudget(account.accountId);
     const qs = new URLSearchParams(params).toString();
     const res = await this.fetchImpl(`${GRAPH_BASE}${path}?${qs}`, {
       headers: { Authorization: `Bearer ${account.accessToken}` },
+      signal: AbortSignal.timeout(15_000),
     });
     const body = (await res.json()) as T & { error?: GraphError };
     if (!res.ok || body.error) {
       throw this.mapError(body.error, account);
     }
     return body;
+  }
+
+  /**
+   * Follows provider pagination with a strict page cap and trusted origin.
+   * `enough(page)` returning true stops before the next page: the caller
+   * needs nothing beyond it, so that is not a truncation.
+   */
+  private async graphGetAll<T>(
+    account: ConnectedAccount,
+    path: string,
+    params: Record<string, string>,
+    enough?: (page: T[]) => boolean
+  ): Promise<T[]> {
+    const first = await this.graphGet<{ data?: T[]; paging?: { next?: string } }>(
+      account,
+      path,
+      params
+    );
+    const rows = [...(first.data ?? [])];
+    let next = enough?.(first.data ?? []) ? undefined : first.paging?.next;
+    for (let page = 0; next && page < 19; page += 1) {
+      const url = new URL(next);
+      next = undefined;
+      if (url.protocol !== "https:" || url.hostname !== "graph.instagram.com") {
+        throw new Error("Graph pagination returned an untrusted URL");
+      }
+      await this.consumeBudget(account.accountId);
+      const res = await this.fetchImpl(url.toString(), {
+        headers: { Authorization: `Bearer ${account.accessToken}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      const body = (await res.json()) as { data?: T[]; paging?: { next?: string }; error?: GraphError };
+      if (!res.ok || body.error) throw this.mapError(body.error, account);
+      const data = body.data ?? [];
+      rows.push(...data);
+      next = enough?.(data) ? undefined : body.paging?.next;
+    }
+    if (next) throw new Error("Graph history exceeds the bounded page budget; checkpoint not advanced");
+    return rows;
   }
 
   private mapError(
@@ -273,25 +454,7 @@ export class InstagramGraphAdapter implements MessagingProvider {
     return new Error(`Graph API error ${code ?? "?"}: ${message}`);
   }
 
-  private consumeBudget(accountId: string) {
-    const now = this.now();
-    const bucket = this.buckets.get(accountId) ?? {
-      tokens: BUDGET_CAPACITY,
-      lastRefill: now,
-    };
-    // Continuous refill.
-    const refill = ((now - bucket.lastRefill) / BUDGET_WINDOW_MS) * BUDGET_CAPACITY;
-    bucket.tokens = Math.min(BUDGET_CAPACITY, bucket.tokens + refill);
-    bucket.lastRefill = now;
-
-    if (bucket.tokens < 1) {
-      const retryAfterMs = Math.ceil(
-        ((1 - bucket.tokens) / BUDGET_CAPACITY) * BUDGET_WINDOW_MS
-      );
-      this.buckets.set(accountId, bucket);
-      throw new RateBudgetExceededError(accountId, retryAfterMs);
-    }
-    bucket.tokens -= 1;
-    this.buckets.set(accountId, bucket);
+  private async consumeBudget(accountId: string) {
+    await this.rateBudget.consume(accountId);
   }
 }

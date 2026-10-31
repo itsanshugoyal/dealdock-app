@@ -5,14 +5,15 @@
   "scripts": {
     "build": "next build",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "dev": "next dev",
     "start": "next start"
   },
   "dependencies": {
     "@clerk/nextjs": "^6.12.0",
-    "@dealdock/ai": "*",
     "@dealdock/core": "*",
-    "@dealdock/messaging": "*",
+    "cmdk": "^1.1.1",
+    "lucide-react": "^1.58.0",
     "next": "^16.2.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -24,6 +25,7 @@
     "@types/react-dom": "^19.0.0",
     "postcss": "^8.5.0",
     "tailwindcss": "^4.0.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.12"
   }
 }

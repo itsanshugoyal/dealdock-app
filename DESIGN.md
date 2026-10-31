@@ -1,230 +1,131 @@
-# DealDock — Product Design System & Screen Specifications
+# DealDock — Design System v3: "Native money messaging"
 
-**Status:** Living document · v1.1 · Pilot scope, global-ready
-**Source of truth for requirements:** `DealDock_Product_PRD.md` (v1.1 — in this repo)
-**Companions:** `ARCHITECTURE.md` (entities/APIs referenced here) · `PLAN.md` (build order)
+Status: shipped in `apps/web` on 31 Oct 2026. Replaces v2 (plum hero, highlighter, serif money), which was rejected along with three mockup rounds. The tokens live in `apps/web/src/app/globals.css`; the shared pieces live in `apps/web/src/components/kit.tsx` and `apps/web/src/components/ui/*`.
 
-> **v1.1:** currency/locale-aware money everywhere (`MoneyValue`), Leak Scan onboarding climax, `waiting` state + nudge UI, PWA install + contextual push permission, region settings.
+## 1. What it should feel like
 
-This is the **product** design doc — the app a creator uses daily. It inherits the brand language shipped on the marketing site (`C:\code\DealDock`), but the app is a working tool: **denser, calmer, faster**. The marketing site sells the leak; the app stops it.
+DealDock is a messaging app whose messages are worth money. It should feel like a premium native app on a phone (Messages, Wallet, a bank app) and like a calm, fast desk on a laptop. It must never feel like a generic CRM, a toy, or an AI chatbot.
 
----
+Principles:
 
-## 1. Design principles
+1. **Money is the one colour.** Emerald appears on confirmed money, money actions (record a sale, the biggest reply) and "in your voice" provenance. Nothing else is green.
+2. **The platform's grammar, not a dashboard's.** Large titles, grouped inset lists, bottom sheets, a glass tab bar, capsule buttons, swipe-and-slide gestures. Users already know how these work.
+3. **The person first.** Every conversation row leads with a face (gradient monogram or photo), the name, then the money. Labels are small dots with words, not badges.
+4. **Calm by default, loud only when money is at risk.** The red ring and red copy appear only when a reply window closes within the hour or six hours. No unread dots, no confetti.
+5. **Human approval is the brand.** Nothing sends on its own. The send gesture is deliberate (slide on touch, a full-width button with ⌘↵ on desktop), and every send gets an undo window.
+6. **The AI is invisible.** No sparkles, no "AI" chips. Drafts say "In your voice · 74% match", with a waveform glyph.
 
-1. **Money first, always.** The money figure — in the org's own currency — is the most visually dominant element in any row, card, or screen. Sort order, hierarchy, color — all serve "which message is worth the most?" (PRD north star §11.1).
-2. **Trust is a UI feature.** "Never auto-send" isn't just policy — the interface constantly shows the human is in control: drafts are visibly *drafts*, the send button belongs to the creator, audit trails are inspectable. (PRD §3.3, §7.5)
-3. **Triage speed over completeness.** The primary loop (PRD §5.2) happens on a phone between shoots. Every high-frequency action is one tap: approve-send, mark-closed, confirm-classification.
-4. **Calm surface, loud signal.** OLED-black canvas, low-chroma grays; color is reserved for classification badges and gold ₹ values. No decoration that competes with signal.
-5. **Every locale is first-class; Hinglish is the pilot bar.** All text containers, previews, and drafts render mixed scripts (Devanagari + Latin, and beyond) without truncation bugs. Number and date formats follow the org locale: `₹1,20,000` lakh-grouping and `₹3.2L` compacts for en-IN; `$120,000` and `$4.2K` elsewhere. Never mixed within one org.
-6. **Performance is design.** <2s dashboard on Indian mobile (PRD §7.3): skeleton states designed for every screen, optimistic UI on all one-tap actions, list virtualization on the inbox.
-7. **Flow rules (non-negotiable).** Every flow has one entry point and one visible success/exit; any core surface (inbox, thread, ledger, review) reachable in ≤3 taps from home; every non-root screen has back navigation; every loading/empty/error state has an explicit recovery action — no dead ends, ever.
-8. **Touch-first.** Minimum 44×44px touch targets; primary actions live in the thumb zone (bottom sticky bars, bottom tabs); destructive actions never adjacent to primary ones.
-9. **AI you can interrogate.** Every classification is explainable in one line — the model's rationale ("mentions campaign budget; verified brand account") is visible on tap in thread view and always visible on Review cards. Confidence is never hidden. Trust in the classifier is earned through transparency, not asserted.
+## 2. Tokens
 
-## 2. Design tokens
+Components use the Tailwind classes generated from the tokens (`bg-canvas`, `text-ink-2`, `bg-brand`, …). No raw hex in components (the dark hero cards have their own tokens, below), and never `dark:` utilities: the tokens switch.
 
-Carried from the landing page for brand continuity; app-specific additions marked ●.
+### 2.1 Colour
 
-### 2.1 Color
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `canvas` | `#F3F3F6` | `#09090B` | App background |
+| `surface` | `#FFFFFF` | `#141417` | Cards, grouped lists, bubbles in |
+| `inset` | `#ECECF0` | `#1F1F25` | Filled inputs, secondary buttons, wells |
+| `fill` | `#E4E4EA` | `#2A2A31` | Switch off, meters, progress tracks |
+| `ink` / `text-1` | `#0B0B10` | `#F4F4F6` | Primary text, primary buttons, outgoing bubbles |
+| `ink-2` | `#4A4A55` | `#ABABB6` | Secondary text |
+| `ink-3` | `#64646D` | `#8C8C98` | Captions, metadata (AA on canvas) |
+| `brand` | `#077A51` | `#2FD58E` | Money actions, switches on, active tab |
+| `recovered` | `#06744D` | `#3BDD98` | Confirmed money text |
+| `brand-tint` | `#E3F5EC` | `#0E2A1F` | Money pills and wells |
+| `waiting` | `#955900` | `#FFB547` | Waiting, needs reconnecting |
+| `review` | `#5B4FD6` | `#A79BFF` | "Check these", uncertain labels |
+| `danger` | `#C8232F` | `#FF6B72` | Window closing, destructive |
+| `info` | `#1A5FD0` | `#6EA8FF` | Neutral system info, focus ring |
 
-| Token | Value | Use |
-|---|---|---|
-| `bg-primary` | `#050505` | App canvas |
-| `bg-secondary` | `#0A0A0A` | Panels, nav rail |
-| `bg-elevated` | `#111111` | Cards, rows, thread bubbles (theirs) |
-| ● `bg-input` | `#161616` | Inputs, draft composer |
-| `border-subtle` | `rgba(255,255,255,0.06)` | Hairlines, dividers |
-| `text-primary` | `#FAFAFA` | Headings, key figures |
-| `text-secondary` | `#A3A3A3` | Body |
-| `text-muted` | `#737373` / `#525252` | Meta, timestamps |
-| `gold-400` | `#FFC107` | **Money values (any currency), primary revenue actions, recovered revenue** — gold = money, only money |
-| `gold-500` | `#E5A800` | Hover/pressed gold |
-| ● `state-waiting` | `#F59E0B` | "Waiting on them" chips + nudge row accents (amber ≠ gold: waiting is *potential* money) |
-| `badge-brand` | `#22C55E` | Brand Deal |
-| `badge-coaching` | `#3B82F6` | Coaching Lead |
-| `badge-course` | `#A855F7` | Course Inquiry |
-| ● `badge-other` | `#F97316` | Other Commerce |
-| ● `badge-neutral` | `#525252` | Fan / Personal / Spam (never colorful — they're not the job) |
-| ● `confidence-low` | `#EAB308` | Review Queue accents |
-| ● `success` / `danger` | `#22C55E` / `#EF4444` | Sent confirmations / destructive actions |
+Deal-type accents (dot, icon and tint pill): brand deal blue `#2F5BEA`, coaching teal `#0B8A7E`, course orange `#C25E00`, other sale pink `#C2316D` (lighter equivalents in dark).
 
-Rule: **gold is never used for non-money UI.** A gold button means "this action touches revenue" (send a deal reply, close a deal).
+**Dark hero cards.** `HeroCard` is a fixed near-black card (`hero`) with an emerald radial glow (`.dd-hero-glow`; `.dd-hero-glow-cool` adds a blue one) that looks the same in both themes: Today's "Money in your DMs right now", Revenue's month total, Voice match, the sign-in panel and All creators' recovered total. Inside it, text is `on-hero` (secondary text at 55–70% opacity), money is `hero-money`, accents are `hero-accent` with `on-hero-accent` text, alerts are `hero-alert` on `hero-alert-tint`, and buttons use the `hero` and `on-hero` variants. The `--dd-hero*` tokens never switch with the theme.
 
-### 2.2 Typography
+### 2.2 Type
 
-- **UI:** Geist Sans. Scale: 24/20/16/14/13/11. App headings are quiet (16–20px semibold) — this is a tool, not a poster.
-- **Money:** Geist Mono, tabular numerals, always with the org currency symbol. Sizes: inbox row 15px bold · thread header 20px · dashboard tile 32px.
-- **Locale formatting via `Intl.NumberFormat`:** en-IN → `₹3.2L`, `₹1.2Cr` compact and `₹3,20,000` exact; en-US → `$4.2K`, `$1.2M` compact and `$120,000` exact (ledger, exports). One org, one format — never mixed.
+Geist for every word and number (Noto Sans Devanagari as the Hindi fallback; Geist Mono only for keyboard hints). Money uses tabular figures and tight tracking, never a serif.
 
-### 2.3 Spacing, radius, elevation
+| Role | Phone | Desktop (≥1024) | Weight |
+|---|---|---|---|
+| `display-xl` (large title) | 34/40 | 30/36 | 700 |
+| `display` | 28/34 | 26/32 | 700 |
+| `title` | 22/28 | 20/26 | 650 |
+| `heading` (group titles) | 17/22 | 15/20 | 600 |
+| `body` | 16/22 | 14/20 | 400 |
+| `message` (bubbles) | 16/22 | 15/21 | 400 |
+| `label` / `button` | 15–16 | 14 | 500 / 600 |
+| `caption` | 13/18 | 12/16 | 400 |
+| `money-hero` | 44/48 | 52/56 | 600 |
 
-- 4px base grid; rows 12px vertical padding; screen gutters 16px mobile / 24px desktop.
-- Radius: rows/inputs 12px, cards 16px, modals 24px. Double-Bezel treatment (outer `bg-white/[0.02]` ring + inner card) reserved for **hero surfaces only**: dashboard revenue tile, close-deal modal. Everyday rows are flat — density beats ornament.
-- Elevation via borders + subtle shadow, never heavy blur. `backdrop-blur` only on sticky headers/modals.
+Body text is 16px on phones (no iOS zoom on focus) and 14px on desks, where density matters.
+
+### 2.3 Shape, elevation, spacing
+
+- Radii: 8 (chips inside cards), 12 (inputs), 16 (wells), 20–22 (grouped lists, cards), 26–28 (heroes, sheets). Buttons, chips, tags and the tab bar are capsules.
+- Elevation: `shadow-card` for grouped lists and cards, `shadow-raised` for heroes, sheets and the send knob. Hairlines (`hairline`) divide rows inside a card; cards never have visible borders.
+- Gutters: 16px phone, 32px desktop. Page widths: 640 (focus screens), 720 (settings content), 860 (activity), 1180–1240 (dashboards).
 
 ### 2.4 Motion
 
-Motion (Framer Motion 12) with `useReducedMotion` respected globally.
+Durations: press 140ms, row 220ms, send 260ms, sheet 340ms, stamp 520ms, money count-up 800ms. Easing: `--ease-dd-out` for entrances, `--ease-dd-spring` for the switch thumb, the send knob and the "sent" stamp. Everything respects `prefers-reduced-motion` (counters show the final value, slides snap, shimmer stops).
 
-| Moment | Animation |
-|---|---|
-| New DM lands in inbox | Row slides in from top + 600ms gold left-edge pulse, then settles |
-| ₹ values on dashboard | Count-up once per session (RupeeCounter pattern from landing page) |
-| Mark closed | Modal confirm → gold particle tick → ledger tile increments live — closing a deal must *feel* like scoring |
-| Approve & send | Button press → draft bubble morphs into sent bubble (right-aligned) |
-| Review confirm/override | Row swipes out; next row rises |
-| List/screen transitions | 150–200ms fade/slide; springs `{stiffness: 300, damping: 30}` |
+Signature moments:
 
-## 3. App shell & navigation
+- **Slide to send** (touch): the knob drags the emerald fill across the track; at 86% it commits, vibrates 12ms and turns into "Sending…". Keyboard and screen readers activate it as a button.
+- **Undo drain**: the sending bar drains over the undo window (5/10/20s, set in Settings).
+- **Sent stamp**: a check pops in (`dd-stamp`) next to "Reply sent to @handle".
+- **Money count-up**: hero totals count up once per session.
+- **Leak scan**: a dark scanning screen with live counters, then the reveal total.
 
-Responsive web, mobile-first (PRD §12: no native app in pilot).
+## 3. Components
 
-**Mobile (<768px):** bottom tab bar — **Inbox · Review · Ledger · Settings**. Revenue Recovered strip pinned above Inbox. Thread view is a full-screen push.
-**Desktop (≥1024px):** left nav rail (icons + labels, org switcher at bottom) + split-pane: inbox list (400px) | thread detail. Ledger and Review are full-width pages.
-**Roster tier:** an extra top-level "Roster" view; account switcher chip appears in the inbox header.
+Kit (`components/kit.tsx`):
 
-Review tab shows a count badge (`confidence-low` yellow) when the queue is non-empty — the queue must be impossible to forget (PRD §5.4).
+- `Logo`, `Wordmark`: the emerald rounded square with a speech bubble carrying an upward line.
+- `LargeTitle`: eyebrow, large title, accessory on the right, subtitle under both.
+- `Group`, `GroupLink`: the inset grouped list with a heading, an optional description and an optional action; `bare` keeps the heading without the card, and its `id` is a link anchor (`/settings#goal`).
+- `HeroCard`: the dark hero card (above), with `flat` for a band or panel without corners and shadow.
+- `ConversationRow`: avatar (with urgency ring only when a window closes soon), name, value, label dot and state, preview; optional creator chip on agency views.
+- `ValueStrip`: a horizontal strip whose segments are the waiting conversations sized by value; tapping a segment opens it.
+- `VoiceNote`: waveform bubble with play/pause and progress, used for voice notes and recorded takes.
+- `ListenButton`: plays a speaking-voice preview of a short text; a second press stops it.
+- `SlideToSend`, `VoiceProvenance`, `Stat`, `Tag`, `LabelDot`.
 
-## 4. Screen specifications
+UI (`components/ui/*`): `Button`/`IconButton` (primary, money, secondary, tinted, ghost, danger, danger-ghost for quiet destructive actions, hero and on-hero inside a `HeroCard`; sm 32 / md 44 / lg 52), `Sheet` (native `<dialog>`, bottom sheet on phones, centered or side panel on desks, discard guard when dirty), `ConfirmDialog`, `Menu`, `Popover`, `Segmented` (≤4 options), `Chip`, `TextField`/`TextArea`/`Select` (label above, helper and error linked), `MoneyField` (every amount input: the currency symbol in its label, digits and a dot only, parsed to minor units, one error message), `DealTypeSelect`, `Switch` (iOS, 50×30), `MoneyValue`/`MoneyCounter`, `Avatar`/`SenderCard`, charts (`Sparkline`, `AreaChart`, `Bars`, `StackedBar`, `ProgressRing`), `Skeleton`, `EmptyState`, `ErrorState`, `OfflineBanner`, `Toaster`.
 
-Each maps to a PRD journey (§5) and consumes the APIs in ARCHITECTURE.md §6.
+Shared sheets: `SaleSheet` (`components/sale-sheet.tsx`) records a sale from a conversation or edits one in Revenue with the same form; the goal editor (`components/goal-editor.tsx`: `GoalSheet` in Revenue, `GoalField` in Settings) sets the monthly goal.
 
-### 4.1 Onboarding wizard (PRD §5.1)
+Avatars: no photo means a monogram on one of ten gradients picked by a hash of the handle, so the same person always looks the same. A verified badge shows when Instagram says so.
 
-Steps (progress dots, one concern per screen):
-1. **Welcome** — pilot framing, what happens next, 20-min call context.
-2. **Connect Instagram** — OAuth button; on Personal-account detection: friendly interstitial explaining the 2-minute Business/Creator switch with screenshots (PRD §6.1), retry button.
-3. **Region** — currency + locale + timezone, smart-defaulted from device/IP; one screen, three fields, "you can change these later." Currency choice visibly reformats the example figures live (₹3.2L ↔ $4.2K) — the user *sees* what they're choosing.
-4. **Business context** — the ~10 questions (what you sell, typical brand deal range *in their currency*, coaching package sizes, audience, ignore-handles). Chip-select + ranges over free text wherever possible; this seeds value estimation, so each question shows *why we ask* in one muted line.
-5. **Voice consent** — explicit, plain-language consent to sample sent DMs for voice modeling; toggle to opt out (classification-only mode, PRD §6.11). Never dark-patterned.
-6. **Leak Scan reveal (the climax, PRD §5.1.6)** — progress state: "Scanning your last 30 days… 412 messages classified." Then the reveal: a Double-Bezel card, count-up to the headline — *"₹3.4L in commerce DMs went unanswered last month."* — with the top 3 missed threads beneath. This is the moment the invisible leak becomes visible; the emotional peak of onboarding.
-   **CTA: "Recover your biggest one →" opens the single highest-value still-live thread with a draft already loaded** — the first task is *doing* the core loop (review → edit → send), not touring the inbox. Do, don't show: if the creator sends one real reply inside onboarding, the habit starts at minute one. (Fallback when nothing is still actionable: "Stop the next leak →" into the live inbox.)
-7. **Post-first-value push prompt** — NOT during onboarding. The push permission sheet appears contextually, the first time a new high-value DM lands while the app is open: "That was a ₹2L brand deal. Want to know the moment the next one arrives?" (permission grant rates collapse when asked cold — PRD §6.8).
+## 4. Screens
 
-### 4.2 Dashboard / Home (PRD §5.2.2)
+Navigation: phone tab bar (Today, Inbox, Revenue, You); desktop sidebar (Today, Inbox, Revenue · Studio: Your voice, Offers · Creators: All creators and one link per creator with waiting counts · Settings). Conversations and Check these hide the tab bar.
 
-- **Revenue Recovered tile** (Double-Bezel, gold figure, count-up): month-to-date total + delta vs last month. The single most important pixel-area in the product (retention mechanism, PRD §3.1.5).
-- Secondary tiles: Biggest deal · Avg deal size · Pending high-value count.
-- "Needs you" strip: top 3 unreplied threads by ₹ + Review Queue count.
-- Mobile: dashboard collapses to the pinned strip above Inbox — triage is the home screen.
-
-### 4.3 Revenue Inbox (PRD §6.3) — the core screen
-
-Row anatomy (one line of hierarchy, scannable in <1s):
-
-```
-┌────────────────────────────────────────────────────────────┐
-│ [Badge]  @handle ✓            2h    ● draft   ₹2L–₹4L      │
-│ Hi! We'd love to collaborate on our Q2 campaign for…       │
-└────────────────────────────────────────────────────────────┘
-```
-
-- Badge = classification color chip; ✓ = verified sender; age in compact form; gold ● = draft ready; **value range right-aligned, gold, mono — the loudest element** (org currency via `MoneyValue`).
-- Default sort: estimated value desc. Sort menu: value · most recent · oldest unread · confidence (PRD §6.3). Filter chips: label, age (today/this week/older), unreplied only, **waiting on them**. Filters persist per user.
-- Unread = 2px gold left edge. Row states: default / unread / replied (muted) / **waiting** (amber chip + "3d silent" counter) / **nudge due** (amber left edge + "Follow up?" pill) / closed (checkmark, collapsed to ledger link).
-- Audio DMs: row shows a 🎙 "Voice note — needs your ear" treatment instead of a preview line (PRD §6.2) — flagged, never hidden.
-- Empty state: "Inbox clear. ₹X.XL recovered this month." — always reinforce the north star.
-- Virtualized list; skeleton rows on load; pull-to-refresh on mobile.
-
-### 4.4 Thread view (PRD §5.2.4–5.2.5)
-
-- Header: handle + badge + **value range** + thread-state control (Open ↔ Waiting toggle) + overflow menu (reclassify, ignore handle).
-- After a send, a one-tap toast offers: **"Move to Waiting?"** — starts the nudge clock (PRD §5.2.6).
-- **Nudge banner** (when due): amber strip above composer — *"@brand has been quiet for 3 days"* — with the follow-up draft pre-loaded in the composer. Actions: send · dismiss (stay waiting) · close thread.
-- **Sticky action bar: `Mark closed for [amount]`** (gold outline) — always reachable without scrolling (attribution under-counting is a top-5 PRD risk §10.1.5).
-- DM history: their bubbles left (`bg-elevated`), creator's right (dark-gold tint). Day separators. Mixed-script rendering verified.
-- **Draft composer** (bottom, distinct `bg-input` surface):
-  - Label: `✦ Draft — in your voice` + regenerate icon.
-  - Inline-editable textarea, auto-grow.
-  - Primary action: **Approve & Send** (gold, full-width on mobile). Secondary: Regenerate · Discard.
-  - Visible trust line under button: "Nothing sends without you."
-  - If reply window closed (Meta 24h): composer replaced by an info state — "This thread's reply window has closed — reply from Instagram directly." (typed error from ARCHITECTURE.md §4.2)
-- **Close-deal modal:** numeric keypad-first amount input (live-formats per org locale — lakh grouping for INR, thousands elsewhere), deal-type chips (Brand/Coaching/Course/Other), confirm → celebration tick → "View in Ledger" toast.
-
-### 4.5 Review Queue (PRD §5.4, §6.5)
-
-- Card per uncertain message: message text (full, not truncated), sender context, **best-guess badge + confidence meter** (horizontal bar, yellow), **the model's one-line rationale** ("mentions rates; unverified account — could be spam or brand"), and two big actions: **Confirm [label]** / **Change…** (opens label sheet). The rationale is what makes a 5-second confirm/override decision possible.
-- One decision per card, swipe-friendly; keyboard shortcuts on desktop (Y / N / 1–8 labels).
-- Footer copy: "Your corrections train your classifier." (PRD §6.5 feedback loop, made visible.)
-- Never shows a send/draft action — review is classification only.
-
-### 4.6 Revenue Ledger (PRD §6.6)
-
-- Month selector · headline total (gold, mono, large) · trend bar chart (6 months, current month gold — same visual language as the landing-page mockup, now real).
-- Breakdown row: by-type donut-less bars (color = badge colors) + biggest deal + avg size.
-- Deals table: date · sender (links to thread) · type badge · ₹ exact. Row actions: edit / delete (soft, undo toast — refund handling, PRD §6.6).
-- **Export CSV** button always visible — including read-only post-cancellation mode (PRD §5.6), where the whole app collapses to Ledger + export.
-
-### 4.7 Roster overview (PRD §5.5 — Studio/Roster)
-
-- Table/cards: creator per row — avatar+handle · MTD recovered (gold) · unread high-priority count · review-queue size · last activity.
-- Tap → that creator's Revenue Inbox (identical UI, account chip in header shows context).
-- Per-creator report export (monthly PDF/CSV).
-- Audit view (per account): who sent what — timestamp, seat, edit distance (PRD §5.5.5, §7.5).
-
-### 4.8 Settings (PRD §6.9, §5.6)
-
-Sections: **Account & seats** (tier, seat list, invite — tier limits messaged inline) · **Region** (currency — confirmed change, history keeps logged amounts; locale; timezone; nudge delay) · **Notifications** (per-type toggles: high-value DM / nudge due / weekly summary; quiet hours) · **Instagram connection** (status, reconnect banner state, disconnect with plain consequence copy) · **Voice & drafting** (toggle, style summary "we noticed you often say…", re-sample) · **Ignore list** (handle chips, add/remove) · **Data & privacy** (what we store, export archive, delete account with 7-day-grace explanation) · **Billing** (plan + rail-appropriate portal — Razorpay for INR orgs, Paddle otherwise; next invoice date; the invoice-after-first-week status for new members; cancel).
-**Cancel flow:** one confirmation, zero guilt UI, states clearly: ledger stays read-only 30 days + CSV always (PRD §5.6). Trust is the brand.
-
-## 5. Component inventory
-
-Reusable across screens; built once in `apps/web/components/`:
-
-| Component | Notes |
-|---|---|
-| `ClassificationBadge` | 8 labels, color map §2.1; compact + full variants |
-| `MoneyValue` | mono gold, locale-aware via org `currencyCode` + `locale`; compact (₹3.2L / $4.2K) / exact (₹3,20,000 / $120,000) / range modes; tabular |
-| `MoneyCounter` | count-up on view (ported from landing page's RupeeCounter, locale-aware) |
-| `WaitingChip` | amber `state-waiting`; shows days-silent counter |
-| `NudgeBanner` | amber strip in thread view; send / dismiss / close actions |
-| `LeakScanReveal` | onboarding climax card: scan progress → count-up headline → top missed threads |
-| `PushPrompt` | contextual permission sheet (post-first-value, never on load) |
-| `ConfidenceMeter` | 0–1 bar, yellow, with % label |
-| `InboxRow` | states: unread/replied/closed/skeleton |
-| `ThreadBubble` | inbound/outbound, mixed-script safe |
-| `DraftComposer` | draft state machine: ready → edited → sending → sent/failed |
-| `CloseDealModal` | ₹ keypad, type chips, celebration |
-| `ReviewCard` | confirm/override, swipe + keyboard |
-| `LedgerTile` / `TrendBars` | dashboard + ledger |
-| `AuditRow` | actor, action, edit distance |
-| `EmptyState` / `ErrorState` / `Skeleton*` | every screen has designed empty, loading, error, and offline states — no blank whites, no spinner-only screens |
-| `ReconnectBanner` | token-expired state (ARCHITECTURE.md §4.3) |
-
-## 6. Content & microcopy rules
-
-- Voice: competent friend — warm, direct, no fluff. Light local warmth where natural per market ("Bhai, this one looks big" is too much; "Worth a fast reply" is right). No SaaS slop (elevate/seamless/unleash banned — same rule as marketing site).
-- Numbers: always the org currency symbol, always org-locale grouping, never ISO codes ("INR"/"USD") in creator-facing UI.
-- Notification copy leads with money: *"New brand deal — est. ₹2L+"* / *"$2.4K coaching lead waiting 3 days"*.
-- Never anthropomorphize sending: it's *your* reply, *drafted* by DealDock.
-- Errors: say what happened + what to do, one sentence each. No error codes at the surface.
-
-## 7. Accessibility & internationalization
-
-- WCAG 2.1 AA: gold-on-black 10.5:1; badge text always paired with label text (never color-only classification).
-- Full keyboard triage on desktop (j/k rows, enter open, y confirm, s send focus).
-- Screen-reader labels on all one-tap actions ("Approve and send reply to @handle"); icon-only controls always carry `aria-label`; decorative icons `aria-hidden`.
-- **Modals (close-deal, label sheet): focus trapped, Escape closes, focus returns to the trigger.** Non-modal toasts never steal focus.
-- **Form errors** (onboarding, close-deal amount, settings): associated to their input via `aria-describedby`, announced via live region, never color-only.
-- Reduced motion: all §2.4 animations degrade to opacity fades.
-- Script: `lang` attributes per-message where detected; line-height accommodates Devanagari ascenders.
-
-## 7.5 Offline & PWA behavior
-
-- Installable PWA: manifest with maskable icons, standalone display, `#050505` theme — and the **required offline fallback page** (install fails without it).
-- Offline state is honest, never fake: cached shell + last-loaded dashboard/ledger render read-only with a quiet "Offline — reconnecting" banner; **send and close actions disable offline** (a queued send that fires later would violate the human-in-control promise). On reconnect, data refreshes silently.
-- Push notifications degrade gracefully: iOS <16.4 and permission-denied users rely on badge counts + (V1) weekly digest email.
-
-## 8. Performance budgets (design-owned)
-
-| Surface | Budget | Design mechanism |
+| Screen | Route | Job |
 |---|---|---|
-| Dashboard first paint | <2s on 4G Indian mobile (PRD §7.3) | SSR + skeletons, tile data in one query |
-| Inbox scroll | 60fps at 500 rows | virtualization, fixed row heights |
-| One-tap actions | perceived instant | optimistic UI + undo toasts instead of confirms where safe |
-| Draft appearance | <5s worst case | pre-generated drafts (ARCHITECTURE.md §5.1); composer shows shimmer + "drafting…" only on regenerate |
+| Today | `/` | Greeting, the dark "Money in your DMs right now" hero (at-least total, value strip, reply to the biggest), Needs you, Looks closed (record it), Follow-ups due, Recovered this month with goal ring, This week |
+| Inbox | `/inbox` | Search, creator chips, views (Needs reply, Follow-ups, Waiting, Check, Closed), Big ones first; j/k and "/" on desks |
+| Conversation | `/thread/:id` | Sender header and profile, day-grouped history with voice notes and transcripts, deal-signal and nudge banners, the draft in your voice, chips, alternatives, "Why this draft", voice-note toggle, slide to send with undo, learned-from-your-edit hints, record a sale |
+| Check these | `/review` | One uncertain message at a time: confirm (Y), relabel (1–7), skip (N) |
+| Revenue | `/ledger` | Month total hero with goal, trend bars, by type, sales list with edit and undoable delete, CSV export |
+| Your voice | `/voice` | Voice match trend, edits to confirm, rules (pin, edit, turn off), how you write (measured + adjustable style), try it, speaking voice (record three takes, listen, AI label), replies it learns from, pause or stop learning |
+| Offers | `/offers` | The private rate card drafts quote from: price ranges, links, availability, pause |
+| All creators | `/roster` | Agency desk: totals, a card per creator, one biggest-first queue across creators |
+| Settings | `/settings` | Profile, studio links (phone), Instagram accounts, notifications, follow-ups and region, monthly goal, people to skip, team, plan, appearance and sending, your data |
+| Activity | `/activity` | Who sent what (with draft vs sent), sales, sorting and settings changes, by day, filterable by kind and person |
+| Onboarding | `/onboarding` | Welcome, region, connect Instagram, what you sell, voice consent, the leak scan, the reveal |
+| Sign in | `/sign-in` | Dark brand panel (desktop) and Clerk's form in the house style |
 
----
+## 5. Accessibility
 
-*Every new screen or component PR links to the section here it implements. If a design decision isn't in this file, it isn't decided.*
+- Contrast: every text token passes WCAG AA (4.5:1) at small sizes on white, canvas, inset and its own tint in both themes; the app has a clean axe (wcag2a/aa) scan in demo mode. White text on the dark hero stays at or above 55% opacity for captions only.
+- Every icon-only control has an accessible name; the slide-to-send knob is a real button named "Approve & send" with a description of who it sends to.
+- Sheets are native dialogs (focus trap, Escape, focus return). Menus support arrows, Home/End and type-ahead.
+- Touch targets are at least 44px (`dd-hit` extends small controls).
+- Money is never colour-only: confirmed amounts are labelled and estimates read "est." or "at least".
+- Hindi and Hinglish text gets `lang="hi"` when it contains Devanagari.
+
+## 6. Copy
+
+Write from the creator's side: "Money in your DMs", "Record a sale", "People to skip", "Check these". Say exactly what happens ("Reply sent to @handle", "Approval recorded. Instagram hasn't confirmed it yet; DealDock won't send it again."). Errors say what went wrong and what to do. Never: "AI", "leverage", "seamless", sparkles, exclamation-heavy celebration.

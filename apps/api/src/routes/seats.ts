@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { TIER_LIMITS } from "@dealdock/core";
 import { inviteSeat, listSeats, removeSeat } from "@dealdock/db";
-import { requireAuth } from "../auth";
+import { activateVerifiedInvite, requireAuth } from "../auth";
 import { requirePermission, requireWritable } from "../guards";
 
 const InviteBody = z.object({
@@ -12,6 +12,7 @@ const InviteBody = z.object({
 });
 
 export async function seatRoutes(app: FastifyInstance) {
+  app.post("/seats/activate", async (req, reply) => activateVerifiedInvite(req, reply));
   app.get("/seats", { preHandler: requireAuth }, async (req) => {
     const seats = await listSeats(req.auth!.orgId);
     const limits = TIER_LIMITS;

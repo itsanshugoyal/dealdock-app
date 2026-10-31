@@ -1,17 +1,20 @@
 import { Queue } from "bullmq";
-import { QUEUES } from "@dealdock/core";
+import { QUEUES, parseRedisConnection } from "@dealdock/core";
 
-/** Producer-side queue handles. The API enqueues; it never consumes. */
+/** Queue handles shared by API routes; Graph maintenance is API-owned. */
 let ingestionQueue: Queue | null = null;
 
-function redisConnection() {
-  const url = process.env.REDIS_URL ?? "redis://localhost:6379";
-  const parsed = new URL(url);
-  return {
-    host: parsed.hostname,
-    port: Number(parsed.port || 6379),
-    password: parsed.password || undefined,
-  };
+/**
+ * Shared Redis parsing keeps TLS, username and database selection intact.
+ * Never silently degrade a production URL to a local unauthenticated Redis.
+ */
+export function redisConnection() {
+  const value = process.env.REDIS_URL;
+  if (!value) {
+    if (process.env.NODE_ENV === "production") throw new Error("REDIS_URL is required");
+    return parseRedisConnection("redis://localhost:6379/0");
+  }
+  return parseRedisConnection(value);
 }
 
 export function getIngestionQueue(): Queue {

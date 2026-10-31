@@ -1,5 +1,7 @@
 # Draft blind-review sample
 
+> This is a historical development sample from `heuristic-fallback-1`, not completed quality evidence. Do not score it as a production Claude sample or count it toward the launch gate. Regenerate with the configured real model and record independent blind A/B/C scores; at least 70% must be A/B.
+
 Generated: 2026-07-05 · pipeline: heuristic-fallback-1
 
 Score each draft: **A** = would send as-is · **B** = minor edits · **C** = rewrite.

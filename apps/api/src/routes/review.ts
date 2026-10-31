@@ -1,29 +1,34 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { CLASSIFICATION_LABELS, type ReviewQueueResponse } from "@dealdock/core";
 import { listReviewQueue, reviewClassification } from "@dealdock/db";
 import { requireAuth } from "../auth";
 import { requirePermission, requireWritable } from "../guards";
 
 const ReviewBody = z.object({
   outcome: z.enum(["confirmed", "overridden"]),
-  overrideLabel: z
-    .enum([
-      "brand_deal",
-      "coaching_lead",
-      "course_inquiry",
-      "other_commerce",
-      "fan",
-      "spam",
-      "personal",
-      "uncertain",
-    ])
-    .optional(),
+  overrideLabel: z.enum(CLASSIFICATION_LABELS).optional(),
+}).refine((body) => body.outcome !== "overridden" || body.overrideLabel !== undefined, {
+  message: "An override needs the corrected label.",
+  path: ["overrideLabel"],
 });
 
 export async function reviewRoutes(app: FastifyInstance) {
   app.get("/review-queue", { preHandler: requireAuth }, async (req) => {
     const rows = await listReviewQueue(req.auth!.orgId);
-    return { rows };
+    return {
+      rows: rows.map((row) => ({
+        classificationId: row.classificationId,
+        threadId: row.threadId,
+        igAccountId: row.igAccountId,
+        handle: row.handle,
+        text: row.text,
+        sentAt: row.sentAt.toISOString(),
+        bestGuess: row.bestGuess,
+        confidence: row.confidence,
+        rationale: row.rationale,
+      })),
+    } satisfies ReviewQueueResponse;
   });
 
   /** Confirm/override — corrections train the creator's classifier (PRD §6.6). */

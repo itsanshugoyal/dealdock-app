@@ -1,11 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { DEAL_TYPES } from "@dealdock/core";
 import { deleteLedgerEntry, getDashboard, getLedger, updateLedgerEntry } from "@dealdock/db";
 import { requireAuth } from "../auth";
+import { requirePermission, requireWritable } from "../guards";
 
 const PatchBody = z.object({
-  amountMinor: z.number().int().positive().optional(),
-  dealType: z.enum(["brand", "coaching", "course", "other"]).optional(),
+  amountMinor: z.number().int().positive().safe().optional(),
+  dealType: z.enum(DEAL_TYPES).optional(),
   note: z.string().max(500).optional(),
 });
 
@@ -15,7 +17,7 @@ export async function ledgerRoutes(app: FastifyInstance) {
     return getLedger(req.auth!.orgId, /^\d{4}-\d{2}$/.test(month ?? "") ? month : undefined);
   });
 
-  app.patch("/ledger/:id", { preHandler: requireAuth }, async (req, reply) => {
+  app.patch("/ledger/:id", { preHandler: [requireAuth, requireWritable, requirePermission("close")] }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const parsed = PatchBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_body" });
@@ -27,7 +29,7 @@ export async function ledgerRoutes(app: FastifyInstance) {
     return { id: updated.id, amountMinor: updated.amountMinor };
   });
 
-  app.delete("/ledger/:id", { preHandler: requireAuth }, async (req) => {
+  app.delete("/ledger/:id", { preHandler: [requireAuth, requireWritable, requirePermission("close")] }, async (req) => {
     const { id } = req.params as { id: string };
     await deleteLedgerEntry(req.auth!.orgId, id, req.auth!.seatId);
     return { deleted: true };
@@ -41,15 +43,20 @@ export async function ledgerRoutes(app: FastifyInstance) {
     );
     const rows = all.flatMap((l) => l.entries);
     const header = "date,handle,deal_type,amount_minor,currency,note";
+    const csvCell = (value: unknown) => {
+      let text = String(value ?? "");
+      if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+      return '"' + text.replaceAll('"', '""') + '"';
+    };
     const lines = rows.map((e) =>
       [
         e.closedAt.toISOString().slice(0, 10),
         `@${e.handle}`,
         e.dealType,
         e.amountMinor,
-        "", // currency joined below via org — kept simple in M1
-        JSON.stringify(e.note ?? ""),
-      ].join(",")
+        e.currencyCode,
+        e.note ?? "",
+      ].map(csvCell).join(",")
     );
     reply.header("content-type", "text/csv");
     reply.header("content-disposition", "attachment; filename=dealdock-ledger.csv");

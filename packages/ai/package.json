@@ -4,6 +4,7 @@
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {".": {"types":"./dist/index.d.ts","default":"./dist/index.js"}},
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -13,11 +14,12 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
-    "@dealdock/core": "*"
+    "@dealdock/core": "*",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.12"
   }
 }

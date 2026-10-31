@@ -1,5 +1,7 @@
 # DealDock — Execution Plan
 
+> Readiness update (30 October 2026): M0–M5 implementation is being hardened against the original exit criteria; implementation checkmarks do not mean live-provider, account or real-model gates passed. See [current evidence and owner actions](docs/private-pilot-readiness.md). No new milestone, deployment or push is authorized by this status update. Local integration gates exercise real PostgreSQL and Redis with an explicitly mock messaging provider.
+
 **Status:** Living document · v1.1 · Pilot scope, global-ready
 **Source of truth for requirements:** `DealDock_Product_PRD.md` (v1.1 — in this repo)
 **Companions:** `ARCHITECTURE.md` (how) · `DESIGN.md` (what it looks like)
@@ -25,7 +27,7 @@ Sequence, scope, exit criteria. "Hat" = which team role owns quality for the mil
 ### M0 — Foundation *(hats: Architect, DevOps, DBA)*
 
 **Scope**
-- Turborepo scaffold: `apps/web` (Next.js 15), `apps/api` (Fastify), `apps/worker` (BullMQ), `packages/core|db|messaging|ai` per ARCHITECTURE.md §2. ✅ *(done pre-M0)*
+- Turborepo scaffold: `apps/web` (Next.js 16), `apps/api` (Fastify), `apps/worker` (BullMQ), `packages/core|db|messaging|ai` per ARCHITECTURE.md §2. ✅ *(done pre-M0)*
 - Prisma schema for the full data model (ARCHITECTURE.md §3) + first migration — including org `currencyCode`/`locale`/`timezone`, minor-unit money columns, `waiting` thread state, and `PushSubscription`; repository layer with org-scoping + lint rule banning Prisma imports outside `packages/db`.
 - `MoneyValue`/`MoneyCounter` formatting utilities in `packages/core` (Intl-based, en-IN lakh/crore + standard grouping) — money formatting is foundation, not polish.
 - Clerk integration (orgs, seats, roles) with tier-limit middleware.
@@ -83,7 +85,7 @@ Sequence, scope, exit criteria. "Hat" = which team role owns quality for the mil
 **Scope**
 - **Dual-rail billing behind one `BillingProvider` interface** (ARCHITECTURE.md §9, ADR-4): Razorpay (INR orgs — UPI Autopay) + Paddle MoR (all other currencies). Shared flow: active-use gate → 7 days → first invoice; normalized webhooks + reconciliation poller; past-due grace; cancel-at-period-end; pilot price lock (₹ and $ price points).
 - Studio: 2 seats, assistant role, per-seat audit. Roster: ≤5 accounts, manager seats, roster overview screen, per-creator exports (DESIGN.md §4.7).
-- **PWA + Web Push** (ADR-10): manifest + service worker, VAPID push (high-value DM / nudge due / weekly summary), contextual permission prompt, quiet hours per org timezone, per-type toggles.
+- **PWA + Web Push** (ADR-10): manifest + service worker, VAPID push (high-value DM / nudge due), contextual permission prompt, quiet hours per org timezone, per-type toggles. Weekly summaries and automatic voice refresh remain deferred; their presence in the PRD does not mean they passed M5.
 - Settings: region (currency/locale/timezone/nudge delay), notifications, data view, export archive, delete (7-day grace), ignore list, voice toggle, cancel flow (DESIGN.md §4.8).
 
 **Exit criteria**

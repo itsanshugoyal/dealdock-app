@@ -57,7 +57,7 @@ function trimTrailingZero(n: number): string {
  * Whole amounts drop decimals; fractional amounts keep 2.
  */
 export function formatMoneyExact(minor: number, ctx: MoneyContext): string {
-  if (!Number.isInteger(minor) || minor < 0) {
+  if (!Number.isSafeInteger(minor) || minor < 0) {
     throw new RangeError(`minor units must be a non-negative integer, got ${minor}`);
   }
   const locale = ctx.locale ?? DEFAULT_LOCALE[ctx.currency];
@@ -76,7 +76,7 @@ export function formatMoneyExact(minor: number, ctx: MoneyContext): string {
  * Deterministic (no Intl compact — ICU output varies across runtimes).
  */
 export function formatMoneyCompact(minor: number, ctx: MoneyContext): string {
-  if (!Number.isInteger(minor) || minor < 0) {
+  if (!Number.isSafeInteger(minor) || minor < 0) {
     throw new RangeError(`minor units must be a non-negative integer, got ${minor}`);
   }
   const symbol = CURRENCY_SYMBOL[ctx.currency];

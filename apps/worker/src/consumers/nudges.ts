@@ -1,6 +1,6 @@
 import { Queue, Worker, type Job } from "bullmq";
 import { QUEUES } from "@dealdock/core";
-import { listNudgeCandidates } from "@dealdock/db";
+import { asOrgId, listNudgeCandidates, recordNudgeFired } from "@dealdock/db";
 import { redisConnection } from "../connection";
 
 /**
@@ -13,8 +13,8 @@ export function startNudgeScheduler() {
   const draftingQueue = new Queue(QUEUES.drafting, { connection: redisConnection() });
   const notificationsQueue = new Queue(QUEUES.notifications, { connection: redisConnection() });
 
-  // Repeatable tick every 30 minutes (idempotent — candidates query excludes
-  // threads that already have a live nudge draft).
+  // Repeatable tick every 30 minutes. Each follow-up cycle fires once: the
+  // candidates query skips cycles already recorded by recordNudgeFired.
   void nudgeQueue.upsertJobScheduler("nudge-tick", { every: 30 * 60_000 });
 
   const worker = new Worker(
@@ -22,21 +22,33 @@ export function startNudgeScheduler() {
     async (_job: Job) => {
       const candidates = await listNudgeCandidates();
       for (const c of candidates) {
-        await draftingQueue.add("nudge-draft", {
-          orgId: c.orgId,
-          igAccountId: c.igAccountId,
-          threadId: c.threadId,
-          label: c.topLabel ?? "brand_deal",
-          kind: "nudge",
-        });
-        await notificationsQueue.add("nudge-due", {
-          orgId: c.orgId,
-          kind: "nudge",
-          threadId: c.threadId,
-          handle: c.participantHandle,
-          valueMaxMinor: c.estValueMaxMinor ?? undefined,
-          currencyCode: c.currencyCode,
-        });
+        // Deterministic ids: a tick retried after a partial run cannot queue the
+        // same cycle twice; the cycle is recorded only once both jobs exist.
+        const cycle = `${c.threadId}-${c.dueAt.getTime()}`;
+        await draftingQueue.add(
+          "nudge-draft",
+          {
+            orgId: c.orgId,
+            igAccountId: c.igAccountId,
+            threadId: c.threadId,
+            label: c.topLabel ?? "brand_deal",
+            kind: "nudge",
+          },
+          { jobId: `nudge-draft-${cycle}` },
+        );
+        await notificationsQueue.add(
+          "nudge-due",
+          {
+            orgId: c.orgId,
+            kind: "nudge",
+            threadId: c.threadId,
+            handle: c.participantHandle,
+            valueMaxMinor: c.estValueMaxMinor ?? undefined,
+            currencyCode: c.currencyCode,
+          },
+          { jobId: `nudge-due-${cycle}` },
+        );
+        await recordNudgeFired(asOrgId(c.orgId), c.threadId, c.dueAt);
       }
       return { enqueued: candidates.length };
     },
