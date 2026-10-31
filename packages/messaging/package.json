@@ -4,16 +4,19 @@
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {".": {"types":"./dist/index.d.ts","default":"./dist/index.js"},"./fixtures":{"types":"./dist/fixtures.d.ts","default":"./dist/fixtures.js"}},
+  "typesVersions": {"*":{"fixtures":["dist/fixtures.d.ts"]}},
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@dealdock/core": "*"
+    "@dealdock/core": "*",
+    "ioredis": "^5.10.1"
   },
   "devDependencies": {
     "typescript": "^5.8.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.12"
   }
 }

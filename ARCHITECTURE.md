@@ -1,5 +1,7 @@
 # DealDock — System Architecture
 
+> Readiness update (30 October 2026): see [private pilot readiness](docs/private-pilot-readiness.md). Next.js is now 16. Graph I/O, token decryption, history polling and token refresh live only in `apps/api`; workers receive normalized jobs and reject API-only secrets. A durable PostgreSQL outbox recovers queue handoffs. Sending uses durable human-approval intents; ambiguous delivery never triggers an automatic resend. Organization currency is immutable, and monthly ledger grouping uses its time zone. Older diagrams below describe the original milestone plan where they differ from this update.
+
 **Status:** Living document · v1.1 · Pilot scope, global-ready
 **Source of truth for requirements:** `DealDock_Product_PRD.md` (PRD v1.1 — in this repo)
 **Companions:** `DESIGN.md` (design system + screens) · `PLAN.md` (milestones + risks)
@@ -19,7 +21,7 @@ Every architectural decision here traces to a PRD requirement. Where we made a j
                         └──────────────────────┬──────────────────────────┘
                                                │ HTTPS
                         ┌──────────────────────▼──────────────────────────┐
-                        │              apps/web · Next.js 15              │
+                        │              apps/web · Next.js 16              │
                         │   Dashboard · Revenue Inbox · Thread view ·     │
                         │   Review Queue · Ledger · Roster · Settings     │
                         └──────────────────────┬──────────────────────────┘
@@ -67,7 +69,7 @@ Turborepo, TypeScript everywhere, npm workspaces.
 ```
 dealdock-app/
 ├── apps/
-│   ├── web/                  # Next.js 15 (App Router) — creator-facing UI
+│   ├── web/                  # Next.js 16 (App Router) — creator-facing UI
 │   ├── api/                  # Fastify — REST API, webhook receivers, auth middleware
 │   └── worker/               # BullMQ consumers — ingestion, AI pipeline, billing jobs
 ├── packages/
@@ -89,7 +91,7 @@ dealdock-app/
 |---|---|---|
 | `apps/web` | Rendering, optimistic UI, client-side filtering | Direct DB access, direct Claude calls, direct Graph API calls |
 | `apps/api` | AuthN/Z, request validation (zod), webhook signature verification, the **send gate**, billing webhooks, CSV exports | Long-running work (anything > ~2s is enqueued) |
-| `apps/worker` | Ingestion, classification, value estimation, draft pre-generation, voice-profile refresh, ledger rollups, backfill/self-heal, retention deletion | Sending messages (no Graph send scope in its token), serving HTTP |
+| `apps/worker` | Ingestion, classification, value estimation, draft pre-generation, ledger rollups, billing/notification scheduling, retention deletion | Any Graph I/O or credentials, sending Instagram messages, serving HTTP |
 | `packages/messaging` | Provider abstraction: `fetchThreads`, `fetchMessages`, `sendMessage`, `subscribeWebhooks`, `verifyWebhook` | Business logic, persistence |
 | `packages/ai` | Prompt assembly, model calls, confidence scoring, eval harness | Persistence (returns results; worker persists) |
 
@@ -189,7 +191,7 @@ Selection is per-IgAccount (`provider` column), so a demo org and a real org coe
 
 ### 4.3 Ingestion & self-healing (PRD §7.6)
 
-1. Webhook arrives at `apps/api/webhooks/instagram` → signature verified → raw event persisted to `webhook_events` (audit + replay) → job enqueued → `202` returned fast.
+1. Webhook arrives at `apps/api/webhooks/instagram` → signature verified → metadata and org-scoped normalized payload committed to the PostgreSQL outbox → acknowledgement. A recoverable dispatcher publishes tenant/event references to Redis; customer DM text remains in the scoped database.
 2. Worker resolves event → upserts Thread/Message (idempotent) → enqueues classification.
 3. **Backfill job** (every 15 min per active account): `listConversations(since = lastBackfillAt − overlap)` catches anything webhooks missed (outages on either side). No permanently lost messages.
 4. Token health job: detects expiring/revoked tokens → marks `token_expired` → surfaces reconnect banner in UI.
@@ -231,7 +233,7 @@ Classification + value estimation are **one structured-output call** (Haiku, tem
 |---|---|---|
 | Classify + value estimate | Claude Haiku | High volume (50–500 DMs/day/creator), structured output, strong multilingual; cost scales linearly with inbox size |
 | Draft replies | Claude Sonnet | Quality bar is "sent without edits" (≥70% target §7.4); runs on far fewer messages |
-| Voice style-card extraction | Claude Sonnet | Runs once per creator + weekly refresh |
+| Voice style-card extraction | Explicitly configured Claude model | Manual consented refresh; weekly automatic refresh is deferred |
 
 **Prompt caching:** the per-creator system block (business context + voice style card + label definitions) is cache-marked; only the message content varies per call. This is the main cost lever at 500 DMs/day.
 
@@ -285,8 +287,8 @@ GET    /settings/data               # what we store (§6.9)
 POST   /settings/export             # full archive job → download link
 DELETE /account                     # 7-day grace → hard delete (§6.9)
 GET/PUT /settings/ignore-list
-PUT    /settings/voice              # toggle voice modeling
-PUT    /settings/region             # currency (confirmed change; history keeps logged amounts),
+PUT    /settings/voice/consent      # per-account permission to learn from sent replies
+PUT    /settings/region             # locale/timezone preferences (currency is immutable),
                                     # locale, timezone, nudge delay (PRD §6.11)
 POST   /notifications/subscribe     # Web Push subscription   PUT /notifications/prefs
 POST   /ig/connect                  # OAuth start   POST /ig/disconnect
@@ -326,7 +328,7 @@ The worker's runtime credentials have **no send capability** — sending exists 
 
 ## 9. Billing (dual-rail: Razorpay + Paddle, PRD §6.12)
 
-Rail is selected automatically by org currency behind one `BillingProvider` interface (`createSubscription`, `cancelAtPeriodEnd`, `changeTier`, `verifyWebhook`, `parseEvents`):
+Rail is selected automatically by org currency behind one `BillingProvider` interface (`createSubscription`, `cancelAtPeriodEnd`, `verifyWebhook`, `parseEvents`):
 
 - **INR orgs → Razorpay** (UPI Autopay, cards, netbanking — how Indian creators actually pay).
 - **All other currencies → Paddle (merchant of record)** — Paddle is the seller of record and owns global sales-tax/VAT/GST registration and filing. A two-person team does zero international tax compliance (ADR-4).
@@ -401,12 +403,12 @@ Pilot: ~50 creators × ≤500 DMs/day ≈ 25k messages/day peak — trivially ha
 ### ADR-9 · One currency per organization, integer minor units
 **Decision:** `Organization.currencyCode` set at onboarding; all estimates, ledger entries, and billing follow it. Amounts stored as integer minor units with the currency denormalized onto `LedgerEntry` at write time so history never rewrites.
 **Alternatives rejected:** multi-currency ledger with FX conversion — requires rate sourcing, historical-rate storage, and reporting complexity for a case (<5% of pilot creators) that a note field covers; global float amounts (precision bugs).
-**Consequence:** internal cross-org aggregates USD-normalize at a fixed monthly rate (analytics-only, never shown to users); org currency change is a confirmed settings action that does not rewrite history.
+**Consequence:** internal cross-org aggregates USD-normalize at a fixed monthly rate (analytics-only, never shown to users); org currency is immutable; locale and timezone remain editable.
 
 ### ADR-10 · PWA + Web Push instead of native apps
 **Decision:** Installable PWA with VAPID Web Push (high-value DM alerts, nudge alerts, weekly summary). Contextual permission ask (after first high-value DM seen, never on load).
 **Alternatives rejected:** native iOS/Android apps (PRD §12 out of scope — two more codebases and store-review cycles for a pilot); email-only notifications (too slow for the 24-hour brand reply window that decides deals).
-**Consequence:** iOS <16.4 users fall back to badge counts + weekly email; push delivery is best-effort, so nothing critical depends on it.
+**Consequence:** Unsupported devices use the in-app inbox and review counts. Weekly push and email digests are deferred; push delivery is best-effort, so nothing critical depends on it. Quiet hours suppress rather than delay notifications.
 
 ---
 

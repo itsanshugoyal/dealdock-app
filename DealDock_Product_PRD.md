@@ -1,5 +1,7 @@
 # Product Requirements Document — DealDock
 
+> Implementation amendment (30 October 2026): the organization currency is frozen at creation and cannot be changed in Settings. Nothing auto-sends, including follow-ups; only the authenticated, authorized API send gate may send. The worker has no Graph credentials or messaging capability. These explicit safety requirements supersede any older optional-autonomy or mutable-currency wording below. See [current readiness evidence](docs/private-pilot-readiness.md) for external exit gates; a live public website is not proof of authenticated-product readiness.
+
 **Working name:** DealDock (final name TBD)
 **Product type:** B2B SaaS — revenue recovery system for Instagram-first commerce creators
 **Document version:** v1.1 — pilot scope, globalized

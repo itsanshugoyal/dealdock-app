@@ -27,6 +27,8 @@ export interface CreateSubscriptionInput {
   currencyCode: string;
   customerEmail: string;
   customerName?: string;
+  /** Stable DB reservation id; prevents a timeout from creating two mandates. */
+  requestKey: string;
 }
 
 export interface CreatedSubscription {
@@ -45,6 +47,18 @@ export interface BillingEvent {
     | "activated" // mandate authorized / subscription live (pre-first-charge)
     | "unknown";
   currentPeriodEnd?: Date;
+  /** Provider event id, used by persistence to make webhook replay idempotent. */
+  eventId?: string;
+  /** Provider occurrence time, used to reject stale non-terminal state changes. */
+  occurredAt?: Date;
+  /** Paddle checkout transaction before its durable subscription id exists. */
+  provisionalExternalId?: string;
+  /**
+   * Org tag echoed back by the rail (Paddle custom_data / Razorpay notes) — the
+   * durable key that lets us bind a new subscription id onto the org's row even
+   * when the row still holds a provisional/transaction id (F5).
+   */
+  orgId?: string;
   raw: unknown;
 }
 
@@ -53,12 +67,19 @@ export interface BillingWebhookRequest {
   rawBody: string;
 }
 
+/** Reconciliation is a remote snapshot, not a webhook event. */
+export interface BillingStatusSnapshot {
+  kind: BillingEvent["kind"];
+  currentPeriodEnd?: Date;
+  occurredAt?: Date;
+}
+
 export interface BillingProvider {
   readonly rail: BillingRail;
   createSubscription(input: CreateSubscriptionInput): Promise<CreatedSubscription>;
   cancelAtPeriodEnd(externalId: string): Promise<void>;
   /** Remote status fetch for the reconciliation poller (webhooks can be lost). */
-  fetchStatus(externalId: string): Promise<BillingEvent["kind"]>;
+  fetchStatus(externalId: string): Promise<BillingStatusSnapshot>;
   verifyWebhook(req: BillingWebhookRequest): boolean;
   parseEvents(payload: unknown): BillingEvent[];
 }

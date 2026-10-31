@@ -6,9 +6,14 @@ import {
   exportOrgArchive,
   hardDeleteOrg,
   listOrgsDueHardDelete,
+  purgeExpiredAudioAssets,
   requestAccountDeletion,
+  seedDrillCoverageRows,
   upsertInboundMessage,
 } from "@dealdock/db";
+
+/** Redesign tables that must be populated before, and empty after, the delete. */
+const REDESIGN_TABLES = ["voiceRules", "draftFeedback", "offers", "speakingVoices", "audioAssets"] as const;
 
 /**
  * M5 deletion drill (PLAN.md exit criterion): export → delete → PROVE GONE.
@@ -47,12 +52,40 @@ async function main() {
     });
   }
 
+  // One row in every redesign table (voice rules, feedback, offers, speaking
+  // voice, audio clips) so the drill proves they are covered too.
+  await seedDrillCoverageRows(org.id, igAccount.id, seat.id);
+
+  // Expired audio clips are purged by the retention tick, not only on delete.
+  const { purgedAudioAssets } = await purgeExpiredAudioAssets();
+  const afterPurge = await countOrgResidue(org.id);
+  if (purgedAudioAssets < 1 || afterPurge.audioAssets !== 1) {
+    console.error(`DRILL FAILED: expired audio not purged (purged ${purgedAudioAssets}, left ${afterPurge.audioAssets})`);
+    process.exit(1);
+  }
+  const unseeded = REDESIGN_TABLES.filter((table) => afterPurge[table] === 0);
+  if (unseeded.length) {
+    console.error(`DRILL FAILED: drill fixture missing rows in ${unseeded.join(", ")}`);
+    process.exit(1);
+  }
+
   // 2. Export works before deletion (PRD §6.11).
   const archive = await exportOrgArchive(orgId);
   const exportedThreads = (archive as { threads?: unknown[] }).threads?.length ?? 0;
   console.log(`drill: archive exported — ${exportedThreads} threads`);
   if (exportedThreads !== 5) {
     console.error(`DRILL FAILED: expected 5 threads in export, got ${exportedThreads}`);
+    process.exit(1);
+  }
+  const exported = archive as Record<string, unknown[] | undefined>;
+  for (const key of ["offers", "voiceRules", "speakingVoices", "audioAssets"]) {
+    if (exported[key]?.length !== 1) {
+      console.error(`DRILL FAILED: expected 1 ${key} row in export, got ${exported[key]?.length ?? 0}`);
+      process.exit(1);
+    }
+  }
+  if ((exported.audioAssets as Array<Record<string, unknown>>).some((clip) => "bytes" in clip)) {
+    console.error("DRILL FAILED: audio bytes leaked into the JSON export");
     process.exit(1);
   }
 

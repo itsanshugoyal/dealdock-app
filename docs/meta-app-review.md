@@ -1,10 +1,12 @@
 # Meta App Review — Preparation Checklist
 
+> Status (30 October 2026): no external checkboxes were completed by the local remediation. Use dealdock.io as the current public domain and configure the actual API callback origin in META/hosting settings; the API origin must be confirmed rather than inferred from the public domain. The review recording must demonstrate a real incoming message, classification/review, explicit human approval, one delivered reply and its receipt, and disconnect/reconnect. Local mock-provider tests do not satisfy app review.
+
 **Why this exists now:** Meta Tech Provider registration + `instagram_business_manage_messages` approval is the longest lead-time item in the project (weeks). PLAN.md M0 starts this track so M3 (real Instagram) is never blocked. Owner: founding team. Status: ☐ = not started.
 
 ## 1. Prerequisites
 
-- ☐ Meta Business Manager account (business.facebook.com) verified — legal entity name, address, website (dealdock.in).
+- ☐ Meta Business Manager account (business.facebook.com) verified — legal entity name, address, website (dealdock.io).
 - ☐ **Business Verification** completed (required for Advanced Access) — documents: incorporation cert / GST registration, utility bill.
 - ☐ Meta developer account for the founding team (developers.facebook.com).
 - ☐ Decide app owner entity: the DealDock business, not a personal account.
@@ -13,7 +15,7 @@
 
 - ☐ Create Meta App → type **Business**.
 - ☐ Add products: **Instagram** (Instagram API with Instagram Login / Messaging).
-- ☐ Configure Instagram webhooks: callback `https://api.dealdock.in/webhooks/instagram`, verify token from env (`META_WEBHOOK_VERIFY_TOKEN`), subscribe to `messages` field.
+- ☐ Configure Instagram webhooks: callback `<approved API origin>/webhooks/instagram`, verify token from env (`META_WEBHOOK_VERIFY_TOKEN`), subscribe to `messages` field.
 - ☐ App domains, privacy policy URL, data deletion callback URL (Settings → Basic). Privacy policy must explicitly cover DM processing (PRD §7.1 FAQ doubles as source).
 
 ## 3. Permissions to request (Advanced Access)

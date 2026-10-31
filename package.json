@@ -11,15 +11,28 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "dev": "turbo run dev",
-    "lint": "node scripts/check-boundaries.mjs && turbo run lint",
-    "test": "turbo run test"
+    "lint": "node scripts/check-boundaries.mjs",
+    "test": "turbo run test --concurrency=1 -- --maxWorkers=1",
+    "test:boundaries": "node --test scripts/boundary-rules.test.mjs",
+    "test:integration": "node scripts/run-integration-gate.mjs",
+    "test:browser": "node scripts/run-browser-gate.mjs",
+    "design:preview": "node design/serve.mjs",
+    "design:package": "node design/studio/package.mjs",
+    "test:safety": "node --test scripts/runtime-boundaries.test.mjs scripts/production-auth.test.mjs",
+    "design:check": "node design/studio/verify.mjs"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.64.1",
+    "deepmerge-ts": "^8.0.2",
     "turbo": "^2.5.0",
     "typescript": "^5.8.0"
   },
   "packageManager": "npm@10.9.2",
   "engines": {
     "node": ">=20"
+  },
+  "overrides": {
+    "deepmerge-ts": "$deepmerge-ts"
   }
 }

@@ -61,7 +61,10 @@ export class RazorpayRail implements BillingProvider {
         plan_id: planId,
         total_count: 60, // monthly × 5 years max; cancel-anytime applies (PRD §6.12)
         customer_notify: 1,
-        notes: { orgId: input.orgId, tier: input.tier },
+        // Razorpay echoes notes in lifecycle webhooks. This durable reservation
+        // key lets reconciliation find an ambiguous remote creation without
+        // creating another mandate after a timeout.
+        notes: { orgId: input.orgId, tier: input.tier, requestKey: input.requestKey },
       }),
     });
     const body = (await res.json()) as {
@@ -87,26 +90,30 @@ export class RazorpayRail implements BillingProvider {
     }
   }
 
-  async fetchStatus(externalId: string): Promise<BillingEvent["kind"]> {
+  async fetchStatus(externalId: string): Promise<import("./provider").BillingStatusSnapshot> {
     const res = await this.fetchImpl(`${API_BASE}/subscriptions/${externalId}`, {
       headers: { Authorization: this.authHeader() },
     });
-    const body = (await res.json()) as { status?: string };
-    if (!res.ok) return "unknown";
+    const body = (await res.json()) as { status?: string; current_end?: number; updated_at?: number };
+    if (!res.ok) return { kind: "unknown" };
+    const snapshot = {
+      ...(body.current_end ? { currentPeriodEnd: new Date(body.current_end * 1000) } : {}),
+      ...(body.updated_at ? { occurredAt: new Date(body.updated_at * 1000) } : {}),
+    };
     switch (body.status) {
       case "active":
-        return "charged";
+        return { kind: "charged", ...snapshot };
       case "authenticated":
-        return "activated";
+        return { kind: "activated", ...snapshot };
       case "halted":
       case "pending":
-        return "payment_failed";
+        return { kind: "payment_failed", ...snapshot };
       case "cancelled":
       case "completed":
       case "expired":
-        return "cancelled";
+        return { kind: "cancelled", ...snapshot };
       default:
-        return "unknown";
+        return { kind: "unknown", ...snapshot };
     }
   }
 
@@ -128,10 +135,17 @@ export class RazorpayRail implements BillingProvider {
 
   parseEvents(payload: unknown): BillingEvent[] {
     const body = payload as {
+      id?: string;
+      created_at?: number;
       event?: string;
       payload?: {
         subscription?: {
-          entity?: { id?: string; status?: string; current_end?: number };
+          entity?: {
+            id?: string;
+            status?: string;
+            current_end?: number;
+            notes?: { orgId?: string };
+          };
         };
       };
     };
@@ -139,6 +153,7 @@ export class RazorpayRail implements BillingProvider {
     if (!body.event || !sub?.id) return [];
 
     const periodEnd = sub.current_end ? new Date(sub.current_end * 1000) : undefined;
+    const occurredAt = body.created_at ? new Date(body.created_at * 1000) : undefined;
     const map: Record<string, BillingEvent["kind"]> = {
       "subscription.charged": "charged",
       "subscription.activated": "activated",
@@ -153,6 +168,9 @@ export class RazorpayRail implements BillingProvider {
         externalId: sub.id,
         kind: map[body.event] ?? "unknown",
         currentPeriodEnd: periodEnd,
+        ...(body.id ? { eventId: body.id } : {}),
+        ...(occurredAt && !Number.isNaN(occurredAt.getTime()) ? { occurredAt } : {}),
+        orgId: sub.notes?.orgId,
         raw: payload,
       },
     ];

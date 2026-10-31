@@ -123,6 +123,49 @@ enum BillingRail {
   paddle
 }
 
+enum SendIntentStatus {
+  pending
+  remote_accepted
+  persisted
+  unknown
+}
+
+// Provenance of an outbound message (research 04 §3). Only human-authored
+// text is style evidence; untouched DealDock drafts never feed learning.
+enum MessageOrigin {
+  native     // typed in Instagram by the account (echo without a DealDock SendIntent, or history import)
+  dealdock   // sent through DealDock's human send gate
+  automation // third-party sender (echo app_id ≠ ours) or detected template blast
+}
+
+enum VoiceRuleStatus {
+  candidate // evidence accruing, never used in prompts
+  active    // used in prompts
+  pinned    // user-confirmed; never auto-demoted
+  muted     // user said "not me"; never used, never re-proposed
+}
+
+enum VoiceRuleSource {
+  samples  // initial corpus analysis
+  edits    // distilled from edit diffs
+  feedback // quick chips / regenerate instructions
+  user     // typed by the user in Voice Studio
+}
+
+enum SpeakingVoiceStatus {
+  pending
+  ready
+  failed
+  revoked
+}
+
+enum AudioAssetKind {
+  voice_sample // in-app recorded cloning sample
+  consent      // the spoken consent statement
+  tts          // generated reply in the cloned voice
+  inbound      // voice note received from a sender
+}
+
 // ── Tenancy root ─────────────────────────────────────────────────────────
 
 model Organization {
@@ -145,6 +188,9 @@ model Organization {
   // Account deletion: 7-day grace, then the retention job hard-deletes (PRD §6.11).
   deletionRequestedAt DateTime?
 
+  // Monthly confirmed-revenue goal in org-currency minor units (Insights).
+  monthlyGoalMinor BigInt?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -153,6 +199,14 @@ model Organization {
   ignoreList       IgnoreListEntry[]
   auditLogs        AuditLog[]
   subscription     Subscription?
+  webhookScopes    WebhookEventOrg[]
+  outboxEvents     OutboxEvent[]
+  billingEvents    BillingEventReceipt[]
+  voiceRules       VoiceRule[]
+  draftFeedback    DraftFeedback[]
+  offers           Offer[]
+  speakingVoices   SpeakingVoice[]
+  audioAssets      AudioAsset[]
 }
 
 model User {
@@ -183,6 +237,8 @@ model Seat {
   reviews        Classification[] @relation("ReviewedBy")
   auditLogs      AuditLog[]
   pushSubs       PushSubscription[]
+  draftFeedback  DraftFeedback[]
+  speakingVoiceConsents SpeakingVoice[] @relation("SpeakingVoiceConsent")
 
   @@unique([orgId, userId])
   @@index([orgId])
@@ -200,14 +256,26 @@ model IgAccount {
   accountType    String // "business" | "creator" — personal rejected at connect (PRD §6.1)
   // AES-256-GCM encrypted at the application layer (ARCHITECTURE.md §8).
   accessTokenEnc String?
+  tokenRefreshedAt DateTime?
+  tokenExpiresAt DateTime?
   status         IgAccountStatus @default(active)
   connectedAt    DateTime        @default(now())
   disconnectedAt DateTime?
+
+  // Onboarding Leak Scan (PRD §5.1.6) progress for the reveal: when the last
+  // scan was queued, and when it had queued all of its history (null while
+  // it runs). Classification can still be catching up after completion.
+  leakScanStartedAt   DateTime?
+  leakScanCompletedAt DateTime?
 
   org        Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
   threads    Thread[]
   voice      VoiceProfile?
   checkpoint IngestionCheckpoint?
+  ignoreList IgnoreListEntry[]
+  voiceRules VoiceRule[]
+  offers     Offer[]
+  speakingVoice SpeakingVoice?
 
   @@unique([platform, igUserId])
   @@index([orgId])
@@ -231,6 +299,22 @@ model Thread {
   // Denormalized for inbox sorting without joins (ARCHITECTURE.md §3.2).
   topLabel             ClassificationLabel?
   estValueMaxMinor     BigInt?
+  // Stamp estimates with their creation currency: region changes must never
+  // reinterpret stored values as a different currency.
+  estCurrencyCode      String?
+  // A thread is absent from Revenue Inbox while it has any review-only item.
+  hasPendingReview     Boolean     @default(false)
+
+  // Sender context (read-only display cache, never a contact record): User
+  // Profile API snapshot, refreshed lazily when stale.
+  participantName          String?
+  participantAvatarUrl     String?
+  participantFollowerCount Int?
+  participantVerified      Boolean?
+  participantFollowsYou    Boolean?
+  profileFetchedAt         DateTime?
+  // Where the conversation started when Instagram says so: dm|story|reel|ad|link.
+  source                   String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -256,13 +340,24 @@ model Message {
   sentAt      DateTime
   raw         Json?
 
+  // Provenance — outbound only (null for inbound; enforced by a SQL CHECK).
+  origin             MessageOrigin?
+  // Voice notes: downloaded bytes live in AudioAsset; transcript feeds classification.
+  audioAssetId       String?        @unique
+  transcript         String?
+  transcriptLanguage String?
+  mediaStatus        String? // pending|ready|unavailable|failed (SQL CHECK)
+  durationMs         Int?
+
   createdAt DateTime @default(now())
 
   thread         Thread          @relation(fields: [threadId], references: [id], onDelete: Cascade)
   classification Classification?
   sentFromDraft  Draft?          @relation("SentAs")
+  audioAsset     AudioAsset?     @relation(fields: [audioAssetId], references: [id], onDelete: SetNull)
 
   @@index([orgId, threadId, sentAt])
+  @@index([orgId, direction, origin, sentAt]) // voice corpus scan (research 04 §3)
 }
 
 model Classification {
@@ -275,6 +370,7 @@ model Classification {
   // Value estimate in org currency minor units (commerce labels only).
   valueMinMinor BigInt?
   valueMaxMinor BigInt?
+  currencyCode String
   // One-line model explanation (DESIGN.md principle 9).
   rationale     String?
   modelVersion  String
@@ -317,14 +413,28 @@ model Draft {
   finalText      String?
   editDistance   Int?
 
+  // Drafts that learn (research 04 §3).
+  label             ClassificationLabel? // label drafted for (thread.topLabel drifts later)
+  editRatio         Float?    // editDistance / body length, clamped 0..1, set at send
+  instruction       String?   // regenerate-with-instruction text
+  chips             String[]  @default([]) // DraftChip values applied to this generation
+  alternatives      String[]  @default([]) // up to 3 variants on ONE row (one-live-draft invariant)
+  chosenAlternative Int?      // index into alternatives
+  generationContext Json?     // {ruleIds[], exemplarMessageIds[], lessonDraftIds[], lintViolations, promptVersion}
+  editSignals       Json?     // deterministic detector output at learn time
+  learnedAt         DateTime? // idempotency marker for the learning sweep
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   thread      Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
   sentBy      Seat?    @relation("SentBy", fields: [sentBySeatId], references: [id])
   sentMessage Message? @relation("SentAs", fields: [sentMessageId], references: [id])
+  sendIntent  SendIntent?
+  feedback    DraftFeedback[]
 
   @@index([orgId, threadId, status])
+  @@index([orgId, status, sentAt]) // voice-fidelity trend scan
 }
 
 // ── Revenue Ledger (the product's soul) ──────────────────────────────────
@@ -337,18 +447,23 @@ model LedgerEntry {
   amountMinor  BigInt
   // Denormalized at write time — org currency changes never rewrite history (ADR-9).
   currencyCode String
+  idempotencyKey String
   note     String?
   closedAt DateTime @default(now())
-  createdBySeatId String
+  createdBySeatId String?
   deletedAt DateTime? // soft delete for refunds (PRD §6.7)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  thread    Thread @relation(fields: [threadId], references: [id])
-  createdBy Seat   @relation(fields: [createdBySeatId], references: [id])
+  // A close-out must not prevent the owning account/org's privacy deletion.
+  // Seat attribution is retained while the seat exists, but removing a seat
+  // (or hard-deleting an org) must not leave a restrictive foreign-key edge.
+  thread    Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  createdBy Seat?  @relation(fields: [createdBySeatId], references: [id], onDelete: SetNull)
 
   @@index([orgId, closedAt]) // monthly rollups
+  @@unique([orgId, idempotencyKey])
 }
 
 // ── Voice, ignore list, audit ────────────────────────────────────────────
@@ -357,11 +472,21 @@ model VoiceProfile {
   id          String  @id @default(cuid())
   orgId       String
   igAccountId String  @unique
-  enabled     Boolean @default(true)
+  // Sent-DM sampling is opt-in. A profile can exist before consent, but must
+  // never be used for drafting until consentedAt is present.
+  enabled     Boolean @default(false)
+  consentedAt DateTime?
+  revokedAt   DateTime?
   styleCard   Json?
   sampleMessageIds String[]
   version     Int     @default(1)
   refreshedAt DateTime?
+
+  // Learning controls (Voice Studio).
+  excludedMessageIds String[]  @default([]) // corpus messages the creator marked "not me"
+  learningPaused     Boolean   @default(false) // drafts still use rules; no new learning
+  lastDistilledAt    DateTime?
+  styleOverrides     Json?     // Partial<StyleCard> the creator edited by hand
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -369,17 +494,153 @@ model VoiceProfile {
   igAccount IgAccount @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
 }
 
+/**
+ * A learned or authored writing-style rule for one account. Deleted with the
+ * account/org; voice-consent revocation must also delete these (voice.ts).
+ */
+model VoiceRule {
+  id              String          @id @default(cuid())
+  orgId           String
+  igAccountId     String
+  key             String          // dedupe key, e.g. "greeting", "avoid:thanks for reaching out"
+  text            String          // creator-facing imperative
+  scope           String          @default("all") // "all" | "nudge" | ClassificationLabel
+  status          VoiceRuleStatus @default(candidate)
+  source          VoiceRuleSource
+  evidence        Float           @default(0) // decayed supporting evidence
+  against         Float           @default(0) // decayed contradicting evidence
+  distinctDrafts  Int             @default(0)
+  distinctThreads Int             @default(0)
+  creatorEvidence Float           @default(0) // evidence from creator-role seats only
+  examples        Json            @default("[]") // ≤3 [{before, after}] snippets for the UI
+  lastEvidenceAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  igAccount IgAccount    @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([igAccountId, key, scope])
+  @@index([orgId, igAccountId, status])
+}
+
+/** Quick feedback chips / note on a draft (no regeneration implied). */
+model DraftFeedback {
+  id        String   @id @default(cuid())
+  orgId     String
+  draftId   String
+  seatId    String?
+  chips     String[] @default([])
+  note      String?
+
+  createdAt DateTime @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  draft Draft        @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  seat  Seat?        @relation(fields: [seatId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, draftId])
+}
+
+// ── Offers & rate card (private draft context, never a public page) ──────
+
+model Offer {
+  id            String   @id @default(cuid())
+  orgId         String
+  // Null = applies to every account in the workspace.
+  igAccountId   String?
+  name          String
+  dealType      DealType
+  // Org-currency minor units; CHECKs keep them non-negative and ordered.
+  priceMinMinor BigInt?
+  priceMaxMinor BigInt?
+  currencyCode  String
+  link          String?
+  details       String?
+  availability  String?
+  active        Boolean  @default(true)
+  sortOrder     Int      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  igAccount IgAccount?   @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, active])
+}
+
+// ── Speaking voice (cloned TTS) & audio storage ──────────────────────────
+
+/** One consented cloned speaking voice per account. Revoke deletes the provider voice + assets. */
+model SpeakingVoice {
+  id                String              @id @default(cuid())
+  orgId             String
+  igAccountId       String              @unique
+  provider          String // "elevenlabs" | "selfhosted" | "mock"
+  externalVoiceId   String?
+  status            SpeakingVoiceStatus @default(pending)
+  consentStatement  String
+  consentedAt       DateTime
+  consentSeatId     String?
+  disclosureEnabled Boolean             @default(true)
+  sampleSeconds     Float               @default(0)
+  sampleAssetIds    String[]            @default([])
+  lastError         String?
+  revokedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  igAccount   IgAccount    @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+  consentSeat Seat?        @relation("SpeakingVoiceConsent", fields: [consentSeatId], references: [id], onDelete: SetNull)
+}
+
+/**
+ * Audio bytes in Postgres (pilot scale; move to object storage past a few GB).
+ * Never included in JSON exports. Rows past expiresAt are purged by the
+ * retention job (purgeExpiredAudioAssets).
+ */
+model AudioAsset {
+  id         String         @id @default(cuid())
+  orgId      String
+  kind       AudioAssetKind
+  mimeType   String
+  bytes      Bytes
+  sizeBytes  Int // ≤ 25 MB (SQL CHECK)
+  durationMs Int?
+  text       String? // TTS source text or transcript snapshot
+  sha256     String
+
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  message Message?
+
+  @@index([orgId, kind, createdAt])
+  @@index([expiresAt])
+}
+
 model IgnoreListEntry {
   id     String @id @default(cuid())
   orgId  String
+  // Null preserves an org-wide legacy rule. Roster rules can be creator scoped.
+  igAccountId String?
   handle String
   reason String?
 
   createdAt DateTime @default(now())
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  igAccount IgAccount? @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
 
-  @@unique([orgId, handle])
+  // PostgreSQL treats NULLs as distinct in a normal compound unique index;
+  // migration SQL supplies two partial unique indexes so legacy org-wide
+  // rules cannot be duplicated while account rules stay independently scoped.
+  @@index([orgId, igAccountId, handle])
 }
 
 model AuditLog {
@@ -414,11 +675,24 @@ model Subscription {
   firstInvoiceRequestedAt DateTime?
   currentPeriodEnd   DateTime?
   cancelledAt        DateTime?
+  lastEventAt        DateTime?
+  lastEventId        String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+model BillingEventReceipt {
+  rail BillingRail
+  eventId String
+  orgId String
+  occurredAt DateTime?
+  createdAt DateTime @default(now())
+  org Organization @relation(fields:[orgId], references:[id], onDelete:Cascade)
+  @@id([rail,eventId])
+  @@index([orgId])
 }
 
 // ── Ingestion self-healing & notifications ───────────────────────────────
@@ -466,5 +740,74 @@ model WebhookEvent {
 
   createdAt DateTime @default(now())
 
+  orgScopes   WebhookEventOrg[]
+  outboxEvents OutboxEvent[]
+
   @@index([provider, createdAt])
+}
+
+/** A webhook can carry entries for several connected accounts/orgs. */
+model WebhookEventOrg {
+  webhookEventId String
+  orgId          String
+
+  webhookEvent WebhookEvent @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@id([webhookEventId, orgId])
+  @@index([orgId])
+}
+
+/**
+ * Transactional ingress outbox. A worker leases and replays rows after Redis,
+ * process, or deploy failure; webhook acknowledgement is never the only DM
+ * record.
+ */
+model OutboxEvent {
+  id             String   @id @default(cuid())
+  orgId          String
+  webhookEventId String?
+  kind           String
+  dedupeKey      String   @unique
+  payload        Json
+  attempts       Int      @default(0)
+  leasedAt       DateTime?
+  leaseExpiresAt DateTime?
+  processedAt    DateTime?
+  lastError      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  webhookEvent WebhookEvent? @relation(fields: [webhookEventId], references: [id], onDelete: SetNull)
+
+  @@index([kind, processedAt, leaseExpiresAt])
+  @@index([orgId, createdAt])
+}
+
+/**
+ * A durable human approval. This makes an unknown remote-send outcome a
+ * reconcile operation, never permission to send the same draft twice.
+ */
+model SendIntent {
+  id                String           @id @default(cuid())
+  orgId             String
+  draftId           String           @unique
+  seatId            String
+  idempotencyKey    String
+  finalText         String
+  status            SendIntentStatus @default(pending)
+  platformMessageId String?
+  platformSentAt    DateTime?
+  lastError         String?
+  // Voice-note send: the human approved sending finalText as cloned audio.
+  audioAssetId      String?
+  asVoice           Boolean          @default(false)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  draft Draft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, idempotencyKey])
+  @@index([orgId, status])
 }

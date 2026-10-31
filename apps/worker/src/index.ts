@@ -1,12 +1,15 @@
+// Must stay the first import: refuses API-only secrets before any consumer loads.
+import "./refuse-api-secrets";
 import { QUEUES } from "@dealdock/core";
 import { startIngestionWorker } from "./consumers/ingestion";
 import { startClassificationWorker } from "./consumers/classification";
 import { startDraftingWorker } from "./consumers/drafting";
 import { startNudgeScheduler } from "./consumers/nudges";
 import { startBillingScheduler } from "./consumers/billing";
-import { startNotificationWorker } from "./consumers/notifications";
+import { startNotificationWorker, startWeeklyDigestScheduler } from "./consumers/notifications";
 import { startRetentionScheduler } from "./consumers/retention";
-import { startBackfillScheduler } from "./consumers/backfill";
+import { startOutboxDispatcher } from "./consumers/outbox";
+import { startVoiceLearningWorker } from "./consumers/voice-learning";
 
 /**
  * apps/worker — BullMQ consumers: ingestion (live), classification/drafting/
@@ -30,10 +33,12 @@ async function main() {
     startClassificationWorker(),
     startDraftingWorker(),
     startNudgeScheduler(),
-    startBackfillScheduler(),
     startBillingScheduler(),
     startNotificationWorker(),
+    startWeeklyDigestScheduler(),
     startRetentionScheduler(),
+    startOutboxDispatcher(),
+    startVoiceLearningWorker(),
   ];
   console.log(
     `dealdock-worker up — consuming: ${QUEUES.ingestion}, ${QUEUES.classification}, ${QUEUES.drafting}. Registered queues: ${Object.values(QUEUES).join(", ")}`

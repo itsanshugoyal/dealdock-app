@@ -1,57 +1,632 @@
 @import "tailwindcss";
 
-/* DealDock product design tokens — DESIGN.md §2. */
-@theme {
-  --color-bg-primary: #050505;
-  --color-bg-secondary: #0a0a0a;
-  --color-bg-elevated: #111111;
-  --color-bg-input: #161616;
+/*
+ * DealDock design tokens (DESIGN.md v3 — "Native money messaging").
+ * One token set for light and dark: components use the Tailwind classes that
+ * @theme generates below (bg-canvas, text-ink-2, bg-brand …), never raw hex
+ * and never `dark:` utilities. The look follows the platform: iOS-grade
+ * neutrals, one emerald brand colour that means money, system colours for
+ * state, Geist for every word and number.
+ */
 
-  --color-gold-400: #ffc107;
-  --color-gold-500: #e5a800;
-
-  --color-badge-brand: #22c55e;
-  --color-badge-coaching: #3b82f6;
-  --color-badge-course: #a855f7;
-  --color-badge-other: #f97316;
-  --color-badge-neutral: #525252;
-
-  --color-state-waiting: #f59e0b;
-  --color-confidence-low: #eab308;
-  --color-success: #22c55e;
-  --color-danger: #ef4444;
-
-  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+:root {
+  color-scheme: light;
+  /* Surfaces and lines */
+  --dd-canvas: #F3F3F6;
+  --dd-surface: #FFFFFF;
+  --dd-surface-raised: #FFFFFF;
+  --dd-inset: #ECECF0;
+  --dd-fill: #E4E4EA;
+  --dd-hairline: rgba(18, 18, 28, 0.08);
+  --dd-separator: rgba(18, 18, 28, 0.10);
+  --dd-control: rgba(18, 18, 28, 0.18);
+  --dd-scrim: rgba(10, 10, 16, 0.40);
+  --dd-chart-muted: #D6D6DE;
+  --dd-glass: rgba(255, 255, 255, 0.92);
+  /* Text and primary action */
+  --dd-text-1: #0B0B10;
+  --dd-text-2: #4A4A55;
+  --dd-text-3: #64646D;
+  --dd-ink: #0B0B10;
+  --dd-on-ink: #FFFFFF;
+  /* Brand = money. Emerald on every confirmed amount and money action. Light values are
+     deep enough for AA small text on white, canvas and tints (axe-checked). */
+  --dd-brand: #077A51;
+  --dd-brand-strong: #05673F;
+  --dd-brand-tint: #E3F5EC;
+  --dd-on-brand: #FFFFFF;
+  --dd-recovered: #06744D;
+  --dd-recovered-tint: #E3F5EC;
+  --dd-estimate: #4A4A55;
+  /* State */
+  --dd-waiting: #955900;
+  --dd-waiting-tint: #FFF3DF;
+  --dd-review: #5B4FD6;
+  --dd-review-tint: #EEECFC;
+  --dd-danger: #C8232F;
+  --dd-danger-tint: #FDEBEC;
+  --dd-on-danger: #FFFFFF;
+  --dd-success: #06744D;
+  --dd-success-tint: #E3F5EC;
+  --dd-info: #1A5FD0;
+  --dd-info-tint: #E7F0FE;
+  --dd-focus: #1A5FD0;
+  /* Deal types (dot + text colour, tint for pills) */
+  --dd-label-brand: #2F5BEA;
+  --dd-label-brand-tint: #E9EEFE;
+  --dd-label-coaching: #0B8A7E;
+  --dd-label-coaching-tint: #E2F5F2;
+  --dd-label-course: #C25E00;
+  --dd-label-course-tint: #FFF0E0;
+  --dd-label-commerce: #C2316D;
+  --dd-label-commerce-tint: #FDE9F1;
+  --dd-label-fan: #6B6B76;
+  --dd-label-fan-tint: #ECECF0;
+  --dd-label-spam: #6B6B76;
+  --dd-label-spam-tint: #ECECF0;
+  --dd-label-personal: #6B6B76;
+  --dd-label-personal-tint: #ECECF0;
+  --dd-label-uncertain: #5B4FD6;
+  --dd-label-uncertain-tint: #EEECFC;
+  /* Dark hero cards (HeroCard: Today, Revenue, Your voice, sign-in): one near-black look in
+     both themes, so the dark blocks below never redefine these. Captions are on-hero with an opacity. */
+  --dd-hero: #0B0B10;
+  --dd-on-hero: #FFFFFF;
+  --dd-hero-money: #3BDD98;
+  --dd-hero-accent: #2FD58E;
+  --dd-hero-accent-strong: #4BE3A1;
+  --dd-on-hero-accent: #04130D;
+  --dd-hero-alert: #FF9AA0;
+  --dd-hero-alert-tint: rgba(255, 107, 114, 0.15);
+  --dd-hero-cool: #6EA8FF;
+  /* Elevation */
+  --dd-shadow-1: 0 1px 2px rgba(16, 16, 28, 0.05), 0 0 0 1px rgba(16, 16, 28, 0.04);
+  --dd-shadow-2: 0 2px 6px -2px rgba(16, 16, 28, 0.08), 0 12px 32px -8px rgba(16, 16, 28, 0.16);
+  --dd-shadow-3: 0 4px 12px -4px rgba(16, 16, 28, 0.10), 0 28px 64px -16px rgba(16, 16, 28, 0.32);
+  /* Motion */
+  --dd-dur-press: 140ms;
+  --dd-dur-fade: 140ms;
+  --dd-dur-sheet: 340ms;
+  --dd-dur-stamp: 520ms;
+  /* Responsive type roles (phone values; widened below) */
+  --dd-fs-display-xl: 34px; --dd-lh-display-xl: 40px;
+  --dd-fs-display: 28px; --dd-lh-display: 34px;
+  --dd-fs-title: 22px; --dd-lh-title: 28px;
+  --dd-fs-heading: 17px; --dd-lh-heading: 22px;
+  --dd-fs-body: 16px; --dd-lh-body: 22px;
+  --dd-fs-button: 16px; --dd-lh-button: 22px;
+  --dd-fs-money-hero: 44px; --dd-lh-money-hero: 48px;
+  --dd-fs-money-row: 15px; --dd-lh-money-row: 20px;
+  /* Shell metrics */
+  --dd-tabbar-h: 58px;
+  --dd-sidebar-w: 248px;
 }
 
-html {
-  background: var(--color-bg-primary);
-  color: #fafafa;
+@media (min-width: 768px) {
+  :root {
+    --dd-fs-display-xl: 30px; --dd-lh-display-xl: 36px;
+    --dd-fs-display: 26px; --dd-lh-display: 32px;
+    --dd-fs-money-hero: 52px; --dd-lh-money-hero: 56px;
+  }
+}
+@media (min-width: 1024px) {
+  :root {
+    --dd-fs-title: 20px; --dd-lh-title: 26px;
+    --dd-fs-heading: 15px; --dd-lh-heading: 20px;
+    --dd-fs-body: 14px; --dd-lh-body: 20px;
+    --dd-fs-button: 14px; --dd-lh-button: 20px;
+    --dd-fs-money-row: 14px; --dd-lh-money-row: 20px;
+  }
 }
 
-body {
-  margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
+/* Dark: follows the system unless the boot script stamped an explicit choice. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --dd-canvas: #09090B;
+    --dd-surface: #141417;
+    --dd-surface-raised: #1C1C21;
+    --dd-inset: #1F1F25;
+    --dd-fill: #2A2A31;
+    --dd-hairline: rgba(255, 255, 255, 0.07);
+    --dd-separator: rgba(255, 255, 255, 0.09);
+    --dd-control: rgba(255, 255, 255, 0.18);
+    --dd-scrim: rgba(0, 0, 0, 0.64);
+    --dd-chart-muted: #33333B;
+    --dd-glass: rgba(20, 20, 23, 0.92);
+    --dd-text-1: #F4F4F6;
+    --dd-text-2: #ABABB6;
+    --dd-text-3: #8C8C98;
+    --dd-ink: #F4F4F6;
+    --dd-on-ink: #0B0B10;
+    --dd-brand: #2FD58E;
+    --dd-brand-strong: #4BE3A1;
+    --dd-brand-tint: #0E2A1F;
+    --dd-on-brand: #04130D;
+    --dd-recovered: #3BDD98;
+    --dd-recovered-tint: #0E2A1F;
+    --dd-estimate: #ABABB6;
+    --dd-waiting: #FFB547;
+    --dd-waiting-tint: #2E2112;
+    --dd-review: #A79BFF;
+    --dd-review-tint: #221F3D;
+    --dd-danger: #FF6B72;
+    --dd-danger-tint: #35171A;
+    --dd-on-danger: #12060A;
+    --dd-success: #3BDD98;
+    --dd-success-tint: #0E2A1F;
+    --dd-info: #6EA8FF;
+    --dd-info-tint: #13223A;
+    --dd-focus: #6EA8FF;
+    --dd-label-brand: #7C9DFF;
+    --dd-label-brand-tint: #182042;
+    --dd-label-coaching: #45D3C2;
+    --dd-label-coaching-tint: #0F2A27;
+    --dd-label-course: #FFA45C;
+    --dd-label-course-tint: #2E1D10;
+    --dd-label-commerce: #FF7AAE;
+    --dd-label-commerce-tint: #33172A;
+    --dd-label-fan: #8C8C98;
+    --dd-label-fan-tint: #1F1F25;
+    --dd-label-spam: #8C8C98;
+    --dd-label-spam-tint: #1F1F25;
+    --dd-label-personal: #8C8C98;
+    --dd-label-personal-tint: #1F1F25;
+    --dd-label-uncertain: #A79BFF;
+    --dd-label-uncertain-tint: #221F3D;
+    --dd-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    --dd-shadow-2: 0 2px 8px -2px rgba(0, 0, 0, 0.6), 0 16px 40px -8px rgba(0, 0, 0, 0.7);
+    --dd-shadow-3: 0 4px 16px -4px rgba(0, 0, 0, 0.7), 0 32px 80px -16px rgba(0, 0, 0, 0.8);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --dd-canvas: #09090B;
+  --dd-surface: #141417;
+  --dd-surface-raised: #1C1C21;
+  --dd-inset: #1F1F25;
+  --dd-fill: #2A2A31;
+  --dd-hairline: rgba(255, 255, 255, 0.07);
+  --dd-separator: rgba(255, 255, 255, 0.09);
+  --dd-control: rgba(255, 255, 255, 0.18);
+  --dd-scrim: rgba(0, 0, 0, 0.64);
+  --dd-chart-muted: #33333B;
+  --dd-glass: rgba(20, 20, 23, 0.92);
+  --dd-text-1: #F4F4F6;
+  --dd-text-2: #ABABB6;
+  --dd-text-3: #8C8C98;
+  --dd-ink: #F4F4F6;
+  --dd-on-ink: #0B0B10;
+  --dd-brand: #2FD58E;
+  --dd-brand-strong: #4BE3A1;
+  --dd-brand-tint: #0E2A1F;
+  --dd-on-brand: #04130D;
+  --dd-recovered: #3BDD98;
+  --dd-recovered-tint: #0E2A1F;
+  --dd-estimate: #ABABB6;
+  --dd-waiting: #FFB547;
+  --dd-waiting-tint: #2E2112;
+  --dd-review: #A79BFF;
+  --dd-review-tint: #221F3D;
+  --dd-danger: #FF6B72;
+  --dd-danger-tint: #35171A;
+  --dd-on-danger: #12060A;
+  --dd-success: #3BDD98;
+  --dd-success-tint: #0E2A1F;
+  --dd-info: #6EA8FF;
+  --dd-info-tint: #13223A;
+  --dd-focus: #6EA8FF;
+  --dd-label-brand: #7C9DFF;
+  --dd-label-brand-tint: #182042;
+  --dd-label-coaching: #45D3C2;
+  --dd-label-coaching-tint: #0F2A27;
+  --dd-label-course: #FFA45C;
+  --dd-label-course-tint: #2E1D10;
+  --dd-label-commerce: #FF7AAE;
+  --dd-label-commerce-tint: #33172A;
+  --dd-label-fan: #8C8C98;
+  --dd-label-fan-tint: #1F1F25;
+  --dd-label-spam: #8C8C98;
+  --dd-label-spam-tint: #1F1F25;
+  --dd-label-personal: #8C8C98;
+  --dd-label-personal-tint: #1F1F25;
+  --dd-label-uncertain: #A79BFF;
+  --dd-label-uncertain-tint: #221F3D;
+  --dd-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --dd-shadow-2: 0 2px 8px -2px rgba(0, 0, 0, 0.6), 0 16px 40px -8px rgba(0, 0, 0, 0.7);
+  --dd-shadow-3: 0 4px 16px -4px rgba(0, 0, 0, 0.7), 0 32px 80px -16px rgba(0, 0, 0, 0.8);
 }
 
-/* Money is always mono + tabular (DESIGN.md §2.2). */
-.money {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
+@theme inline {
+  --color-canvas: var(--dd-canvas);
+  --color-surface: var(--dd-surface);
+  --color-surface-raised: var(--dd-surface-raised);
+  --color-inset: var(--dd-inset);
+  --color-fill: var(--dd-fill);
+  --color-hairline: var(--dd-hairline);
+  --color-separator: var(--dd-separator);
+  --color-control: var(--dd-control);
+  --color-scrim: var(--dd-scrim);
+  --color-chart-muted: var(--dd-chart-muted);
+  --color-glass: var(--dd-glass);
+  --color-ink: var(--dd-text-1);
+  --color-ink-2: var(--dd-text-2);
+  --color-ink-3: var(--dd-text-3);
+  --color-primary: var(--dd-ink);
+  --color-on-primary: var(--dd-on-ink);
+  --color-brand: var(--dd-brand);
+  --color-brand-strong: var(--dd-brand-strong);
+  --color-brand-tint: var(--dd-brand-tint);
+  --color-on-brand: var(--dd-on-brand);
+  --color-recovered: var(--dd-recovered);
+  --color-recovered-tint: var(--dd-recovered-tint);
+  --color-estimate: var(--dd-estimate);
+  --color-waiting: var(--dd-waiting);
+  --color-waiting-tint: var(--dd-waiting-tint);
+  --color-review: var(--dd-review);
+  --color-review-tint: var(--dd-review-tint);
+  --color-danger: var(--dd-danger);
+  --color-danger-tint: var(--dd-danger-tint);
+  --color-on-danger: var(--dd-on-danger);
+  --color-success: var(--dd-success);
+  --color-success-tint: var(--dd-success-tint);
+  --color-info: var(--dd-info);
+  --color-info-tint: var(--dd-info-tint);
+  --color-focus: var(--dd-focus);
+  --color-hero: var(--dd-hero);
+  --color-on-hero: var(--dd-on-hero);
+  --color-hero-money: var(--dd-hero-money);
+  --color-hero-accent: var(--dd-hero-accent);
+  --color-hero-accent-strong: var(--dd-hero-accent-strong);
+  --color-on-hero-accent: var(--dd-on-hero-accent);
+  --color-hero-alert: var(--dd-hero-alert);
+  --color-hero-alert-tint: var(--dd-hero-alert-tint);
+  --color-label-brand: var(--dd-label-brand);
+  --color-label-brand-tint: var(--dd-label-brand-tint);
+  --color-label-coaching: var(--dd-label-coaching);
+  --color-label-coaching-tint: var(--dd-label-coaching-tint);
+  --color-label-course: var(--dd-label-course);
+  --color-label-course-tint: var(--dd-label-course-tint);
+  --color-label-commerce: var(--dd-label-commerce);
+  --color-label-commerce-tint: var(--dd-label-commerce-tint);
+  --color-label-fan: var(--dd-label-fan);
+  --color-label-fan-tint: var(--dd-label-fan-tint);
+  --color-label-spam: var(--dd-label-spam);
+  --color-label-spam-tint: var(--dd-label-spam-tint);
+  --color-label-personal: var(--dd-label-personal);
+  --color-label-personal-tint: var(--dd-label-personal-tint);
+  --color-label-uncertain: var(--dd-label-uncertain);
+  --color-label-uncertain-tint: var(--dd-label-uncertain-tint);
+
+  --font-sans: var(--font-geist-sans), var(--font-noto-devanagari), -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), var(--font-noto-devanagari), ui-monospace, monospace;
+  --font-display: var(--font-sans);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-2xl: 28px;
+
+  --shadow-card: var(--dd-shadow-1);
+  --shadow-raised: var(--dd-shadow-2);
+  --shadow-overlay: var(--dd-shadow-3);
+
+  --ease-dd-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-dd-sheet: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-dd-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-dd-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* Type roles — one class works at every width. */
+  --text-display-xl: var(--dd-fs-display-xl);
+  --text-display-xl--line-height: var(--dd-lh-display-xl);
+  --text-display-xl--font-weight: 700;
+  --text-display-xl--letter-spacing: -0.026em;
+  --text-display: var(--dd-fs-display);
+  --text-display--line-height: var(--dd-lh-display);
+  --text-display--font-weight: 700;
+  --text-display--letter-spacing: -0.022em;
+  --text-title: var(--dd-fs-title);
+  --text-title--line-height: var(--dd-lh-title);
+  --text-title--font-weight: 650;
+  --text-title--letter-spacing: -0.018em;
+  --text-heading: var(--dd-fs-heading);
+  --text-heading--line-height: var(--dd-lh-heading);
+  --text-heading--font-weight: 600;
+  --text-heading--letter-spacing: -0.012em;
+  --text-subheading: 15px;
+  --text-subheading--line-height: 20px;
+  --text-subheading--font-weight: 600;
+  --text-subheading--letter-spacing: -0.006em;
+  --text-body: var(--dd-fs-body);
+  --text-body--line-height: var(--dd-lh-body);
+  --text-message: 16px;
+  --text-message--line-height: 22px;
+  --text-label: 13px;
+  --text-label--line-height: 18px;
+  --text-label--font-weight: 500;
+  --text-button: var(--dd-fs-button);
+  --text-button--line-height: var(--dd-lh-button);
+  --text-button--font-weight: 600;
+  --text-caption: 12px;
+  --text-caption--line-height: 16px;
+  --text-micro: 11px;
+  --text-micro--line-height: 14px;
+  --text-micro--font-weight: 600;
+  --text-micro--letter-spacing: 0.02em;
+  --text-kbd: 11px;
+  --text-kbd--line-height: 16px;
+  --text-kbd--font-weight: 500;
+  --text-money-hero: var(--dd-fs-money-hero);
+  --text-money-hero--line-height: var(--dd-lh-money-hero);
+  --text-money-hero--font-weight: 650;
+  --text-money-hero--letter-spacing: -0.035em;
+  --text-money-lg: 28px;
+  --text-money-lg--line-height: 32px;
+  --text-money-lg--font-weight: 650;
+  --text-money-lg--letter-spacing: -0.025em;
+  --text-money-row: var(--dd-fs-money-row);
+  --text-money-row--line-height: var(--dd-lh-money-row);
+  --text-money-row--font-weight: 600;
 }
 
-/* Quiet scrollbars on the OLED canvas. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: #262626 transparent;
+@layer base {
+  html {
+    background: var(--dd-canvas);
+    color: var(--dd-text-1);
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--dd-canvas);
+    font-family: var(--font-sans);
+    font-size: var(--dd-fs-body);
+    line-height: var(--dd-lh-body);
+    font-feature-settings: "ss01" on, "cv11" on;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  @media (display-mode: standalone) {
+    html { overscroll-behavior-y: contain; }
+  }
+  :focus-visible {
+    outline: 2px solid var(--dd-focus);
+    outline-offset: 2px;
+  }
+  /* Devanagari and Hindi content get taller lines so matras never clip. */
+  :lang(hi) { line-height: 1.6; }
+  .text-message:lang(hi) { line-height: 25px; }
+  button, [role="button"], a { touch-action: manipulation; }
+  button:disabled, [aria-disabled="true"] { cursor: not-allowed; }
+  :root:has(dialog[open]:modal) { overflow: hidden; }
+  * { scrollbar-width: thin; scrollbar-color: var(--dd-fill) transparent; }
+  ::selection { background: color-mix(in oklab, var(--dd-brand) 26%, transparent); }
 }
+
+@layer components {
+  /* Money: Geist with tabular figures, never mono. Estimates stay neutral; confirmed money is emerald. */
+  .money {
+    font-family: var(--font-sans);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" on, "ss01" on;
+    white-space: nowrap;
+  }
+  .text-money-row, .text-money-lg, .text-money-hero { font-variant-numeric: tabular-nums; }
+  .text-kbd { font-family: var(--font-mono); }
+  .dd-symbol-hero { font-size: 0.62em; font-weight: 600; margin-right: 0.04em; vertical-align: 0.12em; color: var(--dd-text-2); }
+
+  /* HeroCard's corner glows; the component sizes and places them. */
+  .dd-hero-glow { background: radial-gradient(closest-side, color-mix(in oklab, var(--dd-hero-accent) 32%, transparent), transparent); }
+  .dd-hero-glow-cool { background: radial-gradient(closest-side, color-mix(in oklab, var(--dd-hero-cool) 15%, transparent), transparent); }
+
+  .dd-skeleton {
+    background: linear-gradient(90deg, var(--dd-inset) 0%, var(--dd-fill) 50%, var(--dd-inset) 100%);
+    background-size: 200% 100%;
+    border-radius: var(--radius-sm);
+    animation: dd-shimmer 1.4s ease-in-out infinite;
+  }
+
+  /* Translucent bars (tab bar, top bars, sticky composer): the platform's material. */
+  .dd-glass {
+    background: var(--dd-glass);
+    -webkit-backdrop-filter: blur(20px) saturate(1.8);
+    backdrop-filter: blur(20px) saturate(1.8);
+  }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .dd-glass { background: var(--dd-surface); }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .dd-glass { background: var(--dd-surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  }
+
+  /* Press feedback: a quick, physical squeeze. */
+  .dd-press { transition: transform var(--dd-dur-press) var(--ease-dd-out), background-color var(--dd-dur-fade) var(--ease-dd-standard), color var(--dd-dur-fade) var(--ease-dd-standard), box-shadow var(--dd-dur-fade) var(--ease-dd-standard), opacity var(--dd-dur-fade); }
+  .dd-press:active:not(:disabled):not([aria-disabled="true"]) { transform: scale(0.97); }
+  .dd-row-press { transition: background-color var(--dd-dur-fade) var(--ease-dd-standard); }
+  .dd-row-press:active { background-color: var(--dd-inset); }
+
+  @media (pointer: coarse) {
+    .dd-hit { position: relative; }
+    .dd-hit::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: max(100%, 44px);
+      height: max(100%, 44px);
+      transform: translate(-50%, -50%);
+    }
+    .dd-kbd { display: none; }
+  }
+
+  /* Text inputs, selects, textareas: filled, platform-style. */
+  .dd-input {
+    width: 100%;
+    min-height: 44px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: var(--dd-inset);
+    color: var(--dd-text-1);
+    padding: 10px 14px;
+    font: inherit;
+    font-size: var(--dd-fs-body);
+    line-height: var(--dd-lh-body);
+    transition: border-color var(--dd-dur-fade), background-color var(--dd-dur-fade), box-shadow var(--dd-dur-fade);
+  }
+  .dd-input::placeholder { color: var(--dd-text-3); }
+  .dd-input:hover { background: var(--dd-fill); }
+  .dd-input:focus-visible { outline: none; background: var(--dd-surface); border-color: var(--dd-focus); box-shadow: 0 0 0 4px color-mix(in oklab, var(--dd-focus) 18%, transparent); }
+  .dd-input[aria-invalid="true"] { border-color: var(--dd-danger); }
+  .dd-input:disabled { opacity: 0.45; }
+  @media (pointer: coarse) { .dd-input { font-size: 16px; } }
+  select.dd-input { appearance: none; padding-right: 36px; }
+
+  /* Sheets and dialogs: native <dialog> + showModal(). */
+  .dd-sheet {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: var(--dd-surface-raised);
+    color: var(--dd-text-1);
+    box-shadow: var(--dd-shadow-3);
+    overscroll-behavior: contain;
+    overflow: hidden;
+    inset: auto 0 0 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: 92dvh;
+    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+    opacity: 1;
+    transform: translateY(0);
+    transition:
+      transform var(--dd-dur-sheet) var(--ease-dd-sheet),
+      opacity var(--dd-dur-fade) var(--ease-dd-standard),
+      overlay var(--dd-dur-sheet) allow-discrete,
+      display var(--dd-dur-sheet) allow-discrete;
+  }
+  .dd-sheet[open] { display: flex; flex-direction: column; }
+  .dd-sheet::backdrop {
+    background: var(--dd-scrim);
+    opacity: 1;
+    transition: opacity var(--dd-dur-sheet) var(--ease-dd-standard), overlay var(--dd-dur-sheet) allow-discrete, display var(--dd-dur-sheet) allow-discrete;
+  }
+  @starting-style {
+    .dd-sheet[open] { transform: translateY(100%); }
+    .dd-sheet[open]::backdrop { opacity: 0; }
+  }
+  @media (min-width: 768px) {
+    .dd-sheet { border: 1px solid var(--dd-hairline); }
+    .dd-sheet[data-placement="side"] {
+      inset: 0 0 0 auto;
+      width: 460px;
+      height: 100dvh;
+      max-height: 100dvh;
+      border-radius: var(--radius-xl) 0 0 var(--radius-xl);
+    }
+    @starting-style {
+      .dd-sheet[data-placement="side"][open] { transform: translateX(32px); opacity: 0; }
+    }
+    .dd-sheet[data-placement="center"],
+    .dd-sheet[data-placement="dialog"],
+    .dd-sheet[data-placement="palette"] {
+      inset: 0;
+      margin: auto;
+      width: calc(100% - 48px);
+      max-width: 500px;
+      height: fit-content;
+      max-height: 84vh;
+      border-radius: var(--radius-xl);
+    }
+    .dd-sheet[data-placement="dialog"] { max-width: 420px; }
+    .dd-sheet[data-placement="palette"] { max-width: 640px; margin-top: 14vh; }
+    @starting-style {
+      .dd-sheet[data-placement="center"][open],
+      .dd-sheet[data-placement="dialog"][open] { transform: scale(0.97); opacity: 0; }
+    }
+  }
+  @media (max-width: 767.98px) {
+    .dd-sheet[data-placement="palette"] { inset: 0; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+  }
+  .dd-sheet[data-placement="palette"][open] { transition: none; }
+
+  .dd-popover {
+    margin: 0;
+    inset: auto;
+    padding: 6px;
+    border: 1px solid var(--dd-hairline);
+    border-radius: var(--radius-lg);
+    background: var(--dd-surface-raised);
+    color: var(--dd-text-1);
+    box-shadow: var(--dd-shadow-2);
+  }
+
+  .dd-drain { transform-origin: left center; animation: dd-drain var(--dd-drain, 5s) linear forwards; }
+  .dd-stamp { animation: dd-stamp var(--dd-dur-stamp) var(--ease-dd-spring); }
+  .dd-spin { animation: dd-spin 0.9s linear infinite; }
+  .dd-rise { animation: dd-rise 420ms var(--ease-dd-out) both; }
+  .dd-cv { content-visibility: auto; contain-intrinsic-size: auto 76px; }
+
+  /* Scroll containers that hide their bar (chip rails). */
+  .dd-scroll-x { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .dd-scroll-x::-webkit-scrollbar { display: none; }
+
+  /* Conversation bubbles */
+  .dd-bubble-in { background: var(--dd-surface); box-shadow: var(--dd-shadow-1); border-radius: 20px 20px 20px 6px; }
+  .dd-bubble-out { background: var(--dd-ink); color: var(--dd-on-ink); border-radius: 20px 20px 6px 20px; }
+  .dd-bubble-draft {
+    background: var(--dd-surface);
+    border-radius: 20px 20px 6px 20px;
+    box-shadow: 0 0 0 1.5px var(--dd-brand), 0 10px 30px -14px color-mix(in oklab, var(--dd-brand) 55%, transparent);
+  }
+
+  /* Slide-to-send track. */
+  .dd-slide-track {
+    position: relative;
+    height: 60px;
+    border-radius: 999px;
+    background: var(--dd-ink);
+    color: var(--dd-on-ink);
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+  }
+  .dd-slide-fill { position: absolute; inset: 0 auto 0 0; background: var(--dd-brand); border-radius: 999px; }
+  .dd-slide-knob {
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    width: 50px;
+    height: 50px;
+    border-radius: 999px;
+    background: var(--dd-on-ink);
+    color: var(--dd-ink);
+    display: grid;
+    place-items: center;
+    box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.35);
+    cursor: grab;
+  }
+  .dd-slide-hint { background: linear-gradient(90deg, color-mix(in oklab, var(--dd-on-ink) 45%, transparent) 0%, var(--dd-on-ink) 50%, color-mix(in oklab, var(--dd-on-ink) 45%, transparent) 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: dd-shimmer 2.4s linear infinite; }
+}
+
+@keyframes dd-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes dd-drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes dd-stamp { 0% { transform: scale(0.6); opacity: 0; } 60% { transform: scale(1.06); opacity: 1; } 100% { transform: scale(1); } }
+@keyframes dd-spin { to { transform: rotate(360deg); } }
+@keyframes dd-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: var(--dd-dur-fade) !important;
+    transition-property: opacity, background-color, color, border-color !important;
+    scroll-behavior: auto !important;
   }
+  .dd-skeleton, .dd-slide-hint { animation: none !important; }
+  .dd-drain { animation-duration: var(--dd-drain, 5s) !important; }
 }

@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: ["@dealdock/core", "@dealdock/ai", "@dealdock/messaging"],
+  transpilePackages: ["@dealdock/core"],
 };
 
 export default nextConfig;

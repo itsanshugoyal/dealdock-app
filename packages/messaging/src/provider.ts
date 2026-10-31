@@ -1,4 +1,4 @@
-import type { MessageDirection } from "@dealdock/core";
+import type { MessageDirection, MessageSource } from "@dealdock/core";
 
 /**
  * MessagingProvider — the single seam between DealDock and any DM platform.
@@ -24,6 +24,8 @@ export interface RemoteThread {
   participantHandle: string;
   participantPlatformId: string;
   lastMessageAt: Date;
+  /** The platform's own conversation id, when the listing returns one; fetchMessages then skips looking it up. */
+  conversationId?: string;
 }
 
 export interface RemoteMessage {
@@ -34,6 +36,13 @@ export interface RemoteMessage {
   sentAt: Date;
   /** Raw provider payload, persisted as JSONB for audit/replay. */
   raw: unknown;
+  /**
+   * First attachment, if any. Voice notes are kind "audio" with a signed CDN
+   * url that expires — the worker downloads it on receipt (research 03 §4.2).
+   */
+  media?: { kind: string; url: string | null };
+  /** Where the conversation came from when the payload says so (story reply, reel share, ad/link referral). */
+  threadSource?: MessageSource;
 }
 
 export interface InboundEvent {
@@ -81,17 +90,42 @@ export interface SendTarget {
   recipientPlatformId: string;
 }
 
+export interface SendOptions {
+  /**
+   * Human-approved reply 24h–7d after the person's last message: Meta's
+   * HUMAN_AGENT message tag. Only set when the app holds that permission
+   * (META_HUMAN_AGENT_ENABLED) and the send falls in the extended window.
+   */
+  humanAgentTag?: boolean;
+}
+
+/** Read-only sender context from the platform's user profile API (F5); never a contact record. */
+export interface UserProfile {
+  name: string | null;
+  username: string | null;
+  profilePicUrl: string | null;
+  followerCount: number | null;
+  isVerified: boolean | null;
+  followsBusiness: boolean | null;
+}
+
 export interface MessagingProvider {
   readonly platform: Platform;
 
   verifyWebhook(req: WebhookRequest): boolean;
   parseWebhook(payload: unknown): InboundEvent[];
 
+  /** Conversations updated after `since` (all of them without it). */
   listConversations(account: ConnectedAccount, since?: Date): Promise<RemoteThread[]>;
+  /**
+   * A thread's messages sent after `since`. Pass the listing's
+   * `conversationId` when there is one: it saves a lookup by participant.
+   */
   fetchMessages(
     account: ConnectedAccount,
     platformThreadId: string,
-    since?: Date
+    since?: Date,
+    conversationId?: string
   ): Promise<RemoteMessage[]>;
 
   /**
@@ -104,6 +138,25 @@ export interface MessagingProvider {
   sendMessage(
     account: ConnectedAccount,
     target: SendTarget,
-    text: string
+    text: string,
+    opts?: SendOptions
   ): Promise<SendReceipt>;
+
+  /**
+   * Sends a voice note the platform fetches from `audioUrl` (public https,
+   * short-lived signed link). Same caller rule and errors as sendMessage.
+   */
+  sendAudio(
+    account: ConnectedAccount,
+    target: SendTarget,
+    audioUrl: string,
+    opts?: SendOptions
+  ): Promise<SendReceipt>;
+
+  /**
+   * The sender's public profile, or null when the platform withholds it.
+   * Token-bearing read: API process only, within the account's rate budget.
+   * @throws TokenExpiredError / RateBudgetExceededError like other reads.
+   */
+  getUserProfile(account: ConnectedAccount, platformUserId: string): Promise<UserProfile | null>;
 }

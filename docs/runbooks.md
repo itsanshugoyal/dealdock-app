@@ -1,5 +1,7 @@
 # DealDock — On-Call Runbooks
 
+> Current operational boundary (30 October 2026): the API owns Graph maintenance and all Instagram credentials. Never inject Meta secrets or TOKEN_ENCRYPTION_KEY into the worker. Use `/health` for process liveness and `/ready` for PostgreSQL/Redis readiness. Monitor the PostgreSQL outbox as well as BullMQ. An unknown send result is a locked human-approved intent: inspect Instagram and reconcile its receipt; never reset the draft and retry blindly. See [readiness and outstanding drills](private-pilot-readiness.md).
+
 **Audience:** founding team. **Scope:** pilot (single API + single worker instance).
 **Golden rule:** creators' IG accounts and their money data outrank uptime. When in doubt, stop ingestion rather than risk account safety or data integrity.
 
@@ -7,7 +9,8 @@
 
 | Signal | Where | Healthy |
 |---|---|---|
-| API | `GET /health` (Railway health check + uptime monitor) | 200, <500ms |
+| API liveness | `GET /health` (uptime monitor) | 200, <500ms |
+| API readiness | `GET /ready` (Railway health check) | 200 only with PostgreSQL and Redis reachable |
 | Worker | Railway process status + queue depths | consuming |
 | Queue depth | BullMQ (Redis) — `ingestion`, `classification`, `drafting` | < 500 each, draining |
 | Ingestion lag | `getIngestionLagsMs` sample / weekly metrics | p95 < 60s |
@@ -23,8 +26,8 @@ Alerting windows follow org timezones (pilot ≈ IST 8:00–23:00). Page on: API
 **Symptoms:** webhook volume drops to zero, Graph calls return 5xx/4xx bursts, `token_expired` storms.
 
 1. Check [Meta status](https://metastatus.com) and the app dashboard for policy notices.
-2. **Do nothing destructive.** Ingestion self-heals: the 15-min backfill sweeps `listConversations(since)` on recovery — no messages are lost on the IG side (PRD §7.6).
-3. If it's a *policy/permission revocation* (not outage): freeze sends — set the worker's Graph accounts to paused by marking status via Portal ops; creators can still triage and reply natively.
+2. **Do nothing destructive.** The API's 15-minute history sweep attempts recovery within Meta's available history and permissions. Pagination limits fail visibly; recovery is not a guarantee that Meta retained every message. Check the durable PostgreSQL outbox as well as Redis.
+3. For policy/permission revocation, disconnect the affected account through the authorized API/Settings flow. Workers hold no Graph accounts or credentials. Creators can reply natively in Instagram.
 4. Post a banner note to affected creators (manual in pilot): "Instagram is having issues; your inbox will catch up automatically."
 5. After recovery: verify backfill checkpoints advanced (`IngestionCheckpoint.lastBackfillAt`), spot-check one account's thread count vs IG app.
 
@@ -46,7 +49,7 @@ Alerting windows follow org timezones (pilot ≈ IST 8:00–23:00). Page on: API
 
 1. Confirm on the Anthropic status page; check error class (429 vs 5xx vs auth).
 2. **429/spend cap:** check daily spend; raise cap or lower classification concurrency (worker env) — never disable the confidence gate.
-3. **Extended outage:** messages keep ingesting (inbox rows appear without badges — degraded but honest). Do NOT flip to the heuristic in production — heuristic rows would need re-classification and its quality never met the bar (`heuristic-fallback-1` stamps exist so any accidental rows are findable and re-runnable).
+3. **Extended outage:** already-running consumers continue ingestion. Failed classifications appear in human review; unclassified work does not enter the revenue inbox. Missing model configuration stops worker startup. Do not enable heuristics in production: the version-stamped development fallback is rejected there and excluded from production quality metrics.
 4. On recovery, jobs retry automatically. Re-enqueue any dead-lettered classification jobs.
 5. If drafts were the casualty: creators saw "Drafting…" states; no action needed — regenerate is on-demand.
 
@@ -55,7 +58,7 @@ Alerting windows follow org timezones (pilot ≈ IST 8:00–23:00). Page on: API
 **Symptoms:** creator paid but shows `pending_first_invoice`/`past_due`; rail dashboard disagrees with our `Subscription.status`.
 
 1. Don't touch the DB by hand. The **reconciliation poller** fetches remote status daily and applies the same normalized events — force a run by triggering the billing scheduler job.
-2. Check `WebhookEvent` rows for the rail: signature failures (secret rotated?) show up as 401s in API logs.
+2. Inspect org-scoped `BillingEventReceipt` and subscription state through the repository tooling; invalid signatures fail before mutation. Compare receipt timestamps and external subscription IDs with the provider dashboard.
 3. If the rail secret rotated: update `RAZORPAY_WEBHOOK_SECRET` / `PADDLE_WEBHOOK_SECRET`, redeploy API, reconcile.
 4. Paddle-specific: a `txn_…` externalId that never became `sub_…` means checkout was abandoned — the creator needs the checkout link again (`Subscription.checkoutUrl`).
 5. **Grace stance:** payment confusion never cuts features for 7 days (`past_due` is a banner, not a wall). Fix state before it matters.
@@ -86,8 +89,12 @@ Retention is a daily tick. If a creator requests deletion mid-incident, nothing 
 - **Quarterly:** Meta platform-feature review (PLAN.md risk #11) + dependency audit (`npm audit`) + token-crypto key rotation.
 - Incidents get a 5-line postmortem in this file's changelog: what, impact, cause, fix, prevention.
 
-## Accepted risks (review quarterly)
+## Notification and voice limits
+
+Quiet hours suppress notifications outside 08:00–23:00 in the organization's time zone; they are not delayed for morning delivery. Weekly push summaries have no scheduler and cannot be enabled. Voice refresh is manual from Settings after explicit consent and at least three sent samples; weekly automatic refresh is deferred. Verify real device delivery after VAPID configuration.
+
+## Dependency record
 
 | Date | Finding | Assessment | Revisit when |
 |---|---|---|---|
-| 2026-07-06 | `npm audit`: postcss <8.5.10 XSS-in-stringify (GHSA-qx2v-qp2m-jg93), transitive via next + @clerk/nextjs, no fix published | Build-time CSS tooling only; we never stringify untrusted CSS at runtime. Accepted. | Next.js releases a patched version — bump on next dependency pass |
+| 2026-10-30 | Refreshed dependency lock, including Next.js and Prisma tooling | Local npm audit reports zero vulnerabilities. The former July PostCSS exception is closed. | Every dependency change; CI audits high/critical findings on every run |

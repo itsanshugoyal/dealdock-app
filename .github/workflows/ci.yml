@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_claude_quality:
+        description: Run the real Claude quality gate (requires repository secret and model variables)
+        type: boolean
+        default: false
 
 jobs:
   verify:
@@ -15,20 +21,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Boundary checks (ADR-7, send gate)
-        run: node scripts/check-boundaries.mjs
-      - name: Build
-        run: npm run build
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Unit tests
-        run: npm run test
-      - name: AI evals (heuristic mode — routing invariant + harness health)
+      - name: Audit high and critical dependencies
+        run: npm audit --audit-level=high
+      - name: Standalone design artifact checks
+        run: npm run design:check
+      - name: Boundary checks and rule regression tests
+        run: node scripts/check-boundaries.mjs && node --test scripts/boundary-rules.test.mjs
+      - run: npm run build
+      - name: Production authentication and worker credential boundaries
+        run: node --test scripts/runtime-boundaries.test.mjs scripts/production-auth.test.mjs
+      - run: npm run typecheck
+      - run: npm test
+      - name: Heuristic eval harness and routing health (quality is not gated)
         run: npm run eval -w @dealdock/ai
-        # With ANTHROPIC_API_KEY set as a repo secret, this same step gates
-        # real-model quality: top-level ≥85%, Hinglish parity ≤3pts (M2).
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NODE_ENV: test
+          DEALDOCK_AI_MODE: heuristic
 
   integration:
     runs-on: ubuntu-latest
@@ -38,7 +46,7 @@ jobs:
         env:
           POSTGRES_USER: dealdock
           POSTGRES_PASSWORD: dealdock
-          POSTGRES_DB: dealdock
+          POSTGRES_DB: dealdock_test
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U dealdock"
@@ -54,7 +62,9 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     env:
-      DATABASE_URL: postgresql://dealdock:dealdock@localhost:5432/dealdock
+      TEST_DATABASE_URL: postgresql://dealdock:dealdock@localhost:5432/dealdock_test
+      DATABASE_URL: postgresql://dealdock:dealdock@localhost:5432/dealdock_test
+      SHADOW_DATABASE_URL: postgresql://dealdock:dealdock@localhost:5432/dealdock_shadow
       REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
@@ -66,31 +76,37 @@ jobs:
       - run: npm run build
       - name: Apply migrations
         run: npm run db:migrate -w @dealdock/db
-      - name: Migration drift check (schema == migrations)
-        run: |
-          cd packages/db
-          npx prisma migrate diff \
-            --from-migrations prisma/migrations \
-            --to-schema-datamodel prisma/schema.prisma \
-            --shadow-database-url "$DATABASE_URL" \
-            --exit-code
-      - name: Seed demo org
-        run: npm run db:seed -w @dealdock/db
-      - name: "M0/M1 exit demo: corpus → queue → classify → Postgres"
-        run: |
-          node apps/worker/dist/index.js &
-          WORKER_PID=$!
-          sleep 2
-          node apps/worker/dist/demo-ingest.js
-          kill $WORKER_PID
-      - name: "M5 deletion drill: export → delete → prove gone"
-        run: node apps/worker/dist/deletion-drill.js
-      - name: "M5 load test: 2000 DMs vs 60s ingestion budget (p95)"
+      - name: Create separate disposable shadow database
+        run: psql -h localhost -U dealdock -d postgres -c 'CREATE DATABASE dealdock_shadow'
         env:
-          LOAD_N: "2000"
-        run: |
-          node apps/worker/dist/index.js &
-          WORKER_PID=$!
-          sleep 2
-          node apps/worker/dist/load-test.js
-          kill $WORKER_PID
+          PGPASSWORD: dealdock
+      - name: Migration drift check against isolated shadow database
+        working-directory: packages/db
+        run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$SHADOW_DATABASE_URL" --exit-code
+      - name: PostgreSQL, Redis and pilot integration gates
+        run: node scripts/run-integration-gate.mjs
+      - name: Install browser
+        run: npx playwright install chromium --with-deps
+      - name: Real infrastructure browser gate
+        run: node scripts/run-browser-gate.mjs
+
+  claude-quality:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_claude_quality
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLASSIFY_MODEL: ${{ vars.CLASSIFY_MODEL }}
+      DRAFT_MODEL: ${{ vars.DRAFT_MODEL }}
+      NODE_ENV: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Require real-model configuration
+        run: test -n "$ANTHROPIC_API_KEY" && test -n "$CLASSIFY_MODEL" && test -n "$DRAFT_MODEL"
+      - run: npm run build
+      - name: Real Claude quality gate
+        run: npm run eval -w @dealdock/ai
