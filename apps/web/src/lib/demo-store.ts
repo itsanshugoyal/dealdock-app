@@ -98,6 +98,8 @@ class DemoStore implements AppStoreApi {
   private requested = new Set<SliceKey>();
   private detailIds = new Set<string>();
   private ledgerMonth: string | null = null;
+  private ledgerAccount: string | null = null;
+  private ledgerAccountInvalid = false;
   private insightsMonths = 6;
   private auditLimit = 100;
   private voiceAccount = DEMO_ACCOUNT_ID;
@@ -173,7 +175,7 @@ class DemoStore implements AppStoreApi {
       loadedAt: now,
       details,
       closed: has("closed") ? ready(decorated.filter((thread) => thread.state === "closed").map(rowOf).sort((a, b) => b.lastMessageAt - a.lastMessageAt)) : IDLE,
-      ledgerView: ready(ledgerViewOf(state, this.ledgerMonth ?? currentMonth)),
+      ledgerView: this.ledgerAccountInvalid ? failed(IDLE, "Creator not found.", 404) : ready(ledgerViewOf(state, this.ledgerMonth ?? currentMonth, this.ledgerAccount)),
       insights: has("insights") ? ready(insightsOf(state, decorated, now, this.insightsMonths)) : IDLE,
       offers: has("offers") ? ready([...state.offers].sort((a, b) => a.sortOrder - b.sortOrder)) : IDLE,
       voice: has("voice") ? ready(this.studio(state, now)) : IDLE,
@@ -435,9 +437,11 @@ class DemoStore implements AppStoreApi {
 
   // ── Ledger, insights, audit ────────────────────────────────────────────
 
-  async loadLedger(month?: string) {
+  async loadLedger(month?: string, igAccountId?: string) {
     await this.init();
+    this.ledgerAccountInvalid = Boolean(igAccountId && !this.s.settings.accounts.some((account) => account.id === igAccountId));
     this.ledgerMonth = month ?? null;
+    this.ledgerAccount = igAccountId ?? null;
     this.emit();
     return this.getSnapshot().ledgerView.data;
   }
@@ -458,10 +462,15 @@ class DemoStore implements AppStoreApi {
   async download(path: string, fallbackName: string) {
     if (typeof document === "undefined") return;
     const state = this.s;
-    const body = path === "/ledger/export.csv"
-      ? ["date,handle,deal_type,amount_minor,currency,note", ...state.ledger.map((entry) => [new Date(entry.closedAt).toISOString().slice(0, 10), entry.handle, entry.dealType, entry.amountMinor, state.money.currency, csvCell(entry.note ?? "")].join(","))].join("\n")
+    const request = new URL(path, "http://demo.local");
+    const account = request.searchParams.get("igAccountId");
+    const month = request.searchParams.get("month");
+    if (request.pathname === "/ledger/export.csv" && account && !state.settings.accounts.some((item) => item.id === account)) throw demoError(404, "ig_account_not_in_org", "Creator not found.");
+    const selected = scopedLedger(state, account).filter((entry) => !month || monthKey(entry.closedAt) === month);
+    const body = request.pathname === "/ledger/export.csv"
+      ? ["date,handle,deal_type,amount_minor,currency,note", ...selected.map((entry) => [new Date(entry.closedAt).toISOString().slice(0, 10), `@${entry.handle}`, entry.dealType, String(entry.amountMinor), state.money.currency, entry.note ?? ""].map(csvCell).join(","))].join("\n")
       : JSON.stringify({ exportedAt: new Date().toISOString(), demo: true, ledger: state.ledger, threads: state.threads.map((thread) => ({ handle: thread.handle, messages: thread.messages.map((message) => ({ direction: message.direction, text: message.text, sentAt: message.sentAt })) })) }, null, 2);
-    const url = URL.createObjectURL(new Blob([body], { type: path.endsWith(".csv") ? "text/csv" : "application/json" }));
+    const url = URL.createObjectURL(new Blob([body], { type: request.pathname.endsWith(".csv") ? "text/csv" : "application/json" }));
     const link = document.createElement("a");
     link.href = url;
     link.download = fallbackName;
@@ -1022,16 +1031,23 @@ function dashboardOf(ledger: DemoLedgerEntry[]): DashboardView {
   return { mtdRecoveredMinor: total, biggestMinor: ledger.reduce((max, entry) => Math.max(max, entry.amountMinor), 0), avgMinor: ledger.length ? Math.round(total / ledger.length) : 0, mtdDealCount: ledger.length };
 }
 
-function ledgerViewOf(state: DemoState, month: string): LedgerView {
+function scopedLedger(state: DemoState, account: string | null): DemoLedgerEntry[] {
+  if (!account) return state.ledger;
+  const threadIds = new Set(state.threads.filter((thread) => thread.igAccountId === account).map((thread) => thread.id));
+  return state.ledger.filter((entry) => threadIds.has(entry.threadId));
+}
+
+function ledgerViewOf(state: DemoState, month: string, account: string | null): LedgerView {
+  const ledger = scopedLedger(state, account);
   const byMonth = new Map<string, { totalMinor: number; count: number }>();
-  for (const entry of state.ledger) {
+  for (const entry of ledger) {
     const key = monthKey(entry.closedAt);
     const bucket = byMonth.get(key) ?? { totalMinor: 0, count: 0 };
     bucket.totalMinor += entry.amountMinor;
     bucket.count += 1;
     byMonth.set(key, bucket);
   }
-  const entries = state.ledger.filter((entry) => monthKey(entry.closedAt) === month).sort((a, b) => b.closedAt - a.closedAt);
+  const entries = ledger.filter((entry) => monthKey(entry.closedAt) === month).sort((a, b) => b.closedAt - a.closedAt);
   const total = entries.reduce((sum, entry) => sum + entry.amountMinor, 0);
   const byType: Partial<Record<DealType, number>> = {};
   for (const entry of entries) byType[entry.dealType] = (byType[entry.dealType] ?? 0) + entry.amountMinor;
@@ -1099,14 +1115,14 @@ function insightsOf(state: DemoState, threads: DemoThread[], now: number, monthC
 }
 
 function rosterOf(state: DemoState, threads: DemoThread[], mtd: DemoLedgerEntry[]): RosterRow[] {
-  return state.settings.accounts.map((account, index) => {
+  return state.settings.accounts.map((account) => {
     const mine = threads.filter((thread) => (thread.igAccountId ?? DEMO_ACCOUNT_ID) === account.id);
+    const threadIds = new Set(state.threads.filter((thread) => thread.igAccountId === account.id).map((thread) => thread.id));
     return {
       igAccountId: account.id,
       handle: account.handle,
       status: account.status,
-      // Sample months for the other creators; the first creator's month is the live ledger.
-      mtdRecoveredMinor: index === 0 ? mtd.reduce((sum, entry) => sum + entry.amountMinor, 0) : index === 1 ? 11_200_000 : 4_850_000,
+      mtdRecoveredMinor: mtd.filter((entry) => threadIds.has(entry.threadId)).reduce((sum, entry) => sum + entry.amountMinor, 0),
       unreadHighPriority: mine.filter((thread) => thread.routedTo === "inbox" && thread.state === "open" && thread.unreplied && isCommerceLabel(thread.topLabel)).length,
       reviewQueueSize: mine.filter((thread) => thread.routedTo === "review_queue" && !thread.reviewed).length,
     };
@@ -1127,8 +1143,8 @@ function dataSummaryOf(state: DemoState): DataSummary {
 }
 
 function csvCell(value: string): string {
-  const safe = /^[=+\-@]/.test(value) ? `'${value}` : value;
-  return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
 function demoError(status: number, code: string, message: string): Error {

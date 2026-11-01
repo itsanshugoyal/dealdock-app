@@ -86,6 +86,7 @@ export function startDraftingWorker() {
         body: result.body,
         modelVersion: result.modelVersion,
         promptVersion: result.promptVersion,
+        expectedVoiceVersion: creator.voiceVersion,
         label,
         generationContext: generationContextOf(result),
       });

@@ -339,14 +339,19 @@ function PriceRow({ label, hint, children }: { label: string; hint: string; chil
 function Voice({ onNext }: { onNext: () => void }) {
   const onboarding = useOnboarding();
   const [busy, setBusy] = useState<"yes" | "no" | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const account = onboarding.data?.igAccounts[0]?.id;
   const decide = async (consented: boolean) => {
+    if (!account || busy) return;
     setBusy(consented ? "yes" : "no");
+    setError(null);
     try {
-      if (account) await appStore.setVoiceConsent(account, consented);
+      await appStore.setVoiceConsent(account, consented);
+      onNext();
+    } catch (failure) {
+      setError(errorMessage(failure, "Couldn't save your permission. Try again before continuing."));
     } finally {
       setBusy(null);
-      onNext();
     }
   };
   return (
@@ -354,8 +359,11 @@ function Voice({ onNext }: { onNext: () => void }) {
       title="Drafts that sound like you"
       body="With your OK, DealDock studies the replies you've already sent, so every draft opens, signs off and mixes Hinglish the way you do. It keeps learning from your edits."
       footer={<>
-        <Button variant="money" size="lg" fullWidth loading={busy === "yes"} loadingLabel="Saving…" onClick={() => void decide(true)}>Learn my style</Button>
-        <Button variant="ghost" size="lg" fullWidth loading={busy === "no"} onClick={() => void decide(false)}>Not now</Button>
+        {!account && <p role="status" className="text-caption text-ink-2">{onboarding.status === "error" ? "Your account couldn't load. Refresh before choosing your permissions." : "Loading your connected Instagram account…"}</p>}
+        <Button variant="money" size="lg" fullWidth disabled={!account || busy !== null} loading={busy === "yes"} loadingLabel="Saving…" onClick={() => void decide(true)}>Learn my style</Button>
+        <Button variant="ghost" size="lg" fullWidth disabled={!account || busy !== null} loading={busy === "no"} onClick={() => void decide(false)}>Not now</Button>
+        {error && <p role="alert" className="text-caption text-danger">{error}</p>}
+        <p className="text-caption text-ink-3">You can use sorting and revenue tracking without style learning. Drafts stay off until you give permission.</p>
       </>}
     >
       <div className="flex flex-col gap-3 rounded-[22px] bg-surface p-4 shadow-card">
@@ -425,8 +433,8 @@ function Scan({ onDone }: { onDone: () => void }) {
   return (
     <div className="flex flex-1 flex-col pt-10">
       <p className="text-label font-semibold text-hero-accent">Leak Scan</p>
-      <h1 className="mt-1 text-[32px] font-bold leading-9 tracking-[-0.03em]">Reading your last 30 days…</h1>
-      <p className="mt-2 text-[15px] text-white/60">Every conversation, message requests included. Nothing is sent.</p>
+      <h1 className="mt-1 text-[32px] font-bold leading-9 tracking-[-0.03em]">Scanning available recent DMs…</h1>
+      <p className="mt-2 text-[15px] text-white/60">We request up to 30 days, including available message requests. Instagram may limit history. Nothing is sent.</p>
 
       <div aria-hidden className="mt-8 grid grid-cols-[repeat(16,minmax(0,1fr))] gap-[5px] rounded-[22px] bg-white/[0.04] p-4 ring-1 ring-white/10">
         {Array.from({ length: dots }, (_, i) => {
@@ -505,7 +513,7 @@ function Reveal() {
                   <span className="block truncate text-[15px] font-semibold text-white">@{thread.handle}</span>
                   {thread.label && <span className="text-caption text-white/55"><LabelDot label={thread.label} className="text-white/60" /></span>}
                 </span>
-                {thread.estValueMaxMinor !== null && <MoneyValue minor={thread.estValueMaxMinor} className="shrink-0 text-[15px] font-semibold text-white" />}
+                {thread.estValueMaxMinor !== null && <span className="shrink-0 text-right"><span className="block text-caption text-white/55">Upper estimate</span><MoneyValue minor={thread.estValueMaxMinor} className="text-[15px] font-semibold text-white" /></span>}
               </li>
             ))}
           </ul>
@@ -519,7 +527,7 @@ function Reveal() {
           </button>
         ) : null}
         <Link href="/" className="dd-press flex h-12 w-full items-center justify-center rounded-full text-button text-white/80 hover:bg-white/10">Go to Today</Link>
-        <p className="flex items-center justify-center gap-1.5 text-caption text-white/45"><CheckCheck aria-hidden size={14} />Your draft will be ready. Nothing sends without you.</p>
+        <p className="flex items-center justify-center gap-1.5 text-caption text-white/45"><CheckCheck aria-hidden size={14} />Review each conversation before replying. Nothing sends without you.</p>
       </div>
     </div>
   );

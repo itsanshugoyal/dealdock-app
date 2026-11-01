@@ -3,6 +3,8 @@
 > Readiness update (30 October 2026): M0–M5 implementation is being hardened against the original exit criteria; implementation checkmarks do not mean live-provider, account or real-model gates passed. See [current evidence and owner actions](docs/private-pilot-readiness.md). No new milestone, deployment or push is authorized by this status update. Local integration gates exercise real PostgreSQL and Redis with an explicitly mock messaging provider.
 
 **Status:** Living document · v1.1 · Pilot scope, global-ready
+
+**1 November local follow-up:** the rebuilt v3 product and audit fixes are described in the [current product audit](docs/ux-and-product-audit-2026-11-01.md). These changes harden the existing recovery loop; they do not mark M6 or external exit criteria complete. Written-style learning, private offers and gated audio now exist in code, so the original milestone/backlog wording below is historical where it differs from that implementation record.
 **Source of truth for requirements:** `DealDock_Product_PRD.md` (v1.1 — in this repo)
 **Companions:** `ARCHITECTURE.md` (how) · `DESIGN.md` (what it looks like)
 

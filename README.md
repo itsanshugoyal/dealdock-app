@@ -1,10 +1,10 @@
 # DealDock
 
-Revenue recovery system for Instagram-first commerce creators. Connects a creator's Instagram inbox, classifies DMs by estimated ₹ value, drafts replies in the creator's voice, and tracks recovered revenue in a Revenue Ledger.
+Revenue recovery system for Instagram-first commerce creators. Classifies DMs by estimated deal value in the workspace currency, drafts replies in the creator's voice, and records sales confirmed by a person.
 
 **North star: rupees recovered — not time saved.**
 
-Current status and remaining owner actions: [private pilot readiness](docs/private-pilot-readiness.md), [voice/audio audit](docs/voice-and-audio-audit.md) and [deployment preflight](docs/deployment-preflight.md). M0–M5 code exists; live provider, quality and account-dependent exit gates remain separate. The current [Studio HTML](design/studio/dealdock-studio.html) is a new interactive design proposal with fictional data, replacing the rejected Reply desk proposal.
+Current implementation and remaining owner actions: [1 November product audit](docs/ux-and-product-audit-2026-11-01.md), [voice/audio audit](docs/voice-and-audio-audit.md), [private pilot readiness](docs/private-pilot-readiness.md) and [deployment preflight](docs/deployment-preflight.md). The v3 product runs in `apps/web`; the older standalone HTML concepts were rejected. Local implementation, demo browser checks and real-infrastructure tests remain separate from live-provider and account-dependent exit gates.
 
 ## The three documents
 
@@ -14,7 +14,7 @@ Current status and remaining owner actions: [private pilot readiness](docs/priva
 | [DESIGN.md](./DESIGN.md) | Design system, screen specs, component inventory, UX principles |
 | [PLAN.md](./PLAN.md) | Milestones M0–M6, exit criteria, risk register, metrics plan |
 
-Requirements source of truth: `DealDock_Product_PRD.md` (PRD v1.0, pilot scope).
+Requirements source of truth: `DealDock_Product_PRD.md` (PRD v1.1 with explicit implementation amendments), `PRODUCT.md` and the current audit.
 
 ## Workspace layout
 
@@ -40,6 +40,7 @@ npm run test             # unit tests (money formatting, fixture corpus)
 npm run lint             # boundary checks: prisma confined to packages/db, worker has no send path
 npm run test:boundaries  # regression tests for the architecture guard
 npm run test:safety      # production auth fails closed; worker refuses API-only secrets
+npm run test:ui          # explicit fictional-demo browser regressions; separate from the API-backed browser gate
 ```
 
 ### Full local loop (requires Docker Desktop)

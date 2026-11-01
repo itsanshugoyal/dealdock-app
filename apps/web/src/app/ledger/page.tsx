@@ -1,28 +1,40 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useState } from "react";
 import type { DealType } from "@dealdock/core";
 import { CheckCheck, Download, Pencil, Target, Trash2, TrendingUp } from "lucide-react";
 import { dealTypeText, formatDate, pluralize } from "../../lib/format";
 import { runUndoable } from "../../lib/undo";
-import { appStore, useApp, useInsights, useLedger, type DemoLedgerEntry } from "../../lib/use-demo";
+import { errorMessage } from "../../lib/snapshot";
+import { appStore, useApp, useInsights, useLedger, useSettings, type DemoLedgerEntry } from "../../lib/use-demo";
 import { Group, HeroCard, LargeTitle } from "../../components/kit";
 import { GoalSheet } from "../../components/goal-editor";
 import { SaleSheet } from "../../components/sale-sheet";
 import { Bars, ProgressRing, StackedBar } from "../../components/ui/charts";
 import { Button, buttonClasses } from "../../components/ui/button";
+import { Select } from "../../components/ui/field";
 import { cx } from "../../components/ui/cx";
-import { Skeleton } from "../../components/ui/feedback";
+import { ErrorState, Skeleton } from "../../components/ui/feedback";
 import { DEAL_TYPE_FILL } from "../../components/ui/label-chip";
 import { MoneyCounter, MoneyValue } from "../../components/ui/money-value";
 import { Avatar } from "../../components/ui/sender";
-import { toastAction } from "../../components/ui/toast";
+import { toast, toastAction } from "../../components/ui/toast";
 
 /** Revenue: only money the creator confirmed. Estimates never count here. */
 export default function RevenuePage() {
-  const [month, setMonth] = useState<string | undefined>(undefined);
-  const ledger = useLedger(month);
+  return <Suspense fallback={null}><Revenue /></Suspense>;
+}
+
+function Revenue() {
+  const router = useRouter();
+  const params = useSearchParams();
+  const monthInput = params?.get("month");
+  const month = monthInput && /^\d{4}-(0[1-9]|1[0-2])$/.test(monthInput) ? monthInput : undefined;
+  const account = params?.get("account") || undefined;
+  const ledger = useLedger(month, account);
+  const settings = useSettings();
   const insights = useInsights(6);
   const { money, timezone } = useApp();
   const locale = money.locale ?? "en-IN";
@@ -30,30 +42,52 @@ export default function RevenuePage() {
   const [goalOpen, setGoalOpen] = useState(false);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const view = ledger.data;
-  const goal = insights.data?.goal;
+  const goal = account ? null : insights.data?.goal;
+  const accounts = settings.data?.accounts ?? [];
+  const creator = accounts.find((item) => item.id === account);
   const months = view?.months ?? [];
   const selected = view?.selectedMonth ?? month;
   const isCurrent = months.length > 0 && selected === months[months.length - 1]?.month;
   const entries = (view?.entries ?? []).filter((entry) => !hidden.has(entry.id));
   const byType = (Object.entries(view?.byType ?? {}) as Array<[DealType, number]>).filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]);
   const monthName = (key: string, style: "long" | "short" = "long") => formatDate(`${key}-15T12:00:00Z`, locale, timezone, { month: style, ...(style === "long" ? { year: "numeric" } : {}) });
+  const setFilter = (key: "account" | "month", value: string | undefined) => {
+    const next = new URLSearchParams(params?.toString() ?? "");
+    if (value) next.set(key, value); else next.delete(key);
+    router.replace(`/ledger${next.size ? `?${next}` : ""}`, { scroll: false });
+  };
+  const setMonth = (value: string) => setFilter("month", value);
+  const exportQuery = new URLSearchParams();
+  if (selected) exportQuery.set("month", selected);
+  if (account) exportQuery.set("igAccountId", account);
 
   const remove = (entry: DemoLedgerEntry) => {
     setHidden((current) => new Set(current).add(entry.id));
-    runUndoable({
+    const action = runUndoable({
       message: `Sale with @${entry.handle} deleted.`,
       commit: () => appStore.deleteLedger(entry.id),
       onUndo: () => setHidden((current) => { const next = new Set(current); next.delete(entry.id); return next; }),
     });
+    void action.outcome.then((outcome) => {
+      if (outcome.status !== "failed") return;
+      setHidden((current) => { const next = new Set(current); next.delete(entry.id); return next; });
+      toast(errorMessage(outcome.error, "Couldn't delete this sale. It's still in your ledger."), { tone: "error" });
+    });
   };
+
+  if (ledger.status === "error" && !view) {
+    return <ErrorState as="h1" thing="your revenue" reason={ledger.error} onRetry={() => void appStore.loadLedger(month, account)} className="min-h-[60dvh] justify-center" />;
+  }
 
   return (
     <div className="mx-auto w-full max-w-[1120px] pb-12">
       <LargeTitle
         title="Revenue"
-        eyebrow="Confirmed by you"
-        accessory={<Button size="sm" variant="secondary" icon={Download} onClick={() => void toastAction(() => appStore.download("/ledger/export.csv", "dealdock-revenue.csv"), { fallback: "Export failed." })}>Export CSV</Button>}
+        eyebrow={creator ? `Confirmed sales · @${creator.handle}` : "Confirmed by you"}
+        accessory={<Button size="sm" variant="secondary" icon={Download} disabled={!view} title="Export the displayed month and creator" onClick={() => void toastAction(() => appStore.download(`/ledger/export.csv${exportQuery.size ? `?${exportQuery}` : ""}`, "dealdock-revenue.csv"), { fallback: "Export failed." })}>Export CSV</Button>}
       />
+
+      {accounts.length > 1 && <div className="mb-4 px-4 md:px-8"><div className="max-w-sm"><Select label="Revenue for" value={account ?? ""} onChange={(event) => setFilter("account", event.target.value || undefined)}><option value="">All creators</option>{accounts.map((item) => <option key={item.id} value={item.id}>@{item.handle}</option>)}</Select></div></div>}
 
       {months.length > 1 && (
         <div className="dd-scroll-x flex gap-1.5 px-4 pb-4 md:px-8" role="tablist" aria-label="Month">
@@ -80,13 +114,13 @@ export default function RevenuePage() {
               {!view ? <Skeleton className="mt-2 h-12 w-52 bg-on-hero/10" /> : (
                 <MoneyCounter countId={`ledger-${selected}`} minor={view.totalMinor} mode="exact" size="hero" className="mt-1 block font-semibold text-hero-money [&_.dd-symbol-hero]:text-hero-money/70" />
               )}
-              <p className="mt-1 inline-flex items-center gap-1.5 text-label font-semibold text-on-hero/70"><CheckCheck aria-hidden size={15} className="text-hero-money" />{entries.length} {pluralize(entries.length, "sale")} you confirmed</p>
+              {view ? <p className="mt-1 inline-flex items-center gap-1.5 text-label font-semibold text-on-hero/70"><CheckCheck aria-hidden size={15} className="text-hero-money" />{entries.length} {pluralize(entries.length, "sale")} you confirmed</p> : <Skeleton className="mt-3 h-4 w-36 bg-on-hero/10" />}
             </div>
-            {isCurrent && goal?.monthlyGoalMinor ? (
+            {!account && isCurrent && goal?.monthlyGoalMinor ? (
               <button type="button" onClick={() => setGoalOpen(true)} className="shrink-0 rounded-full" aria-label="Change monthly goal">
                 <ProgressRing pct={goal.pct ?? 0} size={96} label={`${Math.round(goal.pct ?? 0)}% of your monthly goal`} className="[&_circle:first-child]:stroke-on-hero/10 [&_span]:text-on-hero" />
               </button>
-            ) : isCurrent ? (
+            ) : !account && isCurrent ? (
               <Button size="sm" variant="on-hero" icon={Target} onClick={() => setGoalOpen(true)}>Set a goal</Button>
             ) : null}
           </div>
@@ -137,7 +171,7 @@ export default function RevenuePage() {
           )}
         </section>
 
-        <Group id="sales" title="Sales" className="lg:col-span-2" action={<span className="text-caption text-ink-3">Tap a sale to edit it</span>}>
+        <Group id="sales" title="Sales" className="lg:col-span-2" action={<span className="text-caption text-ink-3">Use the pencil to edit</span>}>
           {!view ? (
             <div className="space-y-1 p-4">{[0, 1, 2].map((key) => <Skeleton key={key} className="h-12 w-full" />)}</div>
           ) : entries.length === 0 ? (

@@ -10,11 +10,16 @@ const PatchBody = z.object({
   dealType: z.enum(DEAL_TYPES).optional(),
   note: z.string().max(500).optional(),
 });
+const LedgerQuery = z.object({
+  month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
+  igAccountId: z.string().trim().min(1).max(200).optional(),
+});
 
 export async function ledgerRoutes(app: FastifyInstance) {
-  app.get("/ledger", { preHandler: requireAuth }, async (req) => {
-    const month = (req.query as Record<string, string>)["month"];
-    return getLedger(req.auth!.orgId, /^\d{4}-\d{2}$/.test(month ?? "") ? month : undefined);
+  app.get("/ledger", { preHandler: requireAuth }, async (req, reply) => {
+    const query = LedgerQuery.safeParse(req.query);
+    if (!query.success) return reply.code(400).send({ error: "invalid_query" });
+    return getLedger(req.auth!.orgId, query.data.month, query.data.igAccountId);
   });
 
   app.patch("/ledger/:id", { preHandler: [requireAuth, requireWritable, requirePermission("close")] }, async (req, reply) => {
@@ -37,9 +42,12 @@ export async function ledgerRoutes(app: FastifyInstance) {
 
   /** CSV export — always available, incl. post-cancellation (PRD §5.7). */
   app.get("/ledger/export.csv", { preHandler: requireAuth }, async (req, reply) => {
-    const ledger = await getLedger(req.auth!.orgId);
-    const all = await Promise.all(
-      ledger.months.map((m) => getLedger(req.auth!.orgId, m.month))
+    const query = LedgerQuery.safeParse(req.query);
+    if (!query.success) return reply.code(400).send({ error: "invalid_query" });
+    const { month, igAccountId } = query.data;
+    const ledger = await getLedger(req.auth!.orgId, month, igAccountId);
+    const all = month ? [ledger] : await Promise.all(
+      ledger.months.map((m) => getLedger(req.auth!.orgId, m.month, igAccountId))
     );
     const rows = all.flatMap((l) => l.entries);
     const header = "date,handle,deal_type,amount_minor,currency,note";

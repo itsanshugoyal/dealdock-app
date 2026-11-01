@@ -133,11 +133,23 @@ export async function saveClassification(orgId: OrgId, input: ClassificationInpu
   });
 }
 
-export async function listReviewQueue(orgId: OrgId, limit = 50) {
+export async function listReviewQueuePage(orgId: OrgId, limit = 50, cursor?: string) {
+  let after: { at: Date; id: string } | undefined;
+  if (cursor) {
+    try {
+      const value: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+      if (!Array.isArray(value) || value.length !== 2 || typeof value[0] !== "string" || typeof value[1] !== "string" || !value[1] || value[1].length > 64) throw new Error();
+      const at = new Date(value[0]);
+      if (!Number.isFinite(at.getTime()) || at.toISOString() !== value[0]) throw new Error();
+      after = { at, id: value[1] };
+    } catch {
+      throw new DomainError("invalid_cursor", 400);
+    }
+  }
   const rows = await prisma.classification.findMany({
-    where: { orgId, routedTo: "review_queue", reviewOutcome: null },
-    orderBy: { createdAt: "asc" },
-    take: limit,
+    where: { orgId, routedTo: "review_queue", reviewOutcome: null, ...(after ? { OR: [{ createdAt: { gt: after.at } }, { createdAt: after.at, id: { gt: after.id } }] } : {}) },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: limit + 1,
     include: {
       message: {
         select: {
@@ -149,7 +161,10 @@ export async function listReviewQueue(orgId: OrgId, limit = 50) {
       },
     },
   });
-  return rows.map((c) => ({
+  const page = rows.slice(0, limit);
+  const last = page[page.length - 1];
+  const nextCursor = rows.length > limit && last ? Buffer.from(JSON.stringify([last.createdAt.toISOString(), last.id])).toString("base64url") : null;
+  return { nextCursor, rows: page.map((c) => ({
     classificationId: c.id,
     threadId: c.message.thread.id,
     igAccountId: c.message.thread.igAccountId,
@@ -159,7 +174,12 @@ export async function listReviewQueue(orgId: OrgId, limit = 50) {
     bestGuess: c.label,
     confidence: c.confidence,
     rationale: c.rationale,
-  }));
+  })) };
+}
+
+/** Legacy bounded read for internal consumers. */
+export async function listReviewQueue(orgId: OrgId, limit = 50) {
+  return (await listReviewQueuePage(orgId, limit)).rows;
 }
 
 /**

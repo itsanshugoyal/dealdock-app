@@ -8,6 +8,13 @@ if (shouldRun && !process.env.TEST_DATABASE_URL) {
 describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres tenancy, deletion, and delivery invariants", () => {
   let db: typeof import("../src/index");
   let prisma: typeof import("../src/client").prisma;
+
+  async function createFixtureDraft(orgId: Parameters<typeof db.createDraft>[0], input: Omit<Parameters<typeof db.createDraft>[1], "expectedVoiceVersion">) {
+    const thread = await prisma.thread.findUniqueOrThrow({ where: { id: input.threadId }, select: { igAccountId: true } });
+    const { version } = await db.getVoiceProfileState(orgId, thread.igAccountId);
+    return db.createDraft(orgId, { ...input, expectedVoiceVersion: version });
+  }
+
   const organizations: string[] = [];
 
   async function organization(label: string) {
@@ -132,18 +139,47 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
     expect(await db.listReviewQueue(alphaId)).toEqual([expect.objectContaining({ threadId: alphaInbound.threadId, igAccountId: alpha.igAccount.id, handle: "real.buyer" })]);
   });
 
+  it("counts open unanswered commerce conversations on the correct roster account", async () => {
+    const created = await organization("roster-count");
+    const otherOrg = await organization("roster-other");
+    const accountB = await prisma.igAccount.create({ data: {
+      orgId: created.org.id, igUserId: `roster-b-${created.org.id}`, handle: "roster_b", accountType: "creator",
+    } });
+    const earlier = new Date("2026-01-01T00:00:00Z");
+    const later = new Date("2026-01-02T00:00:00Z");
+    const thread = (igAccountId: string, id: string, extra: Record<string, unknown> = {}) => ({
+      orgId: created.org.id, igAccountId, igThreadId: id, participantHandle: id, participantIgId: id,
+      lastMessageAt: later, lastInboundAt: later, lastOutboundAt: earlier, topLabel: "brand_deal" as const,
+      estValueMaxMinor: 100n, ...extra,
+    });
+    await prisma.thread.createMany({ data: [
+      thread(created.igAccount.id, "new-inbound-after-reply"),
+      thread(created.igAccount.id, "never-replied", { lastOutboundAt: null }),
+      thread(created.igAccount.id, "already-replied", { lastInboundAt: earlier, lastOutboundAt: later }),
+      thread(created.igAccount.id, "awaiting-review", { hasPendingReview: true }),
+      thread(created.igAccount.id, "waiting", { state: "waiting" }),
+      thread(accountB.id, "other-account"),
+    ] });
+    const rows = await db.getRosterOverview(db.asOrgId(created.org.id));
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ igAccountId: created.igAccount.id, unreadHighPriority: 2 }),
+      expect.objectContaining({ igAccountId: accountB.id, unreadHighPriority: 1 }),
+    ]));
+    expect(rows).not.toEqual(expect.arrayContaining([expect.objectContaining({ igAccountId: otherOrg.igAccount.id })]));
+  });
+
   it("revokes per-account voice consent immediately, including samples and draft creation", async () => {
     const created = await organization("voice");
     const orgId = db.asOrgId(created.org.id);
     const row = await inbound(created, "voice");
     await db.setVoiceConsent(orgId, created.igAccount.id, created.seat.id, true);
     await db.setVoiceEnabled(orgId, created.seat.id, true);
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body: "A consented draft", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body: "A consented draft", modelVersion: "test", promptVersion: "test" });
     await db.setVoiceConsent(orgId, created.igAccount.id, created.seat.id, false);
     expect((await prisma.draft.findUniqueOrThrow({ where: { id: draft.id } })).status).toBe("discarded");
     expect(await db.getSentSamples(orgId, created.igAccount.id)).toBeNull();
     expect((await db.getCreatorContext(orgId, created.igAccount.id)).voiceEnabled).toBe(false);
-    await expect(db.createDraft(orgId, { threadId: row.threadId, body: "Must not draft", modelVersion: "test", promptVersion: "test" })).rejects.toThrow("voice_consent_required");
+    await expect(createFixtureDraft(orgId, { threadId: row.threadId, body: "Must not draft", modelVersion: "test", promptVersion: "test" })).rejects.toThrow("voice_consent_required");
   });
 
   it("hard-deletes a ledger, outbox and exclusively-scoped webhook while cleaning its unshared user", async () => {
@@ -180,7 +216,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
     const orgId = db.asOrgId(created.org.id);
     const row = await inbound(created, "echo");
     await db.setVoiceConsent(orgId, created.igAccount.id, created.seat.id, true);
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body: "Hello", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body: "Hello", modelVersion: "test", promptVersion: "test" });
     const claims = await Promise.all([
       db.createSendIntentClaim(orgId, {
         draftId: draft.id, seatId: created.seat.id, finalText: "Hello!", idempotencyKey: `echo-${created.org.id}`,
@@ -209,7 +245,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
     const orgId = db.asOrgId(created.org.id);
     const row = await inbound(created, "collision");
     await db.setVoiceConsent(orgId, created.igAccount.id, created.seat.id, true);
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
     const claim = await db.createSendIntentClaim(orgId, {
       draftId: draft.id, seatId: created.seat.id, finalText: "Reply!", idempotencyKey: `collision-${created.org.id}`,
     });
@@ -237,13 +273,23 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
     const orgId = db.asOrgId(owner.org.id);
     const row = await inbound(owner, "approver");
     await db.setVoiceConsent(orgId, owner.igAccount.id, owner.seat.id, true);
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
     const input = { draftId: draft.id, seatId: owner.seat.id, finalText: "Approved reply", idempotencyKey: `approval-${owner.org.id}` };
     await expect(db.createSendIntentClaim(orgId, { ...input, seatId: foreign.seat.id })).rejects.toThrow("send_seat_not_in_org");
     expect(await prisma.sendIntent.count({ where: { orgId: owner.org.id } })).toBe(0);
     expect((await prisma.draft.findUniqueOrThrow({ where: { id: draft.id } })).status).toBe("ready");
     const claim = await db.createSendIntentClaim(orgId, input);
     await expect(db.createSendIntentClaim(orgId, { ...input, finalText: "Changed reply" })).rejects.toThrow("send_idempotency_key_conflict");
+    const retry = { ...input, threadId: row.threadId };
+    await expect(db.findSendIntentForRetry(orgId, retry)).resolves.toMatchObject({ intentId: claim.intentId, status: "pending", claimed: false });
+    await expect(db.findSendIntentForRetry(orgId, { ...retry, seatId: foreign.seat.id })).rejects.toThrow("send_seat_not_in_org");
+    await expect(db.findSendIntentForRetry(orgId, { ...retry, finalText: "Changed reply" })).rejects.toThrow("send_idempotency_key_conflict");
+    await expect(db.findSendIntentForRetry(orgId, { ...retry, asVoice: true })).rejects.toThrow("send_idempotency_key_conflict");
+    await expect(db.findSendIntentForRetry(orgId, { ...retry, threadId: "wrong-thread" })).rejects.toThrow("send_idempotency_key_conflict");
+    await expect(db.findSendIntentForRetry(orgId, { ...retry, idempotencyKey: `different-${owner.org.id}` })).rejects.toThrow("send_idempotency_key_conflict");
+    await db.markSendIntentUnknown(orgId, claim.intentId, "ambiguous");
+    await expect(db.findSendIntentForRetry(orgId, retry)).resolves.toMatchObject({ intentId: claim.intentId, status: "unknown", claimed: false });
+    await expect(db.findSendIntentForRetry(db.asOrgId(foreign.org.id), { ...retry, seatId: foreign.seat.id })).resolves.toBeNull();
     expect(await prisma.sendIntent.count({ where: { orgId: owner.org.id } })).toBe(1);
     expect((await prisma.sendIntent.findUniqueOrThrow({ where: { id: claim.intentId } })).finalText).toBe("Approved reply");
   });
@@ -253,7 +299,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
     const orgId = db.asOrgId(created.org.id);
     const row = await inbound(created, "receipt");
     await db.setVoiceConsent(orgId, created.igAccount.id, created.seat.id, true);
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
     const claim = await db.createSendIntentClaim(orgId, { draftId: draft.id, seatId: created.seat.id, finalText: "Reply", idempotencyKey: `receipt-${created.org.id}` });
     const firstId = `receipt-first-${created.org.id}`;
     const secondId = `receipt-second-${created.org.id}`;
@@ -271,7 +317,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
     const orgId = db.asOrgId(created.org.id);
     const row = await inbound(created, "matching-echo");
     await db.setVoiceConsent(orgId, created.igAccount.id, created.seat.id, true);
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
     const claim = await db.createSendIntentClaim(orgId, { draftId: draft.id, seatId: created.seat.id, finalText: "Approved", idempotencyKey: `matching-${created.org.id}` });
     const platformMessageId = `matching-platform-${created.org.id}`;
     const sentAt = new Date();
@@ -290,7 +336,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
     const orgId = db.asOrgId(created.org.id);
     const row = await inbound(created, "wrong-echo");
     await db.setVoiceConsent(orgId, created.igAccount.id, created.seat.id, true);
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
     const claim = await db.createSendIntentClaim(orgId, { draftId: draft.id, seatId: created.seat.id, finalText: "Approved", idempotencyKey: `wrong-echo-${created.org.id}` });
     const platformMessageId = `wrong-echo-platform-${created.org.id}`;
     const sentAt = new Date();
@@ -306,7 +352,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
     const orgId = db.asOrgId(created.org.id);
     const row = await inbound(created, "ack-receipt");
     await db.setVoiceConsent(orgId, created.igAccount.id, created.seat.id, true);
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body: "Reply", modelVersion: "test", promptVersion: "test" });
     const claim = await db.createSendIntentClaim(orgId, { draftId: draft.id, seatId: created.seat.id, finalText: "Reply", idempotencyKey: `ack-${created.org.id}` });
     const sentAt = new Date();
     const acknowledgedId = `acknowledged-${created.org.id}`;

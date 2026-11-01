@@ -81,7 +81,10 @@ function Voice() {
               <Rules studio={studio} />
             </div>
             <div className="flex min-w-0 flex-col gap-5">
-              <HowYouWrite studio={studio} />
+              <details className="overflow-hidden rounded-[20px] bg-surface shadow-card">
+                <summary className="cursor-pointer px-4 py-4 text-heading font-semibold text-ink hover:bg-inset focus-visible:outline-2 focus-visible:outline-info">Fine-tune writing style</summary>
+                <HowYouWrite studio={studio} />
+              </details>
               <SpeakingVoice studio={studio} />
               <Samples studio={studio} />
               <Learning studio={studio} />
@@ -152,11 +155,11 @@ function MatchHero({ studio }: { studio: VoiceStudio }) {
 
   return (
     <HeroCard aria-labelledby="match-title" className="p-5 md:p-7">
-      <p id="match-title" className="flex items-center gap-2 text-label font-semibold text-on-hero/60"><AudioLines aria-hidden size={16} className="text-hero-money" />Voice match</p>
+      <p id="match-title" className="flex items-center gap-2 text-label font-semibold text-on-hero/60"><AudioLines aria-hidden size={16} className="text-hero-money" />Drafts sent with light edits</p>
       {match === null ? (
         <>
           <p className="mt-2 text-[28px] font-semibold leading-9 tracking-[-0.02em]">No drafts sent yet</p>
-          <p className="mt-1 text-body text-on-hero/65">Your match appears after your first few replies. It&apos;s the share of drafts you send with light edits or none.</p>
+          <p className="mt-1 text-body text-on-hero/65">This appears after your first few replies. It&apos;s the share of drafts you send with light edits or none.</p>
         </>
       ) : (
         <>
@@ -168,13 +171,13 @@ function MatchHero({ studio }: { studio: VoiceStudio }) {
               </span>
             )}
           </div>
-          <p className="mt-1 max-w-md text-body text-on-hero/70">of drafts this week went out with light edits or none. It climbs as DealDock learns from your changes.</p>
+          <p className="mt-1 max-w-md text-body text-on-hero/70">of drafts this week went out with light edits or none. Based on your sent replies, rather than an automatic quality score.</p>
         </>
       )}
 
       {weeks.length > 1 && (
         <div className="mt-6">
-          <div role="img" aria-label={`Voice match by week: ${summary}`} className="flex h-28 items-end gap-1.5 sm:gap-2">
+          <div role="img" aria-label={`Drafts sent with light edits by week: ${summary}`} className="flex h-28 items-end gap-1.5 sm:gap-2">
             {weeks.map((week, index) => {
               const last = index === weeks.length - 1;
               return (
@@ -795,7 +798,7 @@ function Learning({ studio }: { studio: VoiceStudio }) {
         <Button variant="danger-ghost" size="sm" className="-ml-3" onClick={() => setConfirm(true)}>Stop using my replies</Button>
       </div>
       <ConfirmDialog open={confirm} onClose={() => setConfirm(false)} title={`Turn off voice learning for @${studio.handle}?`} confirmLabel="Turn off and delete" destructive busy={busy} busyLabel="Turning off…" onConfirm={() => void turnOff()}>
-        DealDock deletes the rules and style it learned, plus any unsent drafts for this account. New drafts use a neutral voice until you turn learning back on. Sent messages and your revenue aren&apos;t affected.
+        DealDock deletes the rules and style it learned, plus any unsent drafts for this account. Drafting stays off until you give permission again. You can still sort conversations, record sales and reply in Instagram. Sent messages and your revenue aren&apos;t affected.
       </ConfirmDialog>
     </Group>
   );

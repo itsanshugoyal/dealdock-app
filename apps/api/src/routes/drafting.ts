@@ -113,6 +113,7 @@ export async function draftingRoutes(app: FastifyInstance) {
       body: result.body,
       modelVersion: result.modelVersion,
       promptVersion: result.promptVersion,
+      expectedVoiceVersion: creator.voiceVersion,
       label,
       instruction: instruction || null,
       chips,

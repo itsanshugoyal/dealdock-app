@@ -38,6 +38,17 @@ export default function SettingsPage() {
     <div className="mx-auto w-full max-w-[1100px] pb-16">
       <LargeTitle title="Settings" />
       <div className="px-4 md:px-8 lg:grid lg:grid-cols-[180px_minmax(0,1fr)] lg:gap-10">
+        <div className="mb-5 lg:hidden">
+          <Select label="Jump to a setting" value="" onChange={(event) => {
+            const id = event.target.value;
+            if (!SETTINGS_SECTIONS.some((section) => section.id === id)) return;
+            window.history.replaceState(null, "", `#${id}`);
+            document.getElementById(id)?.scrollIntoView({ block: "start" });
+          }}>
+            <option value="" disabled>Choose a section…</option>
+            {SETTINGS_SECTIONS.map((section) => <option key={section.id} value={section.id}>{section.label}</option>)}
+          </Select>
+        </div>
         <nav aria-label="Settings sections" className="hidden lg:block">
           <ul className="sticky top-6 flex flex-col gap-0.5">
             {SETTINGS_SECTIONS.map((section) => (

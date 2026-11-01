@@ -10,6 +10,7 @@ import {
 import { useCommand } from "../lib/commands";
 import { byValueDesc, chipText, compactCount, confidenceReason, confidenceWords, dayKey, dayLabel, dealTypeText, displayName, formatTime, isCommerceLabel, languageName, needsYou, replyWindowInfo, textLang } from "../lib/format";
 import { useMinuteClock, useShortcut } from "../lib/keyboard";
+import { conversationHref, inboxHref } from "../lib/inbox-navigation";
 import { errorMessage } from "../lib/snapshot";
 import { runUndoable, secondsLeft, undoAction, usePendingAction, type PendingAction } from "../lib/undo";
 import { appStore, useApp, useThread, type DemoMessage, type DemoThread } from "../lib/use-demo";
@@ -40,7 +41,7 @@ export function Conversation({ id }: { id: string }) {
   const account = params?.get("account");
   const { thread, row, status, error, notFound } = useThread(id);
   const view = thread ?? row;
-  const { money, timezone, threads, voice, insights } = useApp();
+  const { money, timezone, threads, voice, settings } = useApp();
   const now = useMinuteClock();
   const locale = money.locale ?? "en-IN";
 
@@ -50,7 +51,7 @@ export function Conversation({ id }: { id: string }) {
   const [result, setResult] = useState<SendResult | null>(null);
   const [learned, setLearned] = useState<LearnedSignal[]>([]);
   const [busyChip, setBusyChip] = useState<DraftChip | "regenerate" | null>(null);
-  const [confirmReplace, setConfirmReplace] = useState<DraftChip | "regenerate" | null>(null);
+  const [confirmReplace, setConfirmReplace] = useState<DraftChip | "regenerate" | number | null>(null);
   const [asVoice, setAsVoice] = useState(false);
   const [sheet, setSheet] = useState<"sale" | "why" | "sender" | null>(params?.get("record") === "1" ? "sale" : null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -82,14 +83,18 @@ export function Conversation({ id }: { id: string }) {
 
   const windowInfo = view ? replyWindowInfo(view.replyWindow, now || Date.now(), "header") : null;
   const reviewItem = view?.routedTo === "review_queue";
-  const canReply = Boolean(view && view.state !== "closed" && !reviewItem && !windowInfo?.closed);
+  const accountConnection = settings.data?.accounts.find((item) => item.id === view?.igAccountId);
+  const needsReconnect = Boolean(accountConnection && accountConnection.status !== "active");
+  const canReply = Boolean(view && view.state !== "closed" && !reviewItem && windowInfo?.visible && !windowInfo.closed && !needsReconnect);
   const sendDisabled = !text.trim() || !draft || Boolean(view?.sendInFlight);
 
   // Neighbours for "next conversation".
   const queue = useMemo(() => threads.filter((t) => needsYou(t) && (!account || t.igAccountId === account)).sort(byValueDesc), [threads, account]);
   const next = queue.find((t) => t.id !== id) ?? null;
 
-  const backHref = `/inbox${account ? `?account=${account}` : ""}`;
+  const navigation = params ?? new URLSearchParams();
+  const backHref = inboxHref(navigation);
+  const creatorHandle = settings.data?.accounts.find((item) => item.id === view?.igAccountId)?.handle ?? null;
 
   // The store applies every write below to this conversation itself; nothing here reloads it.
   async function regenerate(chip: DraftChip | "regenerate", force = false) {
@@ -102,6 +107,21 @@ export function Conversation({ id }: { id: string }) {
       await appStore.generateDraft(view.id, chip === "regenerate" ? {} : { chips: [chip] });
     } catch (failure) {
       setActionError(errorMessage(failure, "DealDock couldn't write a draft right now."));
+    } finally {
+      setBusyChip(null);
+    }
+  }
+
+  async function chooseAlternative(index: number, force = false) {
+    if (!view || !draft) return;
+    if (edited && !force) { setConfirmReplace(index); return; }
+    setConfirmReplace(null);
+    setBusyChip("regenerate");
+    setActionError(null);
+    try {
+      await appStore.chooseAlternative(view.id, { draftId: draft.id, alternative: index });
+    } catch (failure) {
+      setActionError(errorMessage(failure, "Couldn't switch to that option. Try again."));
     } finally {
       setBusyChip(null);
     }
@@ -171,7 +191,7 @@ export function Conversation({ id }: { id: string }) {
   const classification = view.messages.find((message) => message.classification)?.classification ?? null;
   const days = groupByDay(view.messages, now || Date.now(), locale, timezone);
   // The match shown on drafts comes from data already loaded, never a fetch of the whole voice studio.
-  const voiceMatch = (voice.data && voice.data.igAccountId === view.igAccountId ? voice.data.metrics.voiceMatchPct : null) ?? insights.data?.voice.voiceMatchPct ?? null;
+  const voiceMatch = voice.data?.igAccountId === view.igAccountId ? voice.data.metrics.voiceMatchPct : null;
 
   return (
     <div className="relative flex min-h-dvh flex-col bg-canvas lg:min-h-full">
@@ -188,8 +208,7 @@ export function Conversation({ id }: { id: string }) {
                 <bdi>{name}</bdi><span className="sr-only"> @{view.handle}</span>
               </h1>
               <span className="flex min-w-0 items-center gap-1.5 truncate text-caption text-ink-3">
-                {view.topLabel && <LabelDot label={view.topLabel} />}
-                {view.estValueMaxMinor !== null && <><span aria-hidden>·</span><MoneyValue minor={view.estValueMinMinor ?? view.estValueMaxMinor} maxMinor={view.estValueMaxMinor} kind="estimate" className="font-semibold text-ink-2" /></>}
+                {creatorHandle ? <>Replying as <bdi className="font-semibold text-ink-2">@{creatorHandle}</bdi></> : view.topLabel && <LabelDot label={view.topLabel} />}
               </span>
             </span>
           </button>
@@ -255,7 +274,7 @@ export function Conversation({ id }: { id: string }) {
           {view.nudgeDue && phase === "editing" && (
             <div className="flex items-center gap-3 rounded-2xl bg-waiting-tint px-3 py-2.5">
               <Hourglass aria-hidden size={18} className="shrink-0 text-waiting" />
-              <p className="min-w-0 flex-1 text-[14px] text-ink"><b className="font-semibold">Quiet for {view.waitingSince ? Math.max(1, Math.floor(((now || Date.now()) - view.waitingSince) / 86_400_000)) : 3} days.</b> A follow-up is drafted below.</p>
+              <p className="min-w-0 flex-1 text-[14px] text-ink"><b className="font-semibold">Quiet for {view.waitingSince ? Math.max(1, Math.floor(((now || Date.now()) - view.waitingSince) / 86_400_000)) : 3} days.</b> {windowInfo?.closed ? "Follow up in Instagram; this reply window has closed." : needsReconnect ? "Reconnect Instagram before replying." : draft ? "Review the follow-up below before sending." : "A follow-up is due. Generate a draft when you're ready."}</p>
               <Button size="sm" variant="ghost" onClick={() => void toastAction(() => appStore.dismissNudge(view.id), { fallback: "Couldn't dismiss the follow-up. Try again." })}>Dismiss</Button>
             </div>
           )}
@@ -269,6 +288,17 @@ export function Conversation({ id }: { id: string }) {
             </div>
           ) : view.state === "closed" ? (
             <p className="py-2 text-center text-[14px] text-ink-2">This conversation is closed. <button type="button" className="font-semibold text-brand" onClick={() => void moveTo("open")}>Reopen</button></p>
+          ) : needsReconnect ? (
+            <div role="status" className="rounded-2xl bg-waiting-tint p-4">
+              <p className="text-label font-semibold text-ink">Reconnect @{accountConnection?.handle} to reply.</p>
+              <p className="mt-1 text-[14px] text-ink-2">Your conversation stays here. DealDock can't send while this Instagram account is disconnected.</p>
+              <Link href="/settings#instagram" className={buttonClasses({ variant: "primary", size: "sm", className: "mt-3" })}>Reconnect Instagram</Link>
+            </div>
+          ) : windowInfo && !windowInfo.visible ? (
+            <div role="status" className="rounded-2xl bg-inset p-4 text-[14px] text-ink-2">
+              <p>Instagram hasn't supplied a valid reply window for this conversation. DealDock can't approve a send yet.</p>
+              <a href={`https://ig.me/m/${encodeURIComponent(view.handle)}`} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-1 font-semibold text-ink underline underline-offset-4">Open in Instagram <ExternalLink aria-hidden size={14} /></a>
+            </div>
           ) : windowInfo?.closed ? (
             <div className="flex items-center gap-3 rounded-2xl bg-surface p-4 shadow-card">
               <Clock aria-hidden size={20} className="shrink-0 text-ink-3" />
@@ -280,17 +310,18 @@ export function Conversation({ id }: { id: string }) {
               result={result}
               learned={learned}
               handle={view.handle}
+              igAccountId={view.igAccountId}
               waiting={view.state === "waiting"}
               onWaiting={() => void moveTo("waiting")}
               onDismissLearned={(key) => setLearned((items) => items.filter((item) => item.key !== key))}
               next={next}
-              onNext={() => next && router.push(`/thread/${next.id}${account ? `?account=${account}` : ""}`)}
+              onNext={() => next && router.push(conversationHref(next.id, navigation))}
             />
           ) : (
             <>
               {/* Draft */}
               <div className="flex items-center justify-between gap-2">
-                {draft ? <VoiceProvenance matchPct={voiceMatch} /> : <span className="text-caption font-semibold text-ink-3">Your reply</span>}
+                {draft ? <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"><VoiceProvenance matchPct={voiceMatch} />{edited && <span role="status" className="text-caption text-ink-3">Edited by you</span>}</span> : <span className="text-caption font-semibold text-ink-3">Your reply</span>}
                 <div className="flex items-center gap-1">
                   {draft && <Button size="sm" variant="ghost" icon={BookOpenText} onClick={() => setSheet("why")}>Why this draft</Button>}
                   {draft && (
@@ -307,10 +338,10 @@ export function Conversation({ id }: { id: string }) {
                 </div>
               </div>
 
-              {confirmReplace && (
+              {confirmReplace !== null && (
                 <div role="alert" className="flex flex-wrap items-center gap-2 rounded-2xl bg-inset px-3 py-2 text-[14px] text-ink">
                   <span className="min-w-0 flex-1">Replace your edits with a new draft?</span>
-                  <Button size="sm" variant="primary" onClick={() => void regenerate(confirmReplace, true)}>Replace</Button>
+                  <Button size="sm" variant="primary" onClick={() => void (typeof confirmReplace === "number" ? chooseAlternative(confirmReplace, true) : regenerate(confirmReplace, true))}>Replace</Button>
                   <Button size="sm" variant="ghost" onClick={() => setConfirmReplace(null)}>Keep mine</Button>
                 </div>
               )}
@@ -341,22 +372,31 @@ export function Conversation({ id }: { id: string }) {
               )}
 
               {draft && phase === "editing" && (
-                <div className="dd-scroll-x -mx-3 flex gap-1.5 px-3 md:-mx-6 md:px-6" role="group" aria-label="Steer the draft">
+                <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Steer the draft">
+                  {(["shorter", "quote_rate"] as const).map((chip) => (
+                    <Chip key={chip} variant="action" loading={busyChip === chip} disabled={busyChip !== null} onClick={() => void regenerate(chip)}>{chipText(chip)}</Chip>
+                  ))}
+                  <details key={`${draft.id}-${draft.version}`} className="w-full">
+                    <summary className="dd-press w-fit cursor-pointer rounded-full px-3 py-2 text-caption font-semibold text-ink-2 hover:bg-inset focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-info">More reply options</summary>
+                    <div className="mt-1 flex flex-wrap gap-1.5 pb-1">
                   {draft.alternatives.length > 1 && draft.alternatives.map((alternative, index) => (
                     <Chip
                       key={`alt-${index}`}
                       pressed={(draft.chosenAlternative ?? 0) === index}
                       title={alternative}
-                      onClick={() => void toastAction(() => appStore.chooseAlternative(view.id, { draftId: draft.id, alternative: index }), { fallback: "Couldn't switch to that option. Try again." })}
+                      disabled={busyChip !== null}
+                      onClick={() => void chooseAlternative(index)}
                     >
                       Option {index + 1}
                     </Chip>
                   ))}
-                  {COMPOSER_CHIPS.map((chip) => (
+                  {COMPOSER_CHIPS.filter((chip) => chip !== "shorter" && chip !== "quote_rate").map((chip) => (
                     <Chip key={chip} variant="action" loading={busyChip === chip} disabled={busyChip !== null} onClick={() => void regenerate(chip)}>
                       {chipText(chip)}
                     </Chip>
                   ))}
+                    </div>
+                  </details>
                 </div>
               )}
 
@@ -364,13 +404,13 @@ export function Conversation({ id }: { id: string }) {
                 <VoiceToggle checked={asVoice} onChange={setAsVoice} text={text} igAccountId={view.igAccountId ?? undefined} />
               )}
 
-              {actionError && <p role="alert" className="rounded-2xl bg-danger-tint px-3 py-2 text-[14px] text-danger">{actionError}</p>}
+              {actionError && <div role="alert" className="rounded-2xl bg-danger-tint px-3 py-2 text-[14px] text-danger"><p>{actionError}</p>{view.igAccountId && /permission|consent/i.test(actionError) && <Link href={`/voice?account=${encodeURIComponent(view.igAccountId)}`} className="mt-2 inline-block font-semibold underline underline-offset-4">Review this creator's voice permissions</Link>}</div>}
 
               {phase === "sending" ? (
                 <SendingBanner action={pendingSend} handle={view.handle} />
-              ) : (
+              ) : draft ? (
                 <SlideToSend onConfirm={approve} disabled={sendDisabled} recipient={view.handle} label={asVoice ? "Slide to send voice note" : "Slide to send"} />
-              )}
+              ) : null}
               <p className="text-center text-caption text-ink-3">Nothing sends without you{windowInfo?.visible && !windowInfo.closed ? <> · <span className={cx(windowInfo.tone === "danger" || windowInfo.tone === "strong" ? "font-semibold text-danger" : undefined)}>{windowInfo.text}</span></> : null}</p>
             </>
           )}
@@ -510,10 +550,11 @@ function SendingBanner({ action, handle }: { action: PendingAction | null; handl
   );
 }
 
-function SentPanel({ result, learned, handle, waiting, onWaiting, onDismissLearned, next, onNext }: {
+export function SentPanel({ result, learned, handle, igAccountId, waiting, onWaiting, onDismissLearned, next, onNext }: {
   result: SendResult | null;
   learned: LearnedSignal[];
   handle: string;
+  igAccountId: string | null;
   waiting: boolean;
   onWaiting: () => void;
   onDismissLearned: (key: string) => void;
@@ -524,23 +565,25 @@ function SentPanel({ result, learned, handle, waiting, onWaiting, onDismissLearn
   return (
     <div className="flex flex-col gap-3">
       <p role="status" className="flex items-center gap-2 text-[15px] font-semibold text-ink">
-        <span className="dd-stamp flex h-7 w-7 items-center justify-center rounded-full bg-brand text-on-brand"><CheckCheck aria-hidden size={16} /></span>
+        <span className={cx("flex h-7 w-7 shrink-0 items-center justify-center rounded-full", uncertain ? "bg-waiting-tint text-waiting" : "dd-stamp bg-brand text-on-brand")}>{uncertain ? <Clock aria-hidden size={16} /> : <CheckCheck aria-hidden size={16} />}</span>
         {uncertain ? <>Approval recorded. Instagram hasn&apos;t confirmed it yet; DealDock won&apos;t send it again.</> : <>Reply sent to @{handle}</>}
       </p>
-      {learned.map((signal) => <LearnedHint key={signal.key} signal={signal} onDone={() => onDismissLearned(signal.key)} />)}
+      {result?.hint && <p role="note" className="rounded-2xl bg-waiting-tint px-3 py-2 text-[14px] text-ink">{result.hint}</p>}
+      {uncertain && <a href={`https://ig.me/m/${encodeURIComponent(handle)}`} target="_blank" rel="noopener noreferrer" className="inline-flex w-fit items-center gap-1.5 py-1 text-label font-semibold text-ink underline underline-offset-4">Check in Instagram <ExternalLink aria-hidden size={14} /></a>}
+      {!uncertain && igAccountId && learned.map((signal) => <LearnedHint key={signal.key} igAccountId={igAccountId} signal={signal} onDone={() => onDismissLearned(signal.key)} />)}
       <div className="flex flex-wrap gap-2">
-        {!waiting && <Button variant="secondary" icon={Hourglass} onClick={onWaiting}>Move to waiting</Button>}
+        {!uncertain && !waiting && <Button variant="secondary" icon={Hourglass} onClick={onWaiting}>Move to waiting</Button>}
         {next && <Button variant="primary" iconRight={ArrowRight} onClick={onNext}>Next: @{next.handle}</Button>}
       </div>
     </div>
   );
 }
 
-function LearnedHint({ signal, onDone }: { signal: LearnedSignal; onDone: () => void }) {
+function LearnedHint({ signal, igAccountId, onDone }: { signal: LearnedSignal; igAccountId: string; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const keep = async () => {
     setBusy(true);
-    const kept = await toastAction(() => appStore.createRule({ text: signal.text, key: signal.key, scope: signal.scope, status: "active" }), {
+    const kept = await toastAction(() => appStore.createRule({ text: signal.text, key: signal.key, scope: signal.scope, status: "active", igAccountId }), {
       success: "Added to Your voice. Drafts will do this from now on.",
       fallback: "Couldn't save that. Try again.",
     });

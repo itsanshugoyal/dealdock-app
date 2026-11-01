@@ -18,6 +18,8 @@ export async function createDraft(
     body: string;
     modelVersion: string;
     promptVersion: string;
+    /** Voice profile version captured before generating this draft. */
+    expectedVoiceVersion: number | null;
     /** The label this draft was written for (the thread's top label drifts later). */
     label?: ClassificationLabel | null;
     /** The creator's free-text steering for this generation (≤ 200 chars). */
@@ -43,7 +45,8 @@ export async function createDraft(
     // Coordinate model generation with explicit consent revocation. A shared
     // lock means revocation either commits first (then this fresh read rejects)
     // or waits and discards any ready draft generated under prior consent.
-    await lockConsentedVoiceProfile(tx, orgId, thread.igAccountId, "share");
+    const profile = await lockConsentedVoiceProfile(tx, orgId, thread.igAccountId, "share");
+    if (profile.version !== input.expectedVoiceVersion) throw new DomainError("voice_context_changed", 409);
 
     // A human-approved message is in flight and must not be replaced by a
     // late generation job. It is reconciled as a SendIntent, never discarded.
@@ -171,6 +174,7 @@ export async function listDistillationBatch(orgId: OrgId, igAccountId: string, s
     take: limit,
     select: {
       id: true,
+      sentMessageId: true,
       threadId: true,
       kind: true,
       label: true,
@@ -240,6 +244,28 @@ export interface SendIntentClaim {
   claimed: boolean;
 }
 
+type SendApproval = { draftId: string; seatId: string; finalText: string; idempotencyKey: string; asVoice?: boolean };
+const intentSelect = { id: true, draftId: true, status: true, finalText: true, seatId: true, idempotencyKey: true, asVoice: true, draft: { select: { threadId: true } } } as const;
+
+function matchSendIntent(intent: { id: string; draftId: string; status: SendIntentClaim["status"]; finalText: string; seatId: string; idempotencyKey: string; asVoice: boolean; draft: { threadId: string } }, input: SendApproval, threadId?: string): SendIntentClaim {
+  if (intent.draftId !== input.draftId || intent.finalText !== input.finalText || intent.seatId !== input.seatId ||
+      intent.idempotencyKey !== input.idempotencyKey || intent.asVoice !== (input.asVoice ?? false) ||
+      (threadId !== undefined && intent.draft.threadId !== threadId)) {
+    throw new DomainError("send_idempotency_key_conflict", 409);
+  }
+  return { intentId: intent.id, draftId: intent.draftId, status: intent.status, claimed: false };
+}
+
+/** Read an existing approval before checking whether its draft is still live. */
+export async function findSendIntentForRetry(orgId: OrgId, input: SendApproval & { threadId: string }): Promise<SendIntentClaim | null> {
+  await requireSeatInOrg(orgId, input.seatId, prisma, "send_seat_not_in_org");
+  const intent = await prisma.sendIntent.findFirst({
+    where: { orgId, OR: [{ draftId: input.draftId }, { idempotencyKey: input.idempotencyKey }] },
+    select: intentSelect,
+  });
+  return intent ? matchSendIntent(intent, input, input.threadId) : null;
+}
+
 /**
  * Persist human approval before the remote call. A network timeout after the
  * platform may have accepted the message is deliberately recoverable only by
@@ -268,13 +294,10 @@ export async function createSendIntentClaim(
     if (!draft) throw new DomainError("draft_not_in_org", 404);
     const existing = await tx.sendIntent.findFirst({
       where: { orgId, OR: [{ draftId: input.draftId }, { idempotencyKey: input.idempotencyKey }] },
-      select: { id: true, draftId: true, status: true, finalText: true, seatId: true },
+      select: intentSelect,
     });
     if (existing) {
-      if (existing.draftId !== input.draftId || existing.finalText !== input.finalText || existing.seatId !== input.seatId) {
-        throw new DomainError("send_idempotency_key_conflict", 409);
-      }
-      return { intentId: existing.id, draftId: existing.draftId, status: existing.status, claimed: false };
+      return matchSendIntent(existing, input);
     }
 
     const claim = await tx.draft.updateMany({
@@ -287,13 +310,10 @@ export async function createSendIntentClaim(
       // receives that durable intent, not a misleading conflict/retry signal.
       const concurrent = await tx.sendIntent.findFirst({
         where: { orgId, OR: [{ draftId: input.draftId }, { idempotencyKey: input.idempotencyKey }] },
-        select: { id: true, draftId: true, status: true, finalText: true, seatId: true },
+        select: intentSelect,
       });
       if (concurrent) {
-        if (concurrent.draftId !== input.draftId || concurrent.finalText !== input.finalText || concurrent.seatId !== input.seatId) {
-          throw new DomainError("send_idempotency_key_conflict", 409);
-        }
-        return { intentId: concurrent.id, draftId: concurrent.draftId, status: concurrent.status, claimed: false };
+        return matchSendIntent(concurrent, input);
       }
       throw new DomainError("draft_not_sendable_or_already_claimed", 409);
     }

@@ -195,8 +195,8 @@ export const ConversationRow = memo(function ConversationRow({ thread, href, now
             ? <MoneyValue minor={thread.estValueMinMinor ?? thread.estValueMaxMinor!} maxMinor={thread.estValueMaxMinor} kind="estimate" estimatePrefix={false} className="shrink-0 text-[14px] font-semibold text-ink" />
             : <span className="shrink-0 text-caption text-ink-3">{relativeAge(thread.lastMessageAt, now, locale, timezone)}</span>}
         </div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-caption">
-          {creator && <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-inset py-0.5 pl-0.5 pr-2 font-semibold text-ink-2"><Avatar handle={creator} size={20} />@{creator}</span>}
+        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-caption">
+          {creator && <span className="inline-flex max-w-full items-center gap-1 rounded-full bg-inset py-0.5 pl-0.5 pr-2 font-semibold text-ink-2"><Avatar handle={creator} size={20} /><span className="min-w-0 break-all">@{creator}</span></span>}
           {thread.topLabel && <LabelDot label={thread.topLabel} />}
           <RowState thread={thread} window={window} />
         </div>
@@ -237,7 +237,7 @@ function RowState({ thread, window }: { thread: DemoThread; window: ReturnType<t
   } else if (window.closed && thread.unreplied) {
     items.push(<span key="closed" className="text-ink-3">Reply in Instagram</span>);
   }
-  return <span className="flex min-w-0 items-center gap-2 truncate">{items.map((item, index) => <span key={index} className="flex shrink-0 items-center gap-2">{index > 0 && <span aria-hidden className="text-ink-3">·</span>}{item}</span>)}</span>;
+  return <span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2 gap-y-1">{items.map((item, index) => <span key={index} className="flex items-center gap-2 whitespace-nowrap">{index > 0 && <span aria-hidden className="text-ink-3">·</span>}{item}</span>)}</span>;
 }
 
 /* ── Money on the table ────────────────────────────────────────────────── */
@@ -500,10 +500,9 @@ export function SlideToSend({ onConfirm, disabled = false, label = "Slide to sen
 /** "In your voice" provenance line for drafts — a waveform glyph, never a sparkle. */
 export function VoiceProvenance({ matchPct, className }: { matchPct?: number | null; className?: string }) {
   return (
-    <span className={cx("inline-flex items-center gap-1.5 text-caption font-semibold text-recovered", className)}>
+    <span title={typeof matchPct === "number" ? `${Math.round(matchPct)}% of this creator's sent drafts needed light edits or none. This is not a score for the current reply.` : undefined} className={cx("inline-flex items-center gap-1.5 text-caption font-semibold text-recovered", className)}>
       <AudioLines aria-hidden size={14} />
       In your voice
-      {typeof matchPct === "number" && <span className="font-medium text-ink-3">· {Math.round(matchPct)}% match</span>}
     </span>
   );
 }

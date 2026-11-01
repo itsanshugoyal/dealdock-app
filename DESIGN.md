@@ -2,6 +2,8 @@
 
 Status: shipped in `apps/web` on 31 Oct 2026. Replaces v2 (plum hero, highlighter, serif money), which was rejected along with three mockup rounds. The tokens live in `apps/web/src/app/globals.css`; the shared pieces live in `apps/web/src/components/kit.tsx` and `apps/web/src/components/ui/*`.
 
+1 November refinement: retain this visual language. Today now recommends an actionable closing-window reply before falling back to value, and surfaces reconnection. Shared queues and conversation headers retain creator identity. Detailed reply steering and manual style axes use disclosure. Review shows sorted/remaining progress and a finite skip-for-later flow with focus and Undo. Revenue and CSV share creator/month filters. Changed scopes hide old data immediately; mobile filters have 44px targets. See the [hands-on audit and test evidence](docs/ux-and-product-audit-2026-11-01.md).
+
 ## 1. What it should feel like
 
 DealDock is a messaging app whose messages are worth money. It should feel like a premium native app on a phone (Messages, Wallet, a bank app) and like a calm, fast desk on a laptop. It must never feel like a generic CRM, a toy, or an AI chatbot.
@@ -13,7 +15,7 @@ Principles:
 3. **The person first.** Every conversation row leads with a face (gradient monogram or photo), the name, then the money. Labels are small dots with words, not badges.
 4. **Calm by default, loud only when money is at risk.** The red ring and red copy appear only when a reply window closes within the hour or six hours. No unread dots, no confetti.
 5. **Human approval is the brand.** Nothing sends on its own. The send gesture is deliberate (slide on touch, a full-width button with ⌘↵ on desktop), and every send gets an undo window.
-6. **The AI is invisible.** No sparkles, no "AI" chips. Drafts say "In your voice · 74% match", with a waveform glyph.
+6. **The AI is invisible.** No sparkles or decorative AI chips. Drafts say "In your voice", with a waveform glyph. Historical edit rates are labelled as drafts sent with light edits, rather than a quality score for the current draft. Synthetic audio still needs its explicit disclosure.
 
 ## 2. Tokens
 

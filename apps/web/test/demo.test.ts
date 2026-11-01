@@ -129,3 +129,20 @@ describe("demo store parity with the API store", () => {
     expect((await demoStore.loadAudit(500))?.length).toBe(audits);
   });
 });
+
+describe("demo creator ledger", () => {
+  it("scopes sales to their actual conversation creator", async () => {
+    await demoStore.init();
+    await demoStore.closeDeal("t-saffron", 22222, "brand", { idempotencyKey: "scoped-sale-test" });
+    const rohan = await demoStore.loadLedger(undefined, "ig-demo-rohan");
+    const diya = await demoStore.loadLedger(undefined, "ig-demo-diya");
+    expect(rohan?.totalMinor).toBe(22222);
+    expect(rohan?.entries.map((entry) => entry.threadId)).toContain("t-saffron");
+    expect(diya?.entries.map((entry) => entry.threadId)).not.toContain("t-saffron");
+    const roster = await demoStore.loadRoster();
+    expect(roster?.find((row) => row.igAccountId === "ig-demo-rohan")?.mtdRecoveredMinor).toBe(rohan?.totalMinor);
+    expect(roster?.reduce((sum, row) => sum + row.mtdRecoveredMinor, 0)).toBe(demoStore.getSnapshot().dashboard?.mtdRecoveredMinor);
+    expect(await demoStore.loadLedger(undefined, "foreign-account")).toBeNull();
+    expect(demoStore.getSnapshot().ledgerView.errorStatus).toBe(404);
+  });
+});

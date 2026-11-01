@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { DomainError } from "@dealdock/core";
+import { DomainError, HIGH_INTENT_LABELS } from "@dealdock/core";
 import { prisma } from "../client";
 import type { OrgId } from "../org-id";
 import { writeAudit } from "../audit-log";
@@ -190,8 +190,14 @@ export async function getRosterOverview(orgId: OrgId) {
           orgId,
           igAccountId: account.id,
           state: "open",
+          hasPendingReview: false,
+          topLabel: { in: [...HIGH_INTENT_LABELS] },
           estValueMaxMinor: { not: null },
-          lastOutboundAt: null,
+          lastInboundAt: { not: null },
+          OR: [
+            { lastOutboundAt: null },
+            { lastInboundAt: { gt: prisma.thread.fields.lastOutboundAt } },
+          ],
         },
       }),
       prisma.classification.count({

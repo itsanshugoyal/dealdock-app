@@ -8,6 +8,13 @@ if (shouldRun && !process.env.TEST_DATABASE_URL) {
 describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres safety invariants", () => {
   let db: typeof import("../src/index");
   let prisma: typeof import("../src/client").prisma;
+
+  async function createFixtureDraft(orgId: Parameters<typeof db.createDraft>[0], input: Omit<Parameters<typeof db.createDraft>[1], "expectedVoiceVersion">) {
+    const thread = await prisma.thread.findUniqueOrThrow({ where: { id: input.threadId }, select: { igAccountId: true } });
+    const { version } = await db.getVoiceProfileState(orgId, thread.igAccountId);
+    return db.createDraft(orgId, { ...input, expectedVoiceVersion: version });
+  }
+
   const organizations: string[] = [];
 
   async function organization(currencyCode = "INR", timezone = "Asia/Kolkata") {
@@ -116,7 +123,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres sa
       participantIgId: "buyer", igMessageId: `send-${created.org.id}`, direction: "inbound", text: "Hello", sentAt: new Date(),
     });
     if (!("threadId" in incoming)) throw new Error("inbound write failed");
-    const draft = await db.createDraft(orgId, { threadId: incoming.threadId, body: "Hello!", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: incoming.threadId, body: "Hello!", modelVersion: "test", promptVersion: "test" });
     const claimed = await db.createSendIntentClaim(orgId, { draftId: draft.id, seatId: created.seat.id, finalText: "Hello!", idempotencyKey: `intent-${created.org.id}` });
     expect(claimed.claimed).toBe(true);
     await db.markSendIntentUnknown(orgId, claimed.intentId, "timeout after request body");

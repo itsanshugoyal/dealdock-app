@@ -70,7 +70,7 @@ export default function OffersPage() {
           <HowDraftsUse offers={list} />
         </aside>
       </div>
-      <OfferSheet key={editing ? editing.offer?.id ?? `new-${editing.preset?.name ?? ""}` : "closed"} editing={editing} accounts={accounts} onClose={() => setEditing(null)} />
+      <OfferSheet key={editing ? editing.offer?.id ?? `new-${editing.preset?.name ?? ""}` : "closed"} editing={editing} accounts={accounts} accountsReady={Boolean(settings.data)} onClose={() => setEditing(null)} />
     </div>
   );
 }
@@ -89,7 +89,7 @@ function OfferCard({ offer, accountHandle, onOpen }: { offer: OfferDto; accountH
           <span className={cx("flex h-10 w-10 shrink-0 items-center justify-center rounded-xl", style.tint, style.accent)}><Icon aria-hidden size={19} /></span>
           <div className="min-w-0 flex-1">
             <h2 className="text-[16px] font-semibold leading-5 text-ink">{offer.name}</h2>
-            <p className="mt-0.5 text-caption text-ink-3">{dealTypeText(offer.dealType)}{accountHandle ? ` · @${accountHandle}` : ""}</p>
+            <p className="mt-0.5 text-caption text-ink-3">{dealTypeText(offer.dealType)}{offer.igAccountId === null ? " · Shared offer" : accountHandle ? ` · @${accountHandle}` : " · Creator details unavailable"}</p>
           </div>
           {!offer.active && <Tag>Paused</Tag>}
         </div>
@@ -143,7 +143,7 @@ function HowDraftsUse({ offers }: { offers: OfferDto[] }) {
   );
 }
 
-function OfferSheet({ editing, accounts, onClose }: { editing: Editing; accounts: Array<{ id: string; handle: string }>; onClose: () => void }) {
+function OfferSheet({ editing, accounts, accountsReady, onClose }: { editing: Editing; accounts: Array<{ id: string; handle: string }>; accountsReady: boolean; onClose: () => void }) {
   const offer = editing?.offer ?? null;
   const initial = {
     name: offer?.name ?? editing?.preset?.name ?? "",
@@ -153,11 +153,11 @@ function OfferSheet({ editing, accounts, onClose }: { editing: Editing; accounts
     link: offer?.link ?? "",
     availability: offer?.availability ?? "",
     details: offer?.details ?? "",
-    igAccountId: offer?.igAccountId ?? "",
+    igAccountId: offer ? offer.igAccountId ?? "shared" : accounts.length === 1 ? accounts[0]!.id : "",
     active: offer?.active ?? true,
   };
   const [form, setForm] = useState(initial);
-  const [errors, setErrors] = useState<Partial<Record<"name" | "priceMin" | "priceMax" | "link", string>>>({});
+  const [errors, setErrors] = useState<Partial<Record<"name" | "priceMin" | "priceMax" | "link" | "igAccountId", string>>>({});
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm((current) => ({ ...current, [key]: value }));
@@ -167,6 +167,11 @@ function OfferSheet({ editing, accounts, onClose }: { editing: Editing; accounts
     const next: typeof errors = {};
     const min = form.priceMin ? parseMoneyInput(form.priceMin) : null;
     const max = form.priceMax ? parseMoneyInput(form.priceMax) : null;
+    const scope = form.igAccountId || (accounts.length === 1 ? accounts[0]!.id : "");
+    if (!accountsReady) next.igAccountId = "Wait for your creator accounts to load before saving.";
+    else if (!accounts.length) next.igAccountId = "Connect an Instagram account before adding an offer.";
+    else if (scope !== "shared" && !accounts.some((account) => account.id === scope)) next.igAccountId = "Choose an available creator for this offer.";
+    if (accounts.length > 1 && !form.igAccountId) next.igAccountId = "Choose a creator, or deliberately share this offer across the workspace.";
     if (!form.name.trim()) next.name = "Give the offer a name.";
     if (form.priceMin && min === null) next.priceMin = MONEY_INPUT_ERROR;
     if (form.priceMax && max === null) next.priceMax = MONEY_INPUT_ERROR;
@@ -176,7 +181,7 @@ function OfferSheet({ editing, accounts, onClose }: { editing: Editing; accounts
     setErrors(next);
     if (Object.keys(next).length) return;
     const input: OfferInput = {
-      igAccountId: form.igAccountId || null,
+      igAccountId: scope !== "shared" ? scope : null,
       name: form.name.trim(),
       dealType: form.dealType,
       priceMinMinor: min,
@@ -225,11 +230,20 @@ function OfferSheet({ editing, accounts, onClose }: { editing: Editing; accounts
           <>
             {offer && <Button variant="danger-ghost" className="mr-auto" onClick={() => setConfirmDelete(true)} disabled={busy}>Delete</Button>}
             <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
-            <Button variant="primary" onClick={() => void save()} loading={busy} loadingLabel="Saving…">{offer ? "Save" : "Add offer"}</Button>
+            <Button variant="primary" onClick={() => void save()} disabled={!accountsReady || !accounts.length} loading={busy} loadingLabel="Saving…">{offer ? "Save" : "Add offer"}</Button>
           </>
         }
       >
         <form className="flex flex-col gap-4" onSubmit={(event) => { event.preventDefault(); void save(); }}>
+          {!accountsReady ? <p role="status" className="text-label text-ink-2">Loading creator accounts before saving…</p> : !accounts.length ? <p role="alert" className="text-label text-ink-2">Connect Instagram in Settings before adding an offer.</p> : accounts.length === 1 ? <p className="text-caption text-ink-2">For @{accounts[0]!.handle}</p> : null}
+          {errors.igAccountId && accounts.length <= 1 && <p role="alert" className="text-caption text-danger">{errors.igAccountId}</p>}
+          {accounts.length > 1 && (
+            <Select label="Creator" value={form.igAccountId} onChange={(event) => set("igAccountId", event.target.value)} error={errors.igAccountId} helper="Choose whose drafts may quote this offer. Shared offers can be quoted by every creator.">
+              <option value="" disabled>Choose a creator…</option>
+              {accounts.map((account) => <option key={account.id} value={account.id}>@{account.handle}</option>)}
+              <option value="shared">Shared across every creator</option>
+            </Select>
+          )}
           <TextField label="Name" value={form.name} maxLength={80} onChange={(event) => set("name", event.target.value)} error={errors.name} helper="As you'd say it in a DM, like “Reel + 2 stories”." />
           <DealTypeSelect label="Type" value={form.dealType} onChange={(type) => set("dealType", type)} />
           <div className="grid grid-cols-2 gap-3">
@@ -240,12 +254,6 @@ function OfferSheet({ editing, accounts, onClose }: { editing: Editing; accounts
           <TextField label="Link, optional" type="url" inputMode="url" value={form.link} onChange={(event) => set("link", event.target.value)} error={errors.link} helper="Rate card, booking page or checkout. Drafts share it as is." />
           <TextField label="Availability, optional" value={form.availability} maxLength={120} onChange={(event) => set("availability", event.target.value)} helper="Like “2 slots left in December”." />
           <TextArea label="Details, optional" value={form.details} maxLength={500} rows={3} onChange={(event) => set("details", event.target.value)} helper="What's included, add-ons, payment options." />
-          {accounts.length > 1 && (
-            <Select label="Creator" value={form.igAccountId} onChange={(event) => set("igAccountId", event.target.value)}>
-              <option value="">Every creator</option>
-              {accounts.map((account) => <option key={account.id} value={account.id}>@{account.handle}</option>)}
-            </Select>
-          )}
           <Switch checked={form.active} onChange={(active) => set("active", active)} label="Drafts can mention this" description="Turn off to pause an offer without deleting it." />
         </form>
       </Sheet>
