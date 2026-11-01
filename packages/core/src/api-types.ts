@@ -101,9 +101,10 @@ export interface ReviewQueueRow {
   rationale: string | null;
 }
 
-/** GET /review-queue — unreviewed items, oldest classification first, at most 50. */
+/** GET /review-queue — unreviewed items, oldest classification first, paginated. */
 export interface ReviewQueueResponse {
   rows: ReviewQueueRow[];
+  nextCursor?: string | null;
 }
 
 // ── Onboarding Leak Scan ──────────────────────────────────────────────────

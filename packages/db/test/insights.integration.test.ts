@@ -10,6 +10,13 @@ const DAY = 86_400_000;
 describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Inbox v2, offers, insights, audit and schedulers", () => {
   let db: typeof import("../src/index");
   let prisma: typeof import("../src/client").prisma;
+
+  async function createFixtureDraft(orgId: Parameters<typeof db.createDraft>[0], input: Omit<Parameters<typeof db.createDraft>[1], "expectedVoiceVersion">) {
+    const thread = await prisma.thread.findUniqueOrThrow({ where: { id: input.threadId }, select: { igAccountId: true } });
+    const { version } = await db.getVoiceProfileState(orgId, thread.igAccountId);
+    return db.createDraft(orgId, { ...input, expectedVoiceVersion: version });
+  }
+
   const organizations: string[] = [];
 
   async function organization(label: string) {
@@ -58,6 +65,38 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Inbox v2, o
   afterAll(async () => {
     for (const orgId of organizations.splice(0)) await db.hardDeleteOrg(orgId).catch(() => undefined);
     await prisma?.$disconnect();
+  });
+
+  it("pages more than 100 tied inbox rows and 50 tied review rows without omission", async () => {
+    const org = await organization("large-pages");
+    const other = await organization("other-pages");
+    const at = new Date("2026-01-01T00:00:00.000Z");
+    const threads = Array.from({ length: 101 }, (_, i) => ({
+      id: `${org.org.id}-thread-${i}`, orgId: org.org.id, igAccountId: org.igAccount.id,
+      igThreadId: `thread-${i}`, participantHandle: `buyer_${i}`, participantIgId: `buyer-${i}`,
+      lastMessageAt: at, lastInboundAt: at, topLabel: "brand_deal" as const, estValueMaxMinor: 100n,
+    }));
+    await prisma.thread.createMany({ data: threads });
+    const messages = threads.slice(0, 51).map((thread, i) => ({ id: `${org.org.id}-message-${i}`, orgId: org.org.id, threadId: thread.id, igMessageId: `${org.org.id}-ig-message-${i}`, direction: "inbound" as const, text: `Review ${i}`, sentAt: at }));
+    await prisma.message.createMany({ data: messages });
+    await prisma.classification.createMany({ data: messages.map((message, i) => ({
+      id: `${org.org.id}-classification-${i}`, orgId: org.org.id, messageId: message.id, label: "uncertain" as const,
+      confidence: 0.2, language: "en" as const, currencyCode: "INR", modelVersion: "test", promptVersion: "test", routedTo: "review_queue" as const, createdAt: at,
+    })) });
+    const first = await db.listInboxPage(org.orgId);
+    const second = await db.listInboxPage(org.orgId, { cursor: first.nextCursor! });
+    expect(first.rows).toHaveLength(100);
+    expect(second.rows).toHaveLength(1);
+    expect(new Set([...first.rows, ...second.rows].map((row) => row.threadId)).size).toBe(101);
+    expect(second.nextCursor).toBeNull();
+    const reviewFirst = await db.listReviewQueuePage(org.orgId);
+    const reviewSecond = await db.listReviewQueuePage(org.orgId, 50, reviewFirst.nextCursor!);
+    expect(reviewFirst.rows).toHaveLength(50);
+    expect(reviewSecond.rows).toHaveLength(1);
+    expect(new Set([...reviewFirst.rows, ...reviewSecond.rows].map((row) => row.classificationId)).size).toBe(51);
+    expect(reviewSecond.nextCursor).toBeNull();
+    expect((await db.listReviewQueuePage(other.orgId, 50, reviewFirst.nextCursor!)).rows).toEqual([]);
+    await expect(db.listReviewQueuePage(org.orgId, 50, "invalid")).rejects.toMatchObject({ status: 400 });
   });
 
   it("pages the inbox by value with a stable cursor, search and per-sender revenue", async () => {
@@ -259,7 +298,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Inbox v2, o
     const thread = await commerceThread(org, "deal", "Let's lock it", { min: 30_000_00, max: 60_000_00 });
     await db.setMonthlyGoal(org.orgId, org.seat.id, 100_000_00);
     await db.setVoiceConsent(org.orgId, org.igAccount.id, org.seat.id, true);
-    const draft = await db.createDraft(org.orgId, { threadId: thread.threadId, body: "Hello! Sharing details.", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(org.orgId, { threadId: thread.threadId, body: "Hello! Sharing details.", modelVersion: "test", promptVersion: "test" });
     const intent = await db.createSendIntentClaim(org.orgId, { draftId: draft.id, seatId: org.seat.id, finalText: "Heyy! Sharing details.", idempotencyKey: `send-${org.nonce}` });
     await db.markSendIntentRemoteAccepted(org.orgId, intent.intentId, `platform-${org.nonce}`, new Date());
     await db.persistSendIntent(org.orgId, { intentId: intent.intentId, platformMessageId: `platform-${org.nonce}`, sentAt: new Date() });

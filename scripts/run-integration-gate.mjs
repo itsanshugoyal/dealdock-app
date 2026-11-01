@@ -34,7 +34,7 @@ let failed = false;
 try {
   await db.requireUtf8Database();
   const vitest = join(root, 'node_modules', 'vitest', 'vitest.mjs');
-  await run([vitest, 'run', 'test/tenancy.integration.test.ts', 'test/safety.integration.test.ts', 'test/billing.integration.test.ts', 'test/media.integration.test.ts', 'test/insights.integration.test.ts', 'test/voice-learning.integration.test.ts'], join(root, 'packages/db'));
+  await run([vitest, 'run', 'test/tenancy.integration.test.ts', 'test/safety.integration.test.ts', 'test/billing.integration.test.ts', 'test/media.integration.test.ts', 'test/insights.integration.test.ts', 'test/voice-learning.integration.test.ts', 'test/ledger-scope.integration.test.ts'], join(root, 'packages/db'));
   await run([vitest, 'run', 'test/graph-budget.integration.test.ts'], join(root, 'packages/messaging'));
   await run([join(root, 'scripts/verify-private-pilot.mjs')]);
   assert.equal(await db.findDemoBootstrap(), null, 'Refusing to overwrite or delete an existing demo organization');

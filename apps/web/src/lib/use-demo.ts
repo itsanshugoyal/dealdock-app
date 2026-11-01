@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { can, type MoneyContext, type PermissionAction } from "@dealdock/core";
 import { demoStore } from "./demo-store";
 import { apiStore } from "./api-store";
-import { emptySnapshot, isFresh } from "./snapshot";
+import { emptySnapshot, IDLE, isFresh, loading } from "./snapshot";
 import type { AppSnapshot, AppStoreApi, DemoThread, Slice, SliceKey } from "./types";
 
 /** Demo is an explicit, separately-labelled local mode — never an API fallback. */
@@ -96,22 +96,39 @@ export function useLazy<K extends SliceKey>(key: K, load: () => Promise<unknown>
   const snapshot = useApp();
   const slice = snapshot[key];
   const request = `${snapshot.epoch}|${JSON.stringify(deps)}`;
+  // Effects run after render: hide the previous inputs' data immediately on
+  // navigation, including while the demo store asynchronously initializes.
+  const current = useRef({ request, generation: 0 });
+  if (current.current.request !== request) current.current = { request, generation: current.current.generation + 1 };
+  const generation = current.current.generation;
+  const [resolved, setResolved] = useState(() => lastLoad.get(key) === request && isFresh(slice as Slice<unknown>, Date.now()) ? 0 : -1);
   useEffect(() => {
     if (!enabled) return;
-    if (lastLoad.get(key) === request && isFresh(appStore.getSnapshot()[key] as Slice<unknown>, Date.now())) return;
-    lastLoad.set(key, request);
-    void load();
+    if (lastLoad.get(key) === request && isFresh(appStore.getSnapshot()[key] as Slice<unknown>, Date.now())) {
+      setResolved(generation);
+      return;
+    }
+    // An unmounted request must not leave the previous inputs marked fresh.
+    lastLoad.delete(key);
+    let active = true;
+    const finish = () => {
+      if (!active || current.current.generation !== generation) return;
+      lastLoad.set(key, request);
+      setResolved(generation);
+    };
+    void load().then(finish, finish);
+    return () => { active = false; };
     // `load` is recreated every render; the inputs, the account epoch and a write's stale mark decide when to reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, request, enabled, slice.stale]);
-  return slice;
+  return enabled && resolved !== generation ? loading(IDLE) as AppSnapshot[K] : slice;
 }
 
 export const useInsights = (months = 6) => useLazy("insights", () => appStore.loadInsights(months), [months]);
 export const useOffers = () => useLazy("offers", () => appStore.loadOffers());
 export const useVoice = (igAccountId?: string) => useLazy("voice", () => appStore.loadVoice(igAccountId), [igAccountId]);
 export const useAudit = (limit = 100) => useLazy("audit", () => appStore.loadAudit(limit), [limit]);
-export const useLedger = (month?: string) => useLazy("ledgerView", () => appStore.loadLedger(month), [month]);
+export const useLedger = (month?: string, igAccountId?: string) => useLazy("ledgerView", () => appStore.loadLedger(month, igAccountId), [month, igAccountId]);
 /** Closed threads load on demand (e.g. the Inbox "Closed" group's first expand). */
 export const useClosedThreads = (enabled = true) => useLazy("closed", () => appStore.loadClosed(), [], enabled);
 export const useSettings = () => useLazy("settings", () => appStore.loadSettings());

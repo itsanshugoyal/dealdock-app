@@ -5,10 +5,10 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, ArrowRight, AudioLines, ScanSearch, UsersRound } from "lucide-react";
 import { byValueDesc, needsYou, pluralize, waitingLowMinor } from "../../lib/format";
 import { useMinuteClock } from "../../lib/keyboard";
-import { useApp, useRoster, useSettings } from "../../lib/use-demo";
+import { appStore, useApp, useRoster, useSettings } from "../../lib/use-demo";
 import { ConversationRow, Group, HeroCard, LargeTitle, ValueStrip } from "../../components/kit";
 import { buttonClasses } from "../../components/ui/button-classes";
-import { EmptyState, Skeleton } from "../../components/ui/feedback";
+import { EmptyState, ErrorState, Skeleton } from "../../components/ui/feedback";
 import { MoneyValue } from "../../components/ui/money-value";
 import { Avatar } from "../../components/ui/sender";
 
@@ -43,7 +43,11 @@ export default function RosterPage() {
     needs: rows.reduce((sum, row) => sum + row.unreadHighPriority, 0),
     check: rows.reduce((sum, row) => sum + row.reviewQueueSize, 0),
   };
-  const loading = roster.status === "loading" && !roster.data;
+  const loading = !roster.data;
+
+  if (roster.status === "error" && !roster.data) {
+    return <ErrorState as="h1" thing="your creators" reason={roster.error} onRetry={() => void appStore.loadRoster()} className="min-h-[60dvh] justify-center" />;
+  }
 
   return (
     <div className="mx-auto w-full max-w-[1240px] pb-12">
@@ -57,8 +61,8 @@ export default function RosterPage() {
         <section aria-label="Totals across creators" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <Total label="Recovered this month" tone="money">{loading ? <Skeleton className="h-8 w-28" /> : <MoneyValue minor={totals.recovered} kind="confirmed" className="font-semibold" />}</Total>
           <Total label="Waiting in DMs, at least">{loading ? <Skeleton className="h-8 w-28" /> : <MoneyValue minor={totals.waiting} kind="neutral" className="font-semibold" />}</Total>
-          <Total label="Need a reply">{totals.needs}</Total>
-          <Total label="To check">{totals.check}</Total>
+          <Total label="Need a reply">{loading ? <Skeleton className="h-8 w-12" /> : totals.needs}</Total>
+          <Total label="To check">{loading ? <Skeleton className="h-8 w-12" /> : totals.check}</Total>
         </section>
 
         <h2 className="mb-3 mt-8 text-heading text-ink">Creators</h2>
@@ -102,6 +106,7 @@ export default function RosterPage() {
                     <AudioLines aria-hidden size={18} />
                   </Link>
                 </div>
+                <Link href={`/ledger?account=${encodeURIComponent(row.igAccountId)}`} className="mt-3 inline-flex w-fit items-center gap-1 py-1 text-caption font-semibold text-brand">Revenue report <ArrowRight aria-hidden size={14} /></Link>
               </article>
             );
           })}
@@ -123,7 +128,7 @@ export default function RosterPage() {
             <div className="rounded-[24px] bg-surface p-5 shadow-card">
               <h2 className="text-heading text-ink">How the desk works</h2>
               <ul className="mt-3 flex flex-col gap-3 text-[14px] text-ink-2">
-                <li className="flex gap-3"><span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-tint text-[12px] font-bold text-recovered">1</span>Replies use each creator&apos;s own voice and offers, never another creator&apos;s.</li>
+                <li className="flex gap-3"><span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-tint text-[12px] font-bold text-recovered">1</span>Writing voices stay separate. Account offers apply to that creator; shared offers apply across the workspace.</li>
                 <li className="flex gap-3"><span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-tint text-[12px] font-bold text-recovered">2</span>Every send is approved by a person and logged with who sent it.</li>
                 <li className="flex gap-3"><span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-brand-tint text-[12px] font-bold text-recovered">3</span>Creators can see the activity on their own account.</li>
               </ul>

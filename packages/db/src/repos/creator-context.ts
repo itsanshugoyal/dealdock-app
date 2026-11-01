@@ -55,6 +55,8 @@ export interface CreatorContextRow extends BusinessContextFields {
   styleCard: Record<string, unknown> | null;
   correctionExamples: Array<{ text: string; correctLabel: string }>;
   voiceEnabled: boolean;
+  /** Profile version captured with the voice data used for generation. */
+  voiceVersion: number | null;
   /** Samples the creator marked "not me" (consent-gated); pass this row to getDraftVoiceContext. */
   excludedMessageIds: string[];
   /** Active offers in the org currency: this account's and workspace-wide ones. */
@@ -129,7 +131,7 @@ export async function getCreatorContext(
     requireIgAccountInOrg(orgId, igAccountId),
     prisma.voiceProfile.findFirst({
       where: { orgId, igAccountId },
-      select: { enabled: true, consentedAt: true, revokedAt: true, styleCard: true, styleOverrides: true, learningPaused: true, excludedMessageIds: true },
+      select: { enabled: true, consentedAt: true, revokedAt: true, styleCard: true, styleOverrides: true, learningPaused: true, excludedMessageIds: true, version: true },
     }),
     // Corrections are creator-account scoped. A roster manager's correction
     // for one creator must never alter another creator's model prompt.
@@ -161,6 +163,7 @@ export async function getCreatorContext(
     styleCard,
     correctionExamples: corrections,
     voiceEnabled: consented,
+    voiceVersion: voice?.version ?? null,
     excludedMessageIds: consented ? voice.excludedMessageIds : [],
     offers: offers.map((o) => ({
       id: o.id,
@@ -262,13 +265,13 @@ export async function getDraftVoiceContext(
       },
       orderBy: { sentAt: "desc" },
       take: 100,
-      select: { id: true, threadId: true, kind: true, label: true, body: true, finalText: true, editRatio: true, sentAt: true, replyToMessageId: true },
+      select: { id: true, sentMessageId: true, threadId: true, kind: true, label: true, body: true, finalText: true, editRatio: true, sentAt: true, replyToMessageId: true },
     }),
   ]);
   const inbound = await inboundTexts(orgId, lessons.map((l) => l.replyToMessageId));
   return {
     exemplarPool: corpus.filter((row) => !excluded.has(row.messageId)),
-    lessonPool: lessons.map((l) => ({
+    lessonPool: lessons.filter((l) => !l.sentMessageId || !excluded.has(l.sentMessageId)).map((l) => ({
       draftId: l.id,
       threadId: l.threadId,
       scope: l.kind === "nudge" ? "nudge" : (l.label ?? "all"),

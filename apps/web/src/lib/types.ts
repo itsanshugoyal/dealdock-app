@@ -260,7 +260,7 @@ export interface RegionInput {
 }
 
 /** POST /threads/:id/send result, plus the two flags the composer copy needs. */
-export type SendResult = SendResponse & { pending: boolean; ambiguous: boolean };
+export type SendResult = Omit<SendResponse, "intentId"> & { intentId?: string; pending: boolean; ambiguous: boolean };
 
 export interface AppSnapshot {
   /** Open + waiting inbox threads and unreviewed review-queue items (the core refresh). */
@@ -341,7 +341,7 @@ export interface AppStoreApi {
   review(classificationOrThreadId: string, outcome: "confirmed" | "overridden", label?: ClassificationLabel): Promise<unknown>;
 
   // Ledger, insights, goal
-  loadLedger(month?: string): Promise<LedgerView | null>;
+  loadLedger(month?: string, igAccountId?: string): Promise<LedgerView | null>;
   updateLedger(entryId: string, body: Partial<Pick<DemoLedgerEntry, "amountMinor" | "dealType" | "note">>): Promise<unknown>;
   deleteLedger(entryId: string): Promise<unknown>;
   download(path: string, fallbackName: string): Promise<void>;

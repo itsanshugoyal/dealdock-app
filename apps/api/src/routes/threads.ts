@@ -5,6 +5,7 @@ import {
   dismissNudge,
   getConnectedAccount,
   getDraftForSend,
+  findSendIntentForRetry,
   markTokenExpired,
   createSendIntentClaim,
   markSendIntentRemoteAccepted,
@@ -114,8 +115,20 @@ export async function threadRoutes(app: FastifyInstance) {
       });
     }
 
+    const approval = { threadId: id, draftId, seatId: auth.seatId, finalText, idempotencyKey, asVoice };
+    const retryResponse = (intent: { status: string; intentId: string }) => ({
+      status: intent.status,
+      intentId: intent.intentId,
+      hint: "This approved send is already being processed or was previously recorded.",
+    });
+    const previous = await findSendIntentForRetry(auth.orgId, approval);
+    if (previous) return reply.code(202).send(retryResponse(previous));
+
     const draft = await getDraftForSend(auth.orgId, draftId);
     if (!draft || draft.thread.id !== id) {
+      // A concurrent request may have claimed the draft since the first lookup.
+      const concurrent = await findSendIntentForRetry(auth.orgId, approval);
+      if (concurrent) return reply.code(202).send(retryResponse(concurrent));
       return reply.code(404).send({ error: "draft_not_found_or_already_sent" });
     }
     if (draft.thread.igAccount.status !== "active") {
@@ -186,11 +199,7 @@ export async function threadRoutes(app: FastifyInstance) {
       audioAssetId: audio?.assetId ?? null,
     });
     if (!intent.claimed) {
-      return reply.code(202).send({
-        status: intent.status,
-        intentId: intent.intentId,
-        hint: "This approved send is already being processed or was previously recorded.",
-      });
+      return reply.code(202).send(retryResponse(intent));
     }
 
     const provider = providerFor(draft.thread.igAccount.provider);
@@ -212,8 +221,8 @@ export async function threadRoutes(app: FastifyInstance) {
     } catch (err) {
       // A provider error can be a response lost after a successful send. Do
       // not release/retry it automatically: retain an ambiguous durable intent.
-      await markSendIntentUnknown(auth.orgId, intent.intentId, (err as Error).message);
-      if ((err as Error).name === "SendWindowClosedError") {
+      await markSendIntentUnknown(auth.orgId, intent.intentId, err instanceof Error ? err.message : "unknown_provider_error");
+      if (err instanceof Error && err.name === "SendWindowClosedError") {
         return reply.code(202).send({ error: "send_result_ambiguous", status: "unknown", intentId: intent.intentId });
       }
       if (err instanceof TokenExpiredError) {
@@ -223,7 +232,7 @@ export async function threadRoutes(app: FastifyInstance) {
       if (err instanceof RateBudgetExceededError) {
         return reply.code(202).send({ error: "send_result_ambiguous", status: "unknown", intentId: intent.intentId });
       }
-      throw err;
+      return reply.code(202).send({ error: "send_result_ambiguous", status: "unknown", intentId: intent.intentId });
     }
 
     await markSendIntentRemoteAccepted(auth.orgId, intent.intentId, receipt.platformMessageId, receipt.sentAt);

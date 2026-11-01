@@ -77,11 +77,13 @@ export function Shell({ children }: { children: ReactNode }) {
       <KeyboardShortcuts />
     </>
   );
+  const demoNotice = IS_DEMO_MODE ? <div data-testid="demo-mode" role="note" className="bg-review-tint px-4 py-1.5 text-center text-caption text-review">Demo · fictional sample data · No messages leave this app</div> : null;
 
   if (chromeless) {
     return (
       <LucideProvider strokeWidth={1.9} size={20}>
         {skip}
+        {demoNotice}
         <main id="main-content" tabIndex={-1} className="min-h-dvh bg-canvas outline-none">{children}</main>
         {globals}
       </LucideProvider>
@@ -98,6 +100,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <Sidebar pathname={pathname} badge={badge} />
         </Suspense>
         <div className={cx("flex min-w-0 flex-1 flex-col", showTabs && "pb-[calc(var(--dd-tabbar-h)+env(safe-area-inset-bottom))] md:pb-0")}>
+          {demoNotice}
           <OfflineBanner className="md:px-8" />
           {!IS_DEMO_MODE && state === "error" && !setupNeeded && (
             <div role="alert" className="mx-4 mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl bg-danger-tint px-4 py-3 text-body text-ink md:mx-8">

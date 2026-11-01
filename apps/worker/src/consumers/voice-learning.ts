@@ -103,8 +103,15 @@ async function distillIfDue(orgId: OrgId, igAccountId: string, now: Date): Promi
       listVoiceRules(orgId, igAccountId, { statuses: ["active", "pinned", "candidate"] }),
       loadVoiceCorpus(orgId, igAccountId, 400),
     ]);
+    // Exclusions can change while the batch loads. Re-read the account's
+    // consent and exclusions before handing any native examples to the model.
+    const currentProfile = await getVoiceProfileState(orgId, igAccountId);
+    if (!currentProfile.consent.granted || currentProfile.learningPaused || currentProfile.version !== profile.version) return false;
+    const excluded = new Set(currentProfile.excludedMessageIds);
+    const eligibleBatch = batch.filter((draft) => !draft.sentMessageId || !excluded.has(draft.sentMessageId));
+    if (eligibleBatch.length < DISTILL_AFTER_EDITS) return false;
     const proposals = await distillEditRules(
-      batch.map((d) => ({
+      eligibleBatch.map((d) => ({
         draftId: d.id,
         scope: draftScope({ kind: d.kind, label: d.label }),
         inboundText: d.inboundText,
@@ -113,9 +120,9 @@ async function distillIfDue(orgId: OrgId, igAccountId: string, now: Date): Promi
         signals: signalTexts(d.editSignals),
       })),
       rules,
-      corpus.filter((row) => row.origin === "native").map((row) => row.text)
+      corpus.filter((row) => row.origin === "native" && !excluded.has(row.messageId)).map((row) => row.text)
     );
-    const byDraft = new Map(batch.map((d) => [d.id, d]));
+    const byDraft = new Map(eligibleBatch.map((d) => [d.id, d]));
     const evidence: RuleEvidence[] = proposals.flatMap((proposal) =>
       proposal.draftIds.map((draftId) => ({
         key: proposal.key,
@@ -129,8 +136,8 @@ async function distillIfDue(orgId: OrgId, igAccountId: string, now: Date): Promi
         seatRole: byDraft.get(draftId)?.sentBy?.role ?? null,
       }))
     );
-    await applyVoiceLearning(orgId, igAccountId, { distilledAt: now, plan: (current) => planRuleUpdates(current, evidence, now) }, now);
-    return proposals.length;
+    const applied = await applyVoiceLearning(orgId, igAccountId, { expectedVersion: currentProfile.version, distilledAt: now, plan: (current) => planRuleUpdates(current, evidence, now) }, now);
+    return applied.outcome === "applied" ? proposals.length : false;
   } catch (error) {
     // Never log DM content: the error class/message only.
     console.error(`voice distillation failed for account ${igAccountId}: ${error instanceof Error ? error.name : "unknown error"}`);

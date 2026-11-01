@@ -2,18 +2,20 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 import { ScanSearch, Search, X } from "lucide-react";
 import { accountBigOneThreshold, byValueDesc, followUpDue, isBigOne, isWaiting, needsYou, pluralize, toCheck, waitingLowMinor } from "../lib/format";
 import { useMinuteClock, useShortcut } from "../lib/keyboard";
+import { conversationHref, inboxView, type InboxView } from "../lib/inbox-navigation";
 import { useApp, useClosedThreads, useOffers, useSettings, type DemoThread } from "../lib/use-demo";
 import { ConversationRow } from "./kit";
 import { cx } from "./ui/cx";
-import { Skeleton } from "./ui/feedback";
+import { ErrorState, Skeleton } from "./ui/feedback";
+import { appStore } from "../lib/use-demo";
 import { MoneyValue } from "./ui/money-value";
 import { Avatar } from "./ui/sender";
 
-type View = "needs" | "followups" | "waiting" | "check" | "closed";
+type View = InboxView;
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: "needs", label: "Needs you" },
   { id: "followups", label: "Follow-ups" },
@@ -49,14 +51,14 @@ export function InboxPane({ selectedId, headingLevel = "h1", className }: { sele
   const router = useRouter();
   const pathname = usePathname() ?? "/inbox";
   const params = useSearchParams();
-  const view = (params?.get("view") as View | null) ?? "needs";
+  const view = inboxView(params?.get("view"));
   const account = params?.get("account") ?? null;
   const { threads, money, state, loadedAt } = useApp();
   const settings = useSettings();
   const offers = useOffers();
   const closed = useClosedThreads(view === "closed");
   const now = useMinuteClock();
-  const [query, setQuery] = useState("");
+  const query = params?.get("q") ?? "";
   const listRef = useRef<HTMLUListElement>(null);
   const Heading = headingLevel;
   const accounts = settings.data?.accounts ?? [];
@@ -100,12 +102,14 @@ export function InboxPane({ selectedId, headingLevel = "h1", className }: { sele
     const index = flat.findIndex((thread) => thread.id === selectedId);
     const next = event.key === "j" ? Math.min(flat.length - 1, index + 1) : Math.max(0, index - 1);
     const target = flat[index < 0 ? 0 : next];
-    if (target) router.push(`/thread/${target.id}${account ? `?account=${account}` : ""}`);
+    if (target) router.push(conversationHref(target.id, params ?? new URLSearchParams()));
   });
   useShortcut("/", (event) => { event.preventDefault(); document.getElementById("inbox-search")?.focus(); });
 
-  const firstLoad = state === "loading" && loadedAt === null;
-  const href = (thread: DemoThread) => (thread.routedTo === "review_queue" ? `/review?item=${thread.id}` : `/thread/${thread.id}${account ? `?account=${account}` : ""}`);
+  const firstLoad = loadedAt === null;
+  const href = (thread: DemoThread) => thread.routedTo === "review_queue"
+    ? `/review?item=${encodeURIComponent(thread.id)}${account ? `&account=${encodeURIComponent(account)}` : ""}`
+    : conversationHref(thread.id, params ?? new URLSearchParams());
 
   return (
     <div className={cx("flex min-h-0 flex-col", className)}>
@@ -120,7 +124,7 @@ export function InboxPane({ selectedId, headingLevel = "h1", className }: { sele
             )}
           </div>
           {counts.check > 0 && (
-            <Link href="/review" className="dd-press inline-flex h-9 items-center gap-1.5 rounded-full bg-review-tint px-3 text-label font-semibold text-review">
+            <Link href="/review" className="dd-press inline-flex h-11 items-center gap-1.5 rounded-full bg-review-tint px-3 text-label font-semibold text-review md:h-9">
               <ScanSearch aria-hidden size={16} />Check {counts.check}
             </Link>
           )}
@@ -132,12 +136,12 @@ export function InboxPane({ selectedId, headingLevel = "h1", className }: { sele
             id="inbox-search"
             type="search"
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => setParam("q", event.target.value || null)}
             placeholder="Search names, handles, messages"
             className="dd-input h-10 rounded-full pl-10 pr-10 text-[15px]"
           />
           {query && (
-            <button type="button" onClick={() => setQuery("")} aria-label="Clear search" className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-ink-3 hover:bg-fill">
+            <button type="button" onClick={() => setParam("q", null)} aria-label="Clear search" className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-ink-3 hover:bg-fill">
               <X aria-hidden size={15} />
             </button>
           )}
@@ -162,7 +166,7 @@ export function InboxPane({ selectedId, headingLevel = "h1", className }: { sele
                 aria-selected={active}
                 onClick={() => setParam("view", item.id === "needs" ? null : item.id)}
                 className={cx(
-                  "dd-press inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-label font-semibold",
+                  "dd-press inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-label font-semibold md:h-8",
                   active ? "bg-primary text-on-primary" : "bg-inset text-ink-2 hover:bg-fill hover:text-ink",
                 )}
               >
@@ -175,7 +179,9 @@ export function InboxPane({ selectedId, headingLevel = "h1", className }: { sele
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pb-6">
-        {firstLoad || (view === "closed" && closed.status === "loading" && !closed.data) ? (
+        {(state === "error" && loadedAt === null) || (view === "closed" && closed.status === "error" && !closed.data) ? (
+          <ErrorState thing="this conversation list" reason="The list hasn't loaded. Try again before deciding you're caught up." onRetry={() => void (view === "closed" ? appStore.loadClosed() : appStore.refresh())} />
+        ) : firstLoad || (view === "closed" && !closed.data) ? (
           <div className="space-y-1 px-4 pt-2">
             {[0, 1, 2, 3, 4].map((key) => (
               <div key={key} className="flex items-center gap-3 py-3"><Skeleton className="h-12 w-12 rounded-full" /><div className="flex-1 space-y-2"><Skeleton className="h-4 w-1/2" /><Skeleton className="h-3 w-3/4" /></div></div>
@@ -195,7 +201,7 @@ export function InboxPane({ selectedId, headingLevel = "h1", className }: { sele
               <ul ref={listRef} className="mx-2 overflow-hidden rounded-[20px] bg-surface shadow-card md:mx-3">
                 {group.items.map((thread, index) => (
                   <li key={thread.id} className={cx(index > 0 && "border-t border-hairline", "dd-cv")}>
-                    <ConversationRow thread={thread} href={href(thread)} now={now} selected={thread.id === selectedId} />
+                    <ConversationRow thread={thread} href={href(thread)} now={now} selected={thread.id === selectedId} creator={roster && !account ? accounts.find((item) => item.id === thread.igAccountId)?.handle : null} />
                   </li>
                 ))}
               </ul>
@@ -214,7 +220,7 @@ function CreatorChip({ active, onClick, label, handle }: { active: boolean; onCl
       aria-pressed={active}
       onClick={onClick}
       className={cx(
-        "dd-press inline-flex h-9 shrink-0 items-center gap-2 rounded-full pl-1.5 pr-3.5 text-label font-semibold",
+        "dd-press inline-flex h-11 shrink-0 items-center gap-2 rounded-full pl-1.5 pr-3.5 text-label font-semibold md:h-9",
         !handle && "pl-3.5",
         active ? "bg-surface text-ink shadow-card ring-1 ring-brand" : "bg-surface text-ink-2 shadow-card hover:text-ink",
       )}

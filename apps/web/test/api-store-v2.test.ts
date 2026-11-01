@@ -115,6 +115,91 @@ describe("contract mapping", () => {
 });
 
 describe("v2 store invariants", () => {
+  it("loads every inbox, waiting, review and closed page before exposing counts and filters", async () => {
+    online();
+    const first = Array.from({ length: 100 }, (_, i) => inboxRow({ threadId: `t${i}` }));
+    const reviews = Array.from({ length: 50 }, (_, i) => reviewRow({ classificationId: `c${i}`, threadId: `r${i}` }));
+    serve({
+      "GET /inbox": () => ({ rows: first, nextCursor: "open-next" }),
+      "GET /inbox?cursor=open-next": () => ({ rows: [inboxRow({ threadId: "t100", igAccountId: "ig-2", preview: "Find me" })], nextCursor: null }),
+      "GET /inbox?state=waiting": () => ({ rows: [], nextCursor: "wait-next" }),
+      "GET /inbox?state=waiting&cursor=wait-next": () => ({ rows: [inboxRow({ threadId: "waiting", state: "waiting" })], nextCursor: null }),
+      "GET /review-queue": () => ({ rows: reviews, nextCursor: "review-next" }),
+      "GET /review-queue?cursor=review-next": () => ({ rows: [reviewRow({ classificationId: "c50", threadId: "r50" })], nextCursor: null }),
+      "GET /inbox?state=closed": () => ({ rows: [], nextCursor: "closed-next" }),
+      "GET /inbox?state=closed&cursor=closed-next": () => ({ rows: [inboxRow({ threadId: "closed", state: "closed" })], nextCursor: null }),
+    });
+    const store = await signedIn();
+    expect(store.getSnapshot().threads).toHaveLength(153);
+    expect(store.getSnapshot().threads.find((row) => row.id === "t100")).toMatchObject({ igAccountId: "ig-2", preview: "Find me" });
+    expect((await store.loadClosed())?.map((row) => row.id)).toEqual(["closed"]);
+  });
+
+  it("keeps the previous complete list if a later page fails or repeats its cursor", async () => {
+    online();
+    let failure = false;
+    let cycle = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const { pathname, search } = new URL(url);
+      if (pathname === "/inbox" && !search) return Response.json(failure || cycle ? { rows: [inboxRow({ threadId: "partial" })], nextCursor: "next" } : { rows: [inboxRow()], nextCursor: null });
+      if (pathname === "/inbox" && search === "?cursor=next") return cycle ? Response.json({ rows: [], nextCursor: "next" }) : new Response("{}", { status: 500 });
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = await signedIn();
+    failure = true;
+    await store.refresh();
+    expect(store.getSnapshot().threads.map((row) => row.id)).toEqual(["t1"]);
+    expect(store.getSnapshot().state).toBe("error");
+    failure = false;
+    cycle = true;
+    await store.refresh();
+    expect(store.getSnapshot().threads.map((row) => row.id)).toEqual(["t1"]);
+    expect(store.getSnapshot().state).toBe("error");
+  });
+
+  it("does not continue an old account's cursor scan under a new account", async () => {
+    online();
+    let release: (() => void) | undefined;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      const { pathname, search } = new URL(url);
+      const tenant = tenantOf(init);
+      calls.push(`${tenant} ${pathname}${search}`);
+      if (tenant === "old" && pathname === "/inbox" && !search) {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return Response.json({ rows: [inboxRow()], nextCursor: "old-next" });
+      }
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = new ApiStore();
+    store.authenticate("old", async () => "old");
+    await vi.waitFor(() => expect(release).toBeDefined());
+    store.authenticate("new", async () => "new");
+    release!();
+    await vi.waitFor(() => expect(store.getSnapshot().state).toBe("ready"));
+    expect(calls.some((call) => call.includes("cursor=old-next"))).toBe(false);
+    expect(store.getSnapshot().threads).toEqual([]);
+  });
+
+  it("saves a rule to its explicit account without changing another account's cached voice", async () => {
+    online();
+    const bodies: Array<{ igAccountId?: string }> = [];
+    const saved = { id: "rule-b", key: "edit.shorter", scope: "all", text: "Keep it short", status: "active" };
+    serve({
+      "GET /voice?igAccountId=ig-1": () => ({ igAccountId: "ig-1", rules: [{ id: "rule-a", key: "edit.shorter", scope: "all" }], samples: [] }),
+      "GET /voice?igAccountId=ig-2": () => ({ igAccountId: "ig-2", rules: [], samples: [] }),
+      "POST /voice/rules": (init) => { bodies.push(JSON.parse(String(init.body))); return saved; },
+    });
+    const store = await signedIn();
+    await store.loadVoice("ig-1");
+    await store.createRule({ igAccountId: "ig-2", text: "Keep it short", key: "edit.shorter" });
+    expect(bodies[0]?.igAccountId).toBe("ig-2");
+    expect(store.getSnapshot().voice.data?.rules.map((rule) => rule.id)).toEqual(["rule-a"]);
+    await store.loadVoice("ig-2");
+    await store.createRule({ igAccountId: "ig-2", text: "Keep it short", key: "edit.shorter" });
+    expect(store.getSnapshot().voice.data?.rules.map((rule) => rule.id)).toEqual(["rule-b"]);
+  });
+
   it("clears lazy slices on an account switch and never publishes a late old-tenant slice", async () => {
     online();
     let releaseOld: (() => void) | undefined;
@@ -155,7 +240,7 @@ describe("v2 store invariants", () => {
       if (path === "/threads/t1/send") {
         sendBodies.push(JSON.parse(String(init.body)));
         sendAttempts += 1;
-        return sendAttempts === 1 ? new Response(JSON.stringify({ error: "request_failed" }), { status: 500 }) : Response.json({ status: "accepted", sent: true, intentId: "i1" });
+        return sendAttempts === 1 ? new Response(JSON.stringify({ error: "request_failed" }), { status: 409 }) : Response.json({ status: "accepted", sent: true, intentId: "i1" });
       }
       return Response.json(core(path));
     }));
@@ -177,6 +262,103 @@ describe("v2 store invariants", () => {
     const calls = fetch.mock.calls.length;
     await expect(store.send("missing", "hello")).rejects.toThrow("fresh draft");
     expect(fetch.mock.calls.length).toBe(calls);
+  });
+
+  it.each(["network", "body", "server"])("treats a dispatched %s send failure as unknown and locks the draft", async (failure) => {
+    online();
+    let sends = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === "/threads/t1") return Response.json(threadDetail({ currentDraft: draft }));
+      if (path === "/threads/t1/send") {
+        sends++;
+        if (failure === "network") throw new TypeError("connection lost");
+        if (failure === "server") return new Response("{}", { status: 500 });
+        const response = Response.json({ status: "accepted", intentId: "sent" });
+        response.json = async () => { throw new TypeError("body interrupted"); };
+        return response;
+      }
+      return Response.json(core(path));
+    }));
+    const store = await signedIn();
+    await store.loadThread("t1");
+    const result = await store.send("t1", "Approved reply");
+    expect(result).toMatchObject({ status: "unknown", ambiguous: true, pending: false });
+    expect(result.hint).toContain("Check Instagram");
+    expect(store.getSnapshot().details.t1?.data?.sendInFlight).toBe(true);
+    await expect(store.send("t1", "Approved reply")).rejects.toThrow("unconfirmed");
+    expect(sends).toBe(1);
+  });
+
+  it("keeps offline, permission and known pre-send provider failures definite", async () => {
+    online();
+    let status = 403;
+    let sends = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === "/threads/t1") return Response.json(threadDetail({ currentDraft: draft }));
+      if (path === "/threads/t1/send") {
+        sends++;
+        return Response.json({ error: status === 502 ? "speech_synthesis_failed" : "forbidden" }, { status });
+      }
+      return Response.json(core(path));
+    }));
+    const store = await signedIn();
+    await store.loadThread("t1");
+    vi.stubGlobal("navigator", { onLine: false });
+    await expect(store.send("t1", "Reply")).rejects.toThrow("offline");
+    expect(sends).toBe(0);
+    vi.stubGlobal("navigator", { onLine: true });
+    await expect(store.send("t1", "Reply")).rejects.toMatchObject({ status: 403 });
+    status = 502;
+    await expect(store.send("t1", "Reply", { asVoice: true })).rejects.toMatchObject({ code: "speech_synthesis_failed" });
+    expect(store.getSnapshot().details.t1?.data?.sendInFlight).toBe(false);
+  });
+
+  it("treats a missing session before fetch as a definite failure", async () => {
+    online();
+    let token: string | null = "actor";
+    let sends = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === "/threads/t1") return Response.json(threadDetail({ currentDraft: draft }));
+      if (path === "/threads/t1/send") sends++;
+      return Response.json(core(path));
+    }));
+    const store = new ApiStore();
+    store.authenticate("actor", async () => token);
+    await vi.waitFor(() => expect(store.getSnapshot().state).toBe("ready"));
+    await store.loadThread("t1");
+    token = null;
+    await expect(store.send("t1", "Reply")).rejects.toThrow("session is unavailable");
+    token = "actor";
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "not a URL");
+    await expect(store.send("t1", "Reply")).rejects.toThrow("not configured");
+    expect(sends).toBe(0);
+    expect(store.getSnapshot().details.t1?.data?.sendInFlight).toBe(false);
+  });
+
+  it("does not publish an ambiguous old-account send after switching workspaces", async () => {
+    online();
+    let release: (() => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      const path = pathOf(url);
+      if (path === "/threads/t1") return Response.json(threadDetail({ currentDraft: draft }));
+      if (path === "/threads/t1/send") {
+        await new Promise<void>((resolve) => { release = resolve; });
+        throw new TypeError("response lost");
+      }
+      return Response.json(core(path));
+    }));
+    const store = await signedIn();
+    await store.loadThread("t1");
+    const pending = store.send("t1", "Reply");
+    await vi.waitFor(() => expect(release).toBeDefined());
+    store.authenticate("new", async () => "new");
+    release!();
+    await expect(pending).rejects.toThrow();
+    await vi.waitFor(() => expect(store.getSnapshot().state).toBe("ready"));
+    expect(store.getSnapshot().details.t1).toBeUndefined();
   });
 
   it("reads the Leak Scan status, inferring it from the counts when the API sends none", async () => {
@@ -333,5 +515,82 @@ describe("writes refetch only what they change", () => {
     await refreshing;
     await vi.waitFor(() => expect(calls).toContain("GET /inbox"));
     await vi.waitFor(() => expect(store.getSnapshot().threads.map((thread) => [thread.id, thread.state])).toEqual([["t1", "waiting"]]));
+  });
+});
+
+describe("creator ledger requests", () => {
+  it("scopes the requested month and drops stale creator results when switching back", async () => {
+    online();
+    const pending: Array<{ path: string; resolve: (body: unknown) => void }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const { pathname, search } = new URL(url);
+      if (pathname === "/ledger" && search) {
+        const body = await new Promise<unknown>((resolve) => pending.push({ path: search, resolve }));
+        return Response.json(body);
+      }
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = await signedIn();
+    const a1 = store.loadLedger("2026-01", "ig-a");
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    const b = store.loadLedger("2026-01", "ig-b");
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    const a2 = store.loadLedger("2026-01", "ig-a");
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    expect(pending.map((item) => item.path)).toEqual(["?month=2026-01&igAccountId=ig-a", "?month=2026-01&igAccountId=ig-b", "?month=2026-01&igAccountId=ig-a"]);
+    const data = (amount: number) => ({ selectedMonth: "2026-01", timezone: "Asia/Kolkata", currencyCode: "INR", totalMinor: amount, months: [], entries: [], byType: {} });
+    pending[2]!.resolve(data(12345)); await a2;
+    pending[1]!.resolve(data(67890)); pending[0]!.resolve(data(1)); await Promise.all([a1, b]);
+    expect(store.getSnapshot().ledgerView.data?.totalMinor).toBe(12345);
+  });
+
+  it("clears another creator's ledger while loading and after a failed request, but retains same-scope data on refresh", async () => {
+    online();
+    let release: ((response: Response) => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const { pathname, search } = new URL(url);
+      if (pathname === "/ledger" && search.includes("igAccountId=ig-b")) return new Promise<Response>((resolve) => { release = resolve; });
+      if (pathname === "/ledger" && search.includes("igAccountId=ig-a")) return Response.json({ selectedMonth: "2026-01", totalMinor: 12345, months: [], entries: [], byType: {} });
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = await signedIn();
+    await store.loadLedger("2026-01", "ig-a");
+    expect(store.getSnapshot().ledgerView.data?.totalMinor).toBe(12345);
+    const changing = store.loadLedger("2026-01", "ig-b");
+    expect(store.getSnapshot().ledgerView).toMatchObject({ status: "loading", data: null });
+    await vi.waitFor(() => expect(release).toBeDefined());
+    release!(Response.json({ error: "Unavailable" }, { status: 500 }));
+    await changing;
+    expect(store.getSnapshot().ledgerView).toMatchObject({ status: "error", data: null });
+    await store.loadLedger("2026-01", "ig-a");
+    expect(store.getSnapshot().ledgerView.data?.totalMinor).toBe(12345);
+    const refreshing = store.loadLedger("2026-01", "ig-a");
+    expect(store.getSnapshot().ledgerView.data?.totalMinor).toBe(12345);
+    await refreshing;
+  });
+
+  it("keeps the latest voice creator through A-B-A and clears data on tenant reset", async () => {
+    online();
+    const pending: Array<(body: unknown) => void> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const { pathname, search } = new URL(url);
+      if (pathname === "/voice") return Response.json(await new Promise<unknown>((resolve) => pending.push(resolve)));
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = await signedIn();
+    const a1 = store.loadVoice("ig-a");
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    const b = store.loadVoice("ig-b");
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    const a2 = store.loadVoice("ig-a");
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    pending[2]!({ igAccountId: "ig-a", handle: "creator-a", rules: [], samples: [] });
+    await a2;
+    pending[1]!({ igAccountId: "ig-b", handle: "creator-b", rules: [], samples: [] });
+    pending[0]!({ igAccountId: "ig-a", handle: "old-a", rules: [], samples: [] });
+    await Promise.all([a1, b]);
+    expect(store.getSnapshot().voice.data).toMatchObject({ igAccountId: "ig-a", handle: "creator-a" });
+    store.authenticate(null, null);
+    expect(store.getSnapshot().voice).toMatchObject({ status: "idle", data: null });
   });
 });

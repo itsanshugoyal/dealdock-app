@@ -313,11 +313,19 @@ export interface ReplyWindowInfo {
  */
 export function replyWindowInfo(window: ReplyWindow, now: number, variant: "row" | "header"): ReplyWindowInfo {
   const hidden: ReplyWindowInfo = { visible: false, closed: false, text: "", tone: "muted", extended: false };
-  if (window.status === "unknown") return hidden;
-  if (window.status === "closed") {
+  let status = window.status;
+  if (status === "unknown") return hidden;
+  const standardClose = Date.parse(window.standardClosesAt ?? "");
+  const extendedClose = Date.parse(window.extendedClosesAt ?? "");
+  // The UI clock can move beyond a window while the last API snapshot stays open.
+  if (status === "open" && Number.isFinite(standardClose) && now > standardClose) {
+    status = window.humanAgentEnabled && Number.isFinite(extendedClose) && now <= extendedClose ? "extended" : "closed";
+  }
+  if (status === "extended" && (!window.humanAgentEnabled || (Number.isFinite(extendedClose) && now > extendedClose))) status = "closed";
+  if (status === "closed") {
     return { visible: true, closed: true, text: variant === "row" ? "Reply in Instagram" : "Reply window closed", tone: "muted", extended: false };
   }
-  if (window.status === "extended") {
+  if (status === "extended") {
     const left = Date.parse(window.extendedClosesAt ?? "") - now;
     if (!Number.isFinite(left)) return hidden;
     if (variant === "row") return left < DAY ? { visible: true, closed: false, text: `${shortDuration(left)} left`, tone: "soft", extended: true } : hidden;

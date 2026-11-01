@@ -2,18 +2,22 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ClassificationLabel } from "@dealdock/core";
 import { ArrowLeft, Check, CheckCheck, SkipForward } from "lucide-react";
 import { compactCount, confidenceReason, confidenceWords, displayName, labelText, relativeAge, textLang, toCheck } from "../../lib/format";
 import { useMinuteClock, useShortcut } from "../../lib/keyboard";
 import { runUndoable } from "../../lib/undo";
+import { inboxHref } from "../../lib/inbox-navigation";
+import { errorMessage } from "../../lib/snapshot";
 import { appStore, useApp, type DemoThread } from "../../lib/use-demo";
 import { buttonClasses } from "../../components/ui/button-classes";
 import { Kbd } from "../../components/ui/kbd";
 import { cx } from "../../components/ui/cx";
 import { LABEL_META } from "../../components/ui/label-chip";
 import { Avatar } from "../../components/ui/sender";
+import { ErrorState } from "../../components/ui/feedback";
+import { toast } from "../../components/ui/toast";
 
 /** The labels a message can be sorted into, with their number keys (glyphs come from LABEL_META). */
 const CHOICES: Array<{ label: ClassificationLabel; key: string }> = [
@@ -39,19 +43,21 @@ function Review() {
   const locale = money.locale ?? "en-IN";
   const [decided, setDecided] = useState<Set<string>>(new Set());
   const [skipped, setSkipped] = useState<string[]>([]);
-  const [leaving, setLeaving] = useState<"left" | "right" | null>(null);
+  const cardHeading = useRef<HTMLHeadingElement>(null);
+  const account = params?.get("account");
+  const backHref = inboxHref(params ?? new URLSearchParams());
 
   const queue = useMemo(() => {
-    const items = threads.filter((thread) => toCheck(thread) && !decided.has(thread.id));
+    const items = threads.filter((thread) => toCheck(thread) && !decided.has(thread.id) && (!account || thread.igAccountId === account));
     const first = params?.get("item");
     const ordered = items.sort((a, b) => b.lastMessageAt - a.lastMessageAt);
     const pinned = first ? ordered.filter((thread) => thread.id === first) : [];
     const rest = ordered.filter((thread) => thread.id !== first);
-    const unskipped = rest.filter((thread) => !skipped.includes(thread.id));
-    const skippedItems = skipped.map((id) => rest.find((thread) => thread.id === id)).filter(Boolean) as DemoThread[];
-    return [...pinned, ...unskipped, ...skippedItems];
-  }, [threads, decided, skipped, params]);
-  const total = queue.length + decided.size;
+    return [...pinned, ...rest].filter((thread) => !skipped.includes(thread.id));
+  }, [threads, decided, skipped, params, account]);
+  const deferred = threads.filter((thread) => toCheck(thread) && !decided.has(thread.id) && skipped.includes(thread.id) && (!account || thread.igAccountId === account)).length;
+  const remaining = queue.length + deferred;
+  const total = remaining + decided.size;
   const current = queue[0] ?? null;
   const message = current?.messages.find((item) => item.direction === "inbound" && (item.text || item.audio)) ?? null;
   const guess = message?.classification ?? (current?.topLabel ? { label: current.topLabel, confidence: 0.5, rationale: current.rationale } : null);
@@ -60,15 +66,16 @@ function Review() {
     if (!current || !guess) return;
     const thread = current;
     const outcome = label === guess.label ? "confirmed" : "overridden";
-    setLeaving(outcome === "confirmed" ? "right" : "left");
-    setTimeout(() => {
-      setDecided((set) => new Set(set).add(thread.id));
-      setLeaving(null);
-    }, 180);
-    runUndoable({
+    setDecided((set) => new Set(set).add(thread.id));
+    const action = runUndoable({
       message: `Marked as ${labelText(label).toLowerCase()}.`,
       commit: () => appStore.review(thread.classificationId ?? thread.id, outcome, outcome === "overridden" ? label : undefined),
       onUndo: () => setDecided((set) => { const next = new Set(set); next.delete(thread.id); return next; }),
+    });
+    void action.outcome.then((result) => {
+      if (result.status !== "failed") return;
+      setDecided((set) => { const next = new Set(set); next.delete(thread.id); return next; });
+      toast(errorMessage(result.error, "That classification wasn't saved. The message is back in your queue."), { tone: "error" });
     });
   };
   const skip = () => { if (current) setSkipped((list) => [...list.filter((id) => id !== current.id), current.id]); };
@@ -76,49 +83,53 @@ function Review() {
   useShortcut("y", () => { if (guess) decide(guess.label); }, { enabled: Boolean(current && guess) });
   useShortcut(CHOICES.map((choice) => choice.key), (event) => { const choice = CHOICES.find((item) => item.key === event.key); if (choice) decide(choice.label); }, { enabled: Boolean(current) });
   useShortcut(["8", "n"], skip, { enabled: Boolean(current) });
-  useShortcut("escape", () => router.push("/inbox"));
-  useEffect(() => { window.scrollTo({ top: 0 }); }, [current?.id]);
+  useShortcut("escape", () => router.push(backHref));
+  useEffect(() => { window.scrollTo({ top: 0 }); cardHeading.current?.focus({ preventScroll: true }); }, [current?.id]);
 
-  const firstLoad = state === "loading" && loadedAt === null;
+  const firstLoad = loadedAt === null;
   const done = !firstLoad && !current;
+
+  if (state === "error" && loadedAt === null) {
+    return <ErrorState as="h1" thing="your review queue" onRetry={() => void appStore.refresh()} className="min-h-[60dvh] justify-center" />;
+  }
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[640px] flex-col px-4 pb-8 md:min-h-0">
       <header className="flex items-center gap-2 pt-[max(12px,env(safe-area-inset-top))] md:pt-8">
-        <Link href="/inbox" aria-label="Back to inbox" className="dd-press flex h-10 w-10 items-center justify-center rounded-full hover:bg-inset"><ArrowLeft aria-hidden size={22} /></Link>
+        <Link href={backHref} aria-label="Back to inbox" className="dd-press flex h-11 w-11 items-center justify-center rounded-full hover:bg-inset"><ArrowLeft aria-hidden size={22} /></Link>
         <div className="min-w-0 flex-1">
           <h1 className="text-title text-ink">Check these</h1>
           <p className="text-caption text-ink-3">Sorting only. Nothing is drafted or sent from here.</p>
         </div>
-        {total > 0 && !done && <span className="rounded-full bg-inset px-3 py-1 text-label font-semibold text-ink-2 tabular-nums">{decided.size + 1} of {total}</span>}
+        {total > 0 && !firstLoad && <span role="status" aria-live="polite" className="rounded-full bg-inset px-3 py-2 text-caption font-semibold text-ink-2 tabular-nums">{decided.size} sorted · {remaining} to check</span>}
       </header>
 
-      {total > 0 && (
-        <div className="mt-4 flex gap-1" aria-hidden>
-          {Array.from({ length: total }, (_, index) => <span key={index} className={cx("h-1 flex-1 rounded-full", index < decided.size ? "bg-brand" : index === decided.size ? "bg-ink" : "bg-fill")} />)}
+      {total > 0 && !firstLoad && (
+        <div className="mt-4 h-1 overflow-hidden rounded-full bg-fill" aria-hidden>
+          <span className="block h-full bg-brand" style={{ width: `${decided.size / total * 100}%` }} />
         </div>
       )}
 
       {done ? (
         <div className="dd-rise flex flex-1 flex-col items-center justify-center py-16 text-center">
-          <span className="dd-stamp flex h-16 w-16 items-center justify-center rounded-full bg-brand text-on-brand"><CheckCheck aria-hidden size={30} /></span>
-          <h2 className="mt-5 text-title text-ink">All sorted.</h2>
-          <p className="mt-1 max-w-xs text-body text-ink-2">Every correction teaches DealDock how to sort your inbox.</p>
+          <span className={cx("flex h-16 w-16 items-center justify-center rounded-full", deferred ? "bg-inset text-ink-2" : "dd-stamp bg-brand text-on-brand")}>{deferred ? <SkipForward aria-hidden size={30} /> : <CheckCheck aria-hidden size={30} />}</span>
+          <h2 className="mt-5 text-title text-ink">{deferred ? "Left for later." : "All sorted."}</h2>
+          <p className="mt-1 max-w-xs text-body text-ink-2">{deferred ? `${deferred} skipped messages still need a decision. They stay in Check these; nothing was classified or sent.` : "Every correction teaches DealDock how to sort your inbox."}</p>
           <div className="mt-6 flex gap-2">
-            <Link href="/inbox" className={buttonClasses({ variant: "primary" })}>Back to inbox</Link>
-            <Link href="/" className={buttonClasses({ variant: "secondary" })}>Today</Link>
+            <Link href={backHref} className={buttonClasses({ variant: "primary" })}>Back to inbox</Link>
+            {deferred ? <button type="button" onClick={() => setSkipped([])} className={buttonClasses({ variant: "secondary" })}>Review skipped</button> : <Link href="/" className={buttonClasses({ variant: "secondary" })}>Today</Link>}
           </div>
         </div>
       ) : current ? (
         <div className="flex flex-1 flex-col">
           <article
             key={current.id}
-            className={cx("dd-rise mt-5 rounded-[26px] bg-surface p-5 shadow-raised transition-[transform,opacity] duration-200", leaving === "right" && "translate-x-10 opacity-0", leaving === "left" && "-translate-x-10 opacity-0")}
+            className="dd-rise mt-5 rounded-[26px] bg-surface p-5 shadow-raised"
           >
             <div className="flex items-center gap-3">
               <Avatar handle={current.handle} name={current.participant.name} src={current.participant.avatarUrl} size={48} verified={Boolean(current.participant.verified)} />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-[16px] font-semibold text-ink">{displayName(current.participant, current.handle)}</p>
+                <h2 ref={cardHeading} tabIndex={-1} className="truncate rounded text-[16px] font-semibold text-ink outline-offset-4 focus-visible:outline-2 focus-visible:outline-info">{displayName(current.participant, current.handle)}</h2>
                 <p className="truncate text-caption text-ink-3">@{current.handle}{current.participant.followerCount !== null ? ` · ${compactCount(current.participant.followerCount, locale)} followers` : ""}{now ? ` · ${relativeAge(current.lastMessageAt, now, locale, timezone)}` : ""}</p>
               </div>
             </div>

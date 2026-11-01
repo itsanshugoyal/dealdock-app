@@ -9,6 +9,13 @@ if (shouldRun && !process.env.TEST_DATABASE_URL) {
 describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice notes, provenance and speaking voices", () => {
   let db: typeof import("../src/index");
   let prisma: typeof import("../src/client").prisma;
+
+  async function createFixtureDraft(orgId: Parameters<typeof db.createDraft>[0], input: Omit<Parameters<typeof db.createDraft>[1], "expectedVoiceVersion">) {
+    const thread = await prisma.thread.findUniqueOrThrow({ where: { id: input.threadId }, select: { igAccountId: true } });
+    const { version } = await db.getVoiceProfileState(orgId, thread.igAccountId);
+    return db.createDraft(orgId, { ...input, expectedVoiceVersion: version });
+  }
+
   const organizations: string[] = [];
   const clip = (size = 4) => new Uint8Array(size).fill(7);
 
@@ -107,7 +114,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice notes
     expect(await prisma.message.findUniqueOrThrow({ where: { id: native.messageId } })).toMatchObject({ origin: "native" });
 
     await db.setVoiceConsent(orgId, igAccount.id, seat.id, true);
-    const draft = await db.createDraft(orgId, { threadId: inbound.threadId, body: "Sharing my rates now!", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: inbound.threadId, body: "Sharing my rates now!", modelVersion: "test", promptVersion: "test" });
     const tts = await db.createAudioAsset(orgId, { kind: "tts", bytes: clip(8), mimeType: "audio/wav", durationMs: 1_500, text: "Sharing my rates now!", expiresAt: new Date(Date.now() + 86_400_000) });
     const intent = await db.createSendIntentClaim(orgId, {
       draftId: draft.id, seatId: seat.id, finalText: "Sharing my rates now!", idempotencyKey: `voice-intent-${orgId}`, asVoice: true, audioAssetId: tts.id,

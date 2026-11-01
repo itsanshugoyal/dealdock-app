@@ -3,7 +3,7 @@ import { DomainError } from "@dealdock/core";
 import { prisma } from "../client";
 import type { OrgId } from "../org-id";
 import { writeAudit } from "../audit-log";
-import { requireSeatInOrg } from "../seat-scope";
+import { requireIgAccountInOrg, requireSeatInOrg } from "../seat-scope";
 import { minorUnitsToNumber, requireMinorUnits } from "../money";
 import { zonedMonthKey } from "../zoned-time";
 
@@ -137,14 +137,15 @@ export interface LedgerMonth {
 }
 
 /** Ledger view: month rollups + entries for the selected month (PRD §6.7). */
-export async function getLedger(orgId: OrgId, month?: string) {
+export async function getLedger(orgId: OrgId, month?: string, igAccountId?: string) {
+  if (igAccountId !== undefined) await requireIgAccountInOrg(orgId, igAccountId);
   const org = await prisma.organization.findUnique({
     where: { id: orgId },
     select: { currencyCode: true, timezone: true },
   });
   if (!org) throw new DomainError("org_not_found", 404);
   const entries = await prisma.ledgerEntry.findMany({
-    where: { orgId, deletedAt: null },
+    where: { orgId, deletedAt: null, ...(igAccountId !== undefined ? { thread: { igAccountId, orgId } } : {}) },
     orderBy: { closedAt: "desc" },
     include: { thread: { select: { id: true, participantHandle: true } } },
   });

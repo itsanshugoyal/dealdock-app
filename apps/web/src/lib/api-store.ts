@@ -89,6 +89,9 @@ const REQUEST_FAILURES = {
   cancelled: "This request was cancelled because you changed accounts.",
   changed: "Account changed while loading this request.",
 };
+
+/** The request reached fetch, so a send may have reached the server despite this failure. */
+class DispatchedRequestError extends Error {}
 const EXPORT_FAILURES = {
   offline: "You are offline. Reconnect before exporting data.",
   cancelled: "Account changed while loading this export.",
@@ -120,11 +123,14 @@ export class ApiStore implements AppStoreApi {
   private inflight = new Map<string, Promise<unknown>>();
   /** Send idempotency key per draft: stable across retries of the same approval. */
   private sendKeys = new Map<string, string>();
+  private uncertainDrafts = new Set<string>();
   private lists: Record<ListPart, DemoThread[]> = { inbox: [], waiting: [], review: [] };
   /** The org time zone as GET /onboarding and GET /ledger report it; onboarding's wins. */
   private zones = { onboarding: "", ledger: "" };
   /** Lazy slices a screen loaded; until one loads the ledger view, the core refresh seeds it. */
   private requested = new Set<SliceKey>();
+  /** Request identity for each lazy slice, independent of tenant identity. */
+  private slicePaths = new Map<SliceKey, string>();
   /**
    * Load ordering, per slot (a slice key, `detail:<threadId>` or `core:<part>`).
    * Every load and local patch takes the next number. A response lands only
@@ -161,9 +167,11 @@ export class ApiStore implements AppStoreApi {
       this.refreshing = null;
       this.inflight.clear();
       this.sendKeys.clear();
+      this.uncertainDrafts.clear();
       this.lists = { inbox: [], waiting: [], review: [] };
       this.zones = { onboarding: "", ledger: "" };
       this.requested.clear();
+      this.slicePaths.clear();
       this.latest.clear();
       this.patchedAt.clear();
       this.staleAt.clear();
@@ -222,12 +230,22 @@ export class ApiStore implements AppStoreApi {
     if (!token && !this.localDevelopment) throw new Error("Your session is unavailable. Sign in again to continue.");
     const base = this.localDevelopment ? "/api/dev" : process.env.NEXT_PUBLIC_API_URL;
     if (!base) throw new Error("DealDock is not configured for this environment.");
+    if (!this.localDevelopment) {
+      try {
+        const url = new URL(base);
+        if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error();
+      } catch {
+        throw new Error("DealDock is not configured for this environment.");
+      }
+    }
     const headers = new Headers(init.headers);
     if (token) headers.set("Authorization", `Bearer ${token}`);
     if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
     const controller = new AbortController();
     this.controllers.add(controller);
+    let dispatched = false;
     try {
+      dispatched = true;
       const result = await read(await fetch(`${base.replace(/\/$/, "")}${path}`, {
         ...init, headers, cache: "no-store", credentials: "omit", signal: controller.signal,
       }));
@@ -236,6 +254,11 @@ export class ApiStore implements AppStoreApi {
       return result;
     } catch (error) {
       if (controller.signal.aborted) throw new Error(failures.cancelled);
+      const { status, code } = (error as { status?: unknown; code?: unknown } | null) ?? {};
+      // Synthesis fails before the API creates a send intent or calls Instagram.
+      const knownNotSent = code === "speech_synthesis_failed";
+      const isSend = init.method === "POST" && /^\/threads\/[^/]+\/send$/.test(path);
+      if (isSend && dispatched && !knownNotSent && (typeof status !== "number" || status >= 500)) throw new DispatchedRequestError("The request outcome is unconfirmed.");
       throw error;
     } finally {
       this.controllers.delete(controller);
@@ -302,7 +325,9 @@ export class ApiStore implements AppStoreApi {
   private async fetchCore(parts: CorePart[]): Promise<{ next: Partial<AppSnapshot>; refetch: CorePart[] }> {
     const seq = ++this.seq;
     for (const part of parts) this.latest.set(`core:${part}`, seq);
-    const responses = await Promise.all(parts.map((part) => this.request<unknown>(CORE[part])));
+    const responses = await Promise.all(parts.map((part) => part === "inbox" || part === "waiting" || part === "review"
+      ? this.requestAllPages(CORE[part], part === "review" ? "classificationId" : "threadId")
+      : this.request<unknown>(CORE[part])));
     const landed = new Map<CorePart, unknown>();
     const refetch: CorePart[] = [];
     parts.forEach((part, index) => {
@@ -311,6 +336,32 @@ export class ApiStore implements AppStoreApi {
       else if (landing === "again") refetch.push(part);
     });
     return { next: this.coreFields(landed), refetch };
+  }
+
+  /** Complete a cursor scan before publishing it. A failed page leaves the previous list intact. */
+  private async requestAllPages(path: string, key: "threadId" | "classificationId"): Promise<{ rows: unknown[] }> {
+    const epoch = this.epoch;
+    const seenCursors = new Set<string>();
+    const rows = new Map<string, unknown>();
+    let cursor: string | undefined;
+    do {
+      if (this.epoch !== epoch) throw new Error(REQUEST_FAILURES.changed);
+      const url = cursor ? `${path}${path.includes("?") ? "&" : "?"}cursor=${enc(cursor)}` : path;
+      const page = await this.request<{ rows: unknown[]; nextCursor?: string | null }>(url);
+      if (this.epoch !== epoch) throw new Error(REQUEST_FAILURES.changed);
+      if (!Array.isArray(page.rows)) throw new Error("DealDock could not read this list.");
+      for (const row of page.rows) {
+        const id = obj(row)[key];
+        if (typeof id !== "string" || !id) throw new Error("DealDock could not read this list.");
+        rows.set(id, row);
+      }
+      cursor = page.nextCursor ?? undefined;
+      if (cursor) {
+        if (typeof cursor !== "string" || seenCursors.has(cursor)) throw new Error("DealDock could not finish loading this list.");
+        seenCursors.add(cursor);
+      }
+    } while (cursor);
+    return { rows: [...rows.values()] };
   }
 
   /** Snapshot fields from core responses; also files the lists and time zones they carry. */
@@ -411,8 +462,14 @@ export class ApiStore implements AppStoreApi {
   }
 
   /** Loads one lazy slice; never throws (the outcome lives in the slice). */
-  private loadSlice<K extends SliceKey>(key: K, path: string, map: (raw: unknown) => SliceData<K>): Promise<SliceData<K> | null> {
+  private loadSlice<K extends SliceKey>(key: K, path: string, map: (raw: unknown) => SliceData<K>, paged = false): Promise<SliceData<K> | null> {
     this.requested.add(key);
+    if (this.slicePaths.get(key) !== path) {
+      this.slicePaths.set(key, path);
+      // Do not join an older request when a user selects A, then B, then A.
+      this.forget(key);
+      this.patch({ [key]: loading(IDLE) } as Partial<AppSnapshot>);
+    }
     return this.dedupe(`${key}|${path}`, async () => {
       if (!this.identity) return null;
       const requestedFor = this.identity;
@@ -421,12 +478,12 @@ export class ApiStore implements AppStoreApi {
       // Data already on screen stays there while it reloads.
       if (slice.data === null) this.patch({ [key]: loading(slice) } as Partial<AppSnapshot>);
       try {
-        const data = map(await this.request<unknown>(path));
+        const data = map(await (paged ? this.requestAllPages(path, "threadId") : this.request<unknown>(path)));
         const landing = this.landing(key, seq);
         if (this.identity !== requestedFor || landing === "drop") return null;
         if (landing === "again") {
           this.forget(key);
-          return this.loadSlice(key, path, map);
+          return this.loadSlice(key, path, map, paged);
         }
         this.patch({ [key]: ready(data) } as Partial<AppSnapshot>);
         return data;
@@ -523,6 +580,7 @@ export class ApiStore implements AppStoreApi {
       try {
         const raw = await this.request<ThreadDetail>(`/threads/${enc(threadId)}`);
         const thread = fromThreadDetail(raw);
+        if (thread.draft && this.uncertainDrafts.has(thread.draft.id)) thread.sendInFlight = true;
         const landing = this.landing(slot, seq);
         if (this.identity !== requestedFor || landing === "drop") return null;
         if (landing === "again") {
@@ -554,7 +612,7 @@ export class ApiStore implements AppStoreApi {
     this.setDetail(threadId, { ...slice, data: update(slice.data) });
   }
   loadClosed() {
-    return this.loadSlice("closed", "/inbox?state=closed", (raw) => (raw as InboxResponse).rows.map(fromInboxRow));
+    return this.loadSlice("closed", "/inbox?state=closed", (raw) => (raw as InboxResponse).rows.map(fromInboxRow), true);
   }
   async generateDraft(threadId: string, request: DraftRequest = {}) {
     const steered = Boolean(request.chips?.length || request.instruction);
@@ -577,11 +635,23 @@ export class ApiStore implements AppStoreApi {
     const thread = this.snapshot.details[threadId]?.data ?? this.snapshot.threads.find((item) => item.id === threadId);
     const draftId = thread?.draft?.id;
     if (!draftId) throw new Error("A fresh draft is required before you can approve a send.");
+    if (this.uncertainDrafts.has(draftId)) throw new Error("This send is unconfirmed. Check Instagram before taking further action.");
     let idempotencyKey = this.sendKeys.get(draftId);
     if (!idempotencyKey) { idempotencyKey = crypto.randomUUID(); this.sendKeys.set(draftId, idempotencyKey); }
-    const result = await this.write<SendResponse>(`/threads/${enc(threadId)}/send`, jsonInit("POST", {
-      draftId, finalText, idempotencyKey, ...(options.asVoice ? { asVoice: true } : {}),
-    }));
+    const epoch = this.epoch;
+    let result: SendResponse;
+    try {
+      result = await this.write<SendResponse>(`/threads/${enc(threadId)}/send`, jsonInit("POST", {
+        draftId, finalText, idempotencyKey, ...(options.asVoice ? { asVoice: true } : {}),
+      }));
+    } catch (error) {
+      if (!(error instanceof DispatchedRequestError) || this.epoch !== epoch) throw error;
+      this.uncertainDrafts.add(draftId);
+      this.patchDetail(threadId, (current) => ({ ...current, sendInFlight: true }));
+      await this.settle({ thread: threadId, stale: ["insights", "roster", "voice"] });
+      if (this.epoch !== epoch) throw new Error(REQUEST_FAILURES.changed);
+      return { status: "unknown", pending: false, ambiguous: true, learned: [], hint: "The send result is unconfirmed. Check Instagram before taking any further action; DealDock won't retry it automatically." };
+    }
     // The sent message, the cleared draft and the row's new preview come back with the conversation.
     await this.settle({ thread: threadId, stale: ["insights", "roster", "voice"] });
     return { ...result, learned: result.learned ?? [], pending: result.status === "pending" || result.status === "remote_accepted", ambiguous: result.status === "unknown" };
@@ -625,8 +695,13 @@ export class ApiStore implements AppStoreApi {
 
   // ── Ledger, insights, audit ────────────────────────────────────────────
 
-  loadLedger(month?: string) {
-    return this.loadSlice("ledgerView", `/ledger${month ? `?month=${enc(month)}` : ""}`, (raw) => toLedgerView(obj(raw), this.snapshot.money.currency));
+  loadLedger(month?: string, igAccountId?: string) {
+    const params = new URLSearchParams();
+    if (month) params.set("month", month);
+    if (igAccountId) params.set("igAccountId", igAccountId);
+    const query = params.toString();
+    const path = `/ledger${query ? `?${query}` : ""}`;
+    return this.loadSlice("ledgerView", path, (raw) => toLedgerView(obj(raw), this.snapshot.money.currency));
   }
   async updateLedger(entryId: string, body: Partial<Pick<DemoLedgerEntry, "amountMinor" | "dealType" | "note">>) {
     const thisMonth = this.snapshot.ledger.some((entry) => entry.id === entryId);
@@ -701,8 +776,11 @@ export class ApiStore implements AppStoreApi {
     return this.write<VoiceStudio>("/voice/style", jsonInit("PUT", { igAccountId: this.voiceAccount(igAccountId), overrides }), (studio) => this.replaceSlice("voice", toVoiceStudio(studio)));
   }
   createRule(input: RuleInput) {
-    return this.write<VoiceRuleDto>("/voice/rules", jsonInit("POST", { ...input, igAccountId: this.voiceAccount(input.igAccountId) }), (rule) =>
-      this.patchSlice("voice", (studio) => ({ ...studio, rules: [rule, ...studio.rules.filter((item) => item.id !== rule.id && !(item.key === rule.key && item.scope === rule.scope))] })));
+    const igAccountId = this.voiceAccount(input.igAccountId);
+    return this.write<VoiceRuleDto>("/voice/rules", jsonInit("POST", { ...input, igAccountId }), (rule) =>
+      this.patchSlice("voice", (studio) => studio.igAccountId === igAccountId
+        ? { ...studio, rules: [rule, ...studio.rules.filter((item) => item.id !== rule.id && !(item.key === rule.key && item.scope === rule.scope))] }
+        : studio));
   }
   updateRule(ruleId: string, patch: { text?: string; status?: VoiceRuleStatus; scope?: VoiceRuleScope }) {
     return this.write<VoiceRuleDto>(`/voice/rules/${enc(ruleId)}`, jsonInit("PATCH", patch), (rule) =>

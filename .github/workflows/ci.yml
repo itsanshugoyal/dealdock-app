@@ -89,6 +89,8 @@ jobs:
         run: npx playwright install chromium --with-deps
       - name: Real infrastructure browser gate
         run: node scripts/run-browser-gate.mjs
+      - name: Fictional demo UI regression gate
+        run: npm run test:ui
 
   claude-quality:
     if: github.event_name == 'workflow_dispatch' && inputs.run_claude_quality
