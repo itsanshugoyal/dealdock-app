@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { CURRENCY_SYMBOL, DEFAULT_LOCALE, formatMoneyExact, parseMoneyInput, type CurrencyCode } from "@dealdock/core";
-import { ArrowLeft, ArrowRight, AudioLines, Camera, Check, CheckCheck, ChevronDown, Eye, Info, Lock, LogOut, Mail, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, AudioLines, Camera, Check, CheckCheck, ChevronDown, Eye, Lock, LogOut, Mail, ShieldCheck } from "lucide-react";
 import { atHandle } from "../../lib/format";
 import { EMAIL_ERRORS, PILOT_CONTACT, friendlyConnectError, nextStep, pilotInviteHelp, progressIndex, progressSteps, stepFromQuery, type Step } from "../../lib/onboarding-flow";
 import { errorMessage } from "../../lib/snapshot";
