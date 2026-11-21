@@ -82,7 +82,8 @@ test.describe("demo product UI regressions", () => {
     test.skip(testInfo.project.name !== "mobile", "Phone-specific touch targets.");
     await page.goto("/inbox");
     const tabs = page.getByRole("tablist", { name: "Inbox views" }).getByRole("tab");
-    await expect(tabs).toHaveCount(5);
+    // The demo has comment leads, so Comments joins the five views once they load (waiting avoids counting too early).
+    await expect(tabs).toHaveCount(6);
     const filters = page.getByRole("group", { name: "Creator" }).getByRole("button");
     await expect(filters).toHaveCount(4);
     for (const control of [...await tabs.all(), ...await filters.all()]) {
