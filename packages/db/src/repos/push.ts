@@ -63,7 +63,7 @@ export async function getPushPreferences(orgId: OrgId, seatId: string) {
   };
 }
 
-export type NotifyKind = "high_value" | "nudge" | "weekly_summary" | "billing_checkout_ready";
+export type NotifyKind = "high_value" | "nudge" | "weekly_summary" | "billing_checkout_ready" | "lead_paid";
 
 /**
  * SYSTEM CONTEXT (notification sender): subscriptions for an org filtered by
@@ -88,7 +88,8 @@ export async function listPushTargets(orgId: OrgId, kind: NotifyKind) {
   if (hour < 8 || hour >= 23) return [];
 
   const where: Record<string, unknown> = { orgId };
-  if (kind === "high_value") where.notifyHighValue = true;
+  // A payment a booking or payment tool reported is money arriving: the same switch as big new DMs.
+  if (kind === "high_value" || kind === "lead_paid") where.notifyHighValue = true;
   if (kind === "nudge") where.notifyNudge = true;
   if (kind === "weekly_summary") where.notifyWeeklySummary = true;
   // billing_checkout_ready is not user-toggleable — it's account-critical.

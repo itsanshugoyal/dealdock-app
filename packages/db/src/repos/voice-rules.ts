@@ -179,7 +179,7 @@ export async function deleteVoiceRule(orgId: OrgId, seatId: string, ruleId: stri
 /** Maps the account's current rules to the rows to write and stale ids to delete (pure, from @dealdock/ai). */
 export type VoiceRulePlanner = (rules: StoredVoiceRule[]) => { upserts: VoiceRuleRecord[]; deletes: string[] };
 
-export type VoiceLearningOutcome = "applied" | "no_consent" | "paused" | "already_learned" | "draft_not_found";
+export type VoiceLearningOutcome = "applied" | "no_consent" | "paused" | "already_learned" | "draft_not_found" | "excluded" | "voice_changed";
 
 /**
  * The one learning write. Under the VoiceProfile row lock (shared with
@@ -197,15 +197,19 @@ export async function applyVoiceLearning(
     editSignals?: unknown;
     /** Set lastDistilledAt after a Claude batch distillation. */
     distilledAt?: Date;
+    /** Reject model results computed under an older consent or exclusion state. */
+    expectedVersion?: number;
   },
   now = new Date()
 ): Promise<{ outcome: VoiceLearningOutcome; changed: number }> {
   return prisma.$transaction(async (tx) => {
     const profile = await lockVoiceProfile(tx, orgId, igAccountId);
     if (!hasVoiceConsent(profile)) return { outcome: "no_consent", changed: 0 };
+    if (input.expectedVersion !== undefined && profile.version !== input.expectedVersion) return { outcome: "voice_changed", changed: 0 };
     if (input.draftId) {
-      const draft = await tx.draft.findFirst({ where: { id: input.draftId, orgId, thread: { igAccountId } }, select: { id: true, learnedAt: true } });
+      const draft = await tx.draft.findFirst({ where: { id: input.draftId, orgId, thread: { igAccountId } }, select: { id: true, learnedAt: true, sentMessageId: true } });
       if (!draft) return { outcome: "draft_not_found", changed: 0 };
+      if (draft.sentMessageId && profile.excludedMessageIds.includes(draft.sentMessageId)) return { outcome: "excluded", changed: 0 };
       if (draft.learnedAt) return { outcome: "already_learned", changed: 0 };
     }
     if (profile.learningPaused) {

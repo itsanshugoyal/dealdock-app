@@ -3,6 +3,9 @@ import { CLASSIFICATION_LABELS, type VoiceRuleScope } from "@dealdock/core";
 import { PROMPT_VERSION } from "./prompts";
 import { HEURISTIC_MODEL_VERSION } from "./heuristic-pipeline";
 import { containsPhrase, normalizeForSim } from "./style-text";
+import { z } from "zod";
+import { groqStructured } from "./groq-client";
+import { chatModel, configuredModelProvider } from "./provider";
 
 /**
  * Voice modeling (PRD §6.4): consented, provenance-filtered sent-DM samples →
@@ -45,11 +48,23 @@ export async function extractStyleCard(
   samples: string[],
   options: { allowHeuristic?: boolean } = {}
 ): Promise<StyleCardResult> {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const provider = configuredModelProvider();
+  if (!provider) {
     if (process.env.NODE_ENV !== "production" && (options.allowHeuristic === true || process.env.DEALDOCK_AI_MODE === "heuristic")) {
       return heuristicStyleCard(samples);
     }
-    throw new Error("voice extraction requires a configured Anthropic model; heuristic mode is development/test-only");
+    throw new Error("voice extraction requires a configured AI model; heuristic mode is development/test-only");
+  }
+
+  if (provider === "groq" || provider === "openai") {
+    const model = chatModel(provider, "draft");
+    const style = z.object({ greeting: z.string(), tone: z.string(), sentenceLength: z.enum(["short", "medium", "long"]), signoff: z.string(), emojiUsage: z.enum(["none", "light", "heavy"]), codeSwitching: z.string(), characteristicPhrases: z.array(z.string()).max(5) }).parse(await groqStructured({
+      model, name: STYLE_TOOL.name, schema: STYLE_TOOL.input_schema,
+      system: "Analyze the creator's sent Instagram DMs and extract their actual writing style, not how they should write. Ignore template-like messages. Include at most five phrases.",
+      user: `Sent messages (most recent first):\n${samples.map((s, i) => `${i + 1}. ${s}`).join("\n")}`,
+      maxTokens: 2048, temperature: 0, vendor: provider,
+    }));
+    return { styleCard: style, modelVersion: `${provider}:${model}`, promptVersion: `${PROMPT_VERSION}-${provider}1` };
   }
 
   const client = new Anthropic();
@@ -262,8 +277,8 @@ export async function distillEditRules(
   existingRules: ReadonlyArray<{ id: string; key: string; scope: string; text: string }>,
   nativeTexts: readonly string[]
 ): Promise<DistilledRule[]> {
-  const model = process.env.DRAFT_MODEL;
-  if (!process.env.ANTHROPIC_API_KEY || !model) throw new Error("edit distillation requires ANTHROPIC_API_KEY and DRAFT_MODEL");
+  const provider = configuredModelProvider();
+  if (!provider) throw new Error("edit distillation requires a configured AI model");
   const batch = edits.slice(0, 10);
   const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text).replace(/[<>]/g, " ");
   const content = [
@@ -285,6 +300,13 @@ export async function distillEditRules(
     ),
     "</edits>",
   ].join("\n");
+  if (provider === "groq" || provider === "openai") {
+    const response = await groqStructured({ model: chatModel(provider, "draft"), name: DISTILL_TOOL.name, schema: DISTILL_TOOL.input_schema,
+      system: DISTILL_SYSTEM.replace("Always call propose_voice_rules exactly once.", ""), user: content, maxTokens: 2048, temperature: 0, vendor: provider });
+    return validateDistilledRules(response, batch, existingRules, nativeTexts);
+  }
+  const model = process.env.DRAFT_MODEL;
+  if (!model) throw new Error("edit distillation requires DRAFT_MODEL");
   const response = await new Anthropic().messages.create({
     model,
     max_tokens: 800,

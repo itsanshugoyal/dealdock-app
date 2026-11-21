@@ -2,18 +2,24 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AT_RISK_MS, DEFAULT_NUDGE_DELAY_DAYS, isClosingSoon } from "@dealdock/core";
-import { ArrowRight, ArrowUpRight, CheckCheck, Clock, Gauge, Hourglass, ScanSearch, Waves } from "lucide-react";
-import { byValueDesc, displayName, followUpDue, formatDate, needsYou, pluralize, shortDuration, toCheck, waitingLowMinor } from "../lib/format";
+import { useState } from "react";
+import { AT_RISK_MS, byDealUrgency, DEFAULT_NUDGE_DELAY_DAYS, isClosingSoon, isDealOpen, owedTotals, type DealDto } from "@dealdock/core";
+import { ArrowRight, CheckCheck, Clock, Gauge, Hourglass, ScanSearch, Waves } from "lucide-react";
+import { atHandle, byValueDesc, displayName, followUpDue, formatDate, needsYou, pluralize, replyWindowInfo, shortDuration, toCheck, waitingLowMinor } from "../lib/format";
+import { nextReply } from "../lib/today-priority";
 import { useMinuteClock } from "../lib/keyboard";
-import { useApp, useInsights, useMe } from "../lib/use-demo";
+import { appStore, useApp, useDeals, useInsights, useMe, useRenewals } from "../lib/use-demo";
+import { CommentLeadsToday } from "../components/comment-leads";
+import { DealDetailSheet, DealRow } from "../components/deals";
+import { PipelineSummary } from "../components/pipeline";
+import { RightsAndResults } from "../components/rights-results";
+import { CopyPitchSheet, RenewalRow } from "../components/renewals";
 import { ConversationRow, Group, GroupLink, HeroCard, LargeTitle, Stat, ValueStrip } from "../components/kit";
 import { buttonClasses } from "../components/ui/button-classes";
 import { Sparkline, ProgressRing } from "../components/ui/charts";
-import { cx } from "../components/ui/cx";
 import { MoneyCounter, MoneyValue } from "../components/ui/money-value";
 import { Avatar } from "../components/ui/sender";
-import { Skeleton } from "../components/ui/feedback";
+import { ErrorState, Skeleton } from "../components/ui/feedback";
 
 function greeting(now: number, timeZone: string): string {
   const hour = Number(new Intl.DateTimeFormat("en-GB", { hour: "numeric", hour12: false, timeZone }).format(now));
@@ -28,52 +34,77 @@ export default function Today() {
   const router = useRouter();
   const { threads, dashboard, money, timezone, state, loadedAt, settings } = useApp();
   const insights = useInsights(6);
+  // Every deal: open ones for what is owed, paid ones too for usage rights ending and results due.
+  const deals = useDeals("all");
+  const renewals = useRenewals();
+  // A paid deal agreed outside DealDock has no conversation: its pitch is text to copy, in a sheet.
+  const [pitching, setPitching] = useState<DealDto | null>(null);
   const me = useMe();
   const now = useMinuteClock();
   const locale = money.locale ?? "en-IN";
-  const firstLoad = state === "loading" && loadedAt === null;
+  const firstLoad = loadedAt === null;
+  const accounts = settings.data?.accounts ?? [];
+  const multiCreator = accounts.length > 1;
+  const creatorOf = (thread: { igAccountId: string | null }) => accounts.length > 1 ? accounts.find((item) => item.id === thread.igAccountId)?.handle : null;
 
   const waiting = threads.filter(needsYou).sort(byValueDesc);
   const closing = waiting.filter((thread) => isClosingSoon(thread.replyWindow, now || Date.now()));
   const drafts = waiting.filter((thread) => thread.draftReady).length;
-  const closed = threads.filter((thread) => thread.routedTo === "inbox" && thread.hasDealSignal && thread.state !== "closed");
+  const closed = threads.filter((thread) => thread.routedTo === "inbox" && thread.hasDealSignal && thread.state !== "closed" && !thread.scamReason);
   const nudges = threads.filter((thread) => thread.routedTo === "inbox" && followUpDue(thread)).sort(byValueDesc);
   const review = threads.filter(toCheck);
   const waitingLow = waitingLowMinor(waiting);
-  const top = waiting[0] ?? null;
+  const recommendation = nextReply(waiting, accounts, now || Date.now());
+  const top = recommendation?.thread ?? null;
+  const reconnect = accounts.filter((item) => item.status === "token_expired");
+  const openDeals = (deals.data ?? []).filter(isDealOpen).sort(byDealUrgency);
+  const owed = owedTotals(openDeals, now || Date.now());
+  // A deal agreed outside DealDock has no conversation to open: it opens in a sheet here.
+  const [opened, setOpened] = useState<string | null>(null);
+  const openedDeal = openDeals.find((deal) => deal.id === opened) ?? null;
+  // Creator chips are agency wording: Roster plan only.
+  const dealCreator = (igAccountId: string) => settings.data?.tier === "roster" && accounts.length > 1 ? accounts.find((item) => item.id === igAccountId)?.handle : null;
 
   const first = me.data?.name?.split(/\s+/)[0] ?? null;
   const goal = insights.data?.goal;
   const months = insights.data?.months ?? [];
-  const thisMonth = months[months.length - 1]?.recoveredMinor ?? dashboard?.mtdRecoveredMinor ?? 0;
-  const lastMonth = months[months.length - 2]?.recoveredMinor ?? null;
-  const delta = lastMonth ? Math.round(((thisMonth - lastMonth) / lastMonth) * 100) : null;
   const speed = insights.data?.speed;
   const voice = insights.data?.voice;
   // Read from settings only when something already loaded them; Today never fetches them for this.
   const nudgeDays = settings.data?.nudgeDelayDays ?? DEFAULT_NUDGE_DELAY_DAYS;
+
+  if (state === "error" && loadedAt === null) {
+    return <ErrorState as="h1" thing="Today" reason="Your conversations haven't loaded. Refresh before deciding what needs a reply." onRetry={() => void appStore.refresh()} className="min-h-[60dvh] justify-center" />;
+  }
 
   return (
     <div className="mx-auto w-full max-w-[1180px] pb-10">
       <LargeTitle
         eyebrow={now ? formatDate(now, locale, timezone, { weekday: "long", day: "numeric", month: "long" }) : " "}
         title={now ? `${greeting(now, timezone)}${first ? `, ${first}` : ""}` : "Today"}
+        subtitle={multiCreator ? "Across all creators in this workspace" : undefined}
         accessory={<Link href="/settings" aria-label="You and settings" className="rounded-full md:hidden"><Avatar handle={me.data?.name ?? "you"} name={me.data?.name} size={36} /></Link>}
       />
 
       <div className="grid gap-5 px-4 md:px-8 lg:grid-cols-[minmax(0,1.35fr)_minmax(320px,1fr)] lg:gap-6">
+        {reconnect.length > 0 && (
+          <Link href="/settings#instagram" className="dd-press flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-waiting-tint px-4 py-3 text-label text-ink lg:col-span-2">
+            <span><b className="font-semibold">Reconnect Instagram.</b> Replies are paused for {reconnect.map((item) => `@${item.handle}`).join(", ")}.</span>
+            <span className="inline-flex items-center gap-1 font-semibold">Fix connection <ArrowRight aria-hidden size={16} /></span>
+          </Link>
+        )}
         {/* Left column: the work */}
         <div className="flex min-w-0 flex-col gap-5">
           <HeroCard aria-labelledby="hero-title" glow="both" className="p-5 md:p-7">
-            <p id="hero-title" className="text-label font-semibold text-on-hero/60">Money in your DMs right now</p>
+            <p id="hero-title" className="text-label font-semibold text-on-hero/60">{multiCreator ? "Money in all creators’ DMs right now" : "Money in your DMs right now"}</p>
             {firstLoad ? <Skeleton className="mt-2 h-12 w-48 bg-on-hero/10" /> : (
-              <p className="mt-1 flex items-baseline gap-2">
-                <MoneyValue minor={waitingLow} size="hero" className="text-on-hero [&_.dd-symbol-hero]:text-on-hero/60" />
-                <span className="text-body font-medium text-on-hero/55">at least</span>
+              <p className="mt-1 flex flex-wrap items-baseline gap-x-2">
+                <MoneyCounter countId="today-waiting" minor={waitingLow} mode="compact" size="hero" className="text-on-hero [&_.dd-symbol-hero]:text-on-hero/60" />
+                <span className="text-label font-medium text-on-hero/60">lower estimate</span>
               </p>
             )}
             <p className="mt-1 text-body text-on-hero/70">
-              {waiting.length === 0
+              {firstLoad ? "Loading your conversations…" : waiting.length === 0
                 ? "Nothing waiting. Every money conversation has your reply."
                 : <>Across {waiting.length} {pluralize(waiting.length, "conversation")} waiting on you{drafts > 0 && <> · <span className="text-on-hero">{drafts} {pluralize(drafts, "draft")} ready</span></>}</>}
             </p>
@@ -83,7 +114,7 @@ export default function Today() {
             <div className="mt-6 flex flex-wrap items-center gap-3">
               {top ? (
                 <Link href={`/thread/${top.id}`} className={buttonClasses({ variant: "hero", size: "lg" })}>
-                  Reply to the biggest
+                  {recommendation?.reason === "closing_soon" ? "Reply before it closes" : "Reply to the biggest"}
                   <ArrowRight aria-hidden size={18} strokeWidth={2.2} />
                 </Link>
               ) : (
@@ -96,6 +127,7 @@ export default function Today() {
                 </span>
               )}
             </div>
+            {top && recommendation?.reason === "closing_soon" && <p className="mt-3 text-caption text-on-hero/65">{atHandle(top.handle)} · {replyWindowInfo(top.replyWindow, now || Date.now(), "row").text}. Review this one first; every reply still needs your approval.</p>}
           </HeroCard>
 
           <Group id="needs" title={<>Needs you <span className="ml-1 text-ink-3">{waiting.length || ""}</span></>} action={<GroupLink href="/inbox">Inbox</GroupLink>}>
@@ -104,11 +136,28 @@ export default function Today() {
             ) : (
               <ul className="divide-y divide-hairline">
                 {waiting.slice(0, 5).map((thread) => (
-                  <li key={thread.id}><ConversationRow thread={thread} href={`/thread/${thread.id}`} now={now} /></li>
+                  <li key={thread.id}><ConversationRow thread={thread} href={`/thread/${thread.id}`} now={now} creator={creatorOf(thread)} /></li>
                 ))}
               </ul>
             )}
           </Group>
+
+          {openDeals.length > 0 && (
+            <Group
+              id="deals"
+              title="Deals in progress"
+              description={<><MoneyValue minor={owed.owedMinor} className="font-semibold text-ink-2" /> owed{owed.overdueMinor > 0 && <> · <span className="font-semibold text-waiting"><MoneyValue minor={owed.overdueMinor} /> overdue</span></>}</>}
+              action={<GroupLink href="/ledger#owed">See all</GroupLink>}
+            >
+              <ul className="divide-y divide-hairline">
+                {openDeals.slice(0, 5).map((deal) => (
+                  <li key={deal.id}><DealRow deal={deal} now={now || Date.now()} creator={dealCreator(deal.igAccountId)} onOpen={() => setOpened(deal.id)} /></li>
+                ))}
+              </ul>
+            </Group>
+          )}
+          <DealDetailSheet deal={openedDeal} creator={openedDeal ? dealCreator(openedDeal.igAccountId) : null} onClose={() => setOpened(null)} />
+          <RightsAndResults deals={deals.data ?? []} now={now || Date.now()} creatorOf={dealCreator} />
 
           {closed.length > 0 && (
             <Group id="closed" title="Looks closed — record it?">
@@ -121,7 +170,7 @@ export default function Today() {
                         <span className="block truncate text-[15px] font-semibold text-ink">{displayName(thread.participant, thread.handle)}</span>
                         <span className="block truncate text-[14px] text-ink-2">&ldquo;{thread.dealSignal?.phrase ?? thread.preview}&rdquo;</span>
                       </span>
-                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand px-3 py-1.5 text-label font-semibold text-on-brand">Record sale</span>
+                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand px-3 py-1.5 text-label font-semibold text-on-brand">Record deal</span>
                     </Link>
                   </li>
                 ))}
@@ -133,11 +182,22 @@ export default function Today() {
             <Group id="nudges" title={<>Follow-ups due <span className="ml-1 text-ink-3">{nudges.length}</span></>} action={<GroupLink href="/inbox?view=followups">See all</GroupLink>}>
               <ul className="divide-y divide-hairline">
                 {nudges.slice(0, 3).map((thread) => (
-                  <li key={thread.id}><ConversationRow thread={thread} href={`/thread/${thread.id}`} now={now} /></li>
+                  <li key={thread.id}><ConversationRow thread={thread} href={`/thread/${thread.id}`} now={now} creator={creatorOf(thread)} /></li>
                 ))}
               </ul>
             </Group>
           )}
+
+          {(renewals.data?.length ?? 0) > 0 && (
+            <Group id="renewals" title="Pitch again" description="Brands that paid you a while ago. Most deals are one-off, so a short hello can bring the next one.">
+              <ul className="divide-y divide-hairline">
+                {renewals.data!.slice(0, 5).map((renewal) => (
+                  <li key={renewal.deal.id}><RenewalRow renewal={renewal} creator={dealCreator(renewal.deal.igAccountId)} onCopy={() => setPitching(renewal.deal)} /></li>
+                ))}
+              </ul>
+            </Group>
+          )}
+          <CopyPitchSheet deal={pitching} onClose={() => setPitching(null)} />
         </div>
 
         {/* Right column: proof and pace */}
@@ -146,19 +206,15 @@ export default function Today() {
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <p id="recovered-title" className="text-label font-semibold text-ink-3">
+                  {multiCreator && <span className="mb-1 block text-caption">All creators</span>}
                   Recovered in {now ? formatDate(now, locale, timezone, { month: "long" }) : "this month"}
                 </p>
                 {firstLoad || !dashboard ? <Skeleton className="mt-2 h-11 w-44" /> : (
                   <MoneyCounter countId="today-mtd" data-testid="mtd-recovered" minor={dashboard.mtdRecoveredMinor} mode="exact" kind="confirmed" size="hero" className="mt-1 block font-semibold" />
                 )}
                 <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-label text-ink-2">
-                  <span className="inline-flex items-center gap-1 font-semibold text-recovered"><CheckCheck aria-hidden size={14} />Confirmed by you</span>
+                  <span className="inline-flex items-center gap-1 font-semibold text-recovered"><CheckCheck aria-hidden size={14} />{multiCreator ? "Confirmed by your team" : "Confirmed by you"}</span>
                   {dashboard && <span>· {dashboard.mtdDealCount} {pluralize(dashboard.mtdDealCount, "sale")}</span>}
-                  {delta !== null && (
-                    <span className={cx("inline-flex items-center gap-0.5 font-semibold", delta >= 0 ? "text-recovered" : "text-danger")}>
-                      · <ArrowUpRight aria-hidden size={14} className={delta < 0 ? "rotate-90" : undefined} />{Math.abs(delta)}% vs last month
-                    </span>
-                  )}
                 </p>
               </div>
               {goal?.monthlyGoalMinor ? (
@@ -179,8 +235,10 @@ export default function Today() {
             <Link href="/ledger" className="mt-4 inline-flex items-center gap-1 text-label font-semibold text-brand">Open revenue <ArrowRight aria-hidden size={14} /></Link>
           </section>
 
+          <PipelineSummary threads={threads} />
+
           {review.length > 0 && (
-            <Link href="/review" className="dd-press flex items-center gap-4 rounded-[22px] bg-surface p-4 shadow-card hover:bg-[color-mix(in_oklab,var(--dd-surface)_92%,var(--dd-review))]">
+            <Link href="/review" className="dd-press flex items-center gap-4 rounded-[22px] bg-surface shadow-card p-4 hover:bg-[color-mix(in_oklab,var(--dd-surface)_92%,var(--dd-review))]">
               <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-review-tint text-review"><ScanSearch aria-hidden size={22} /></span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[15px] font-semibold text-ink">{review.length} {pluralize(review.length, "message")} to check</span>
@@ -190,34 +248,33 @@ export default function Today() {
             </Link>
           )}
 
-          <section aria-labelledby="week-title" className="rounded-[26px] bg-surface p-5 shadow-card md:p-6">
+          <CommentLeadsToday />
+
+          <section aria-labelledby="week-title" className="rounded-[22px] bg-surface shadow-card p-5 md:p-6">
             <h2 id="week-title" className="text-heading text-ink">This week</h2>
             <div className="mt-4 grid grid-cols-2 gap-4">
               <div className="flex gap-3">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-info-tint text-info"><Gauge aria-hidden size={20} /></span>
                 <Stat label="Median first reply">{speed?.medianFirstReplyMinutes != null ? formatMinutes(speed.medianFirstReplyMinutes) : "—"}</Stat>
               </div>
-              <div className="flex gap-3">
+              {/* The voice stat opens Your voice, where the same figure is explained week by week. */}
+              <Link href="/voice" className="dd-press -m-2 flex gap-3 rounded-2xl p-2 hover:bg-inset">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-tint text-recovered"><Waves aria-hidden size={20} /></span>
-                <Stat label="Drafts in your voice">{voice?.voiceMatchPct != null ? `${Math.round(voice.voiceMatchPct)}%` : "—"}</Stat>
-              </div>
+                <Stat label="Drafts sent with light edits">{voice?.voiceMatchPct != null ? `${Math.round(voice.voiceMatchPct)}%` : "—"}</Stat>
+              </Link>
             </div>
             {(speed?.prevMedianFirstReplyMinutes != null && speed?.medianFirstReplyMinutes != null) && (
               <p className="mt-4 rounded-2xl bg-inset px-4 py-3 text-label text-ink-2">
-                {speed.medianFirstReplyMinutes <= speed.prevMedianFirstReplyMinutes
-                  ? <>You&apos;re replying <b className="font-semibold text-ink">{formatMinutes(speed.prevMedianFirstReplyMinutes - speed.medianFirstReplyMinutes)} faster</b> than last week. Brands notice.</>
-                  : <>Replies are <b className="font-semibold text-ink">{formatMinutes(speed.medianFirstReplyMinutes - speed.prevMedianFirstReplyMinutes)} slower</b> than last week.</>}
+                {speed.medianFirstReplyMinutes === speed.prevMedianFirstReplyMinutes
+                  ? <>Your median first reply time is unchanged from last week.</>
+                  : speed.medianFirstReplyMinutes < speed.prevMedianFirstReplyMinutes
+                    ? <>You&apos;re replying <b className="font-semibold text-ink">{formatMinutes(speed.prevMedianFirstReplyMinutes - speed.medianFirstReplyMinutes)} faster</b> than last week.</>
+                    : <>Replies are <b className="font-semibold text-ink">{formatMinutes(speed.medianFirstReplyMinutes - speed.prevMedianFirstReplyMinutes)} slower</b> than last week.</>}
               </p>
-            )}
-            {voice?.voiceMatchPct != null && (
-              <Link href="/voice" className="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-inset px-4 py-3 text-label text-ink-2 hover:bg-fill">
-                <span>{Math.round(voice.voiceMatchPct)}% of drafts went out with light edits or none.</span>
-                <ArrowRight aria-hidden size={16} className="shrink-0 text-ink-3" />
-              </Link>
             )}
           </section>
 
-          {nudges.length === 0 && closing.length === 0 && (
+          {!firstLoad && nudges.length === 0 && closing.length === 0 && (
             <div className="flex items-center gap-3 rounded-[22px] border border-dashed border-separator px-4 py-4 text-label text-ink-2">
               <Hourglass aria-hidden size={18} className="shrink-0 text-ink-3" />
               No follow-ups due. DealDock drafts one when a deal goes quiet for {nudgeDays} {pluralize(nudgeDays, "day")}.

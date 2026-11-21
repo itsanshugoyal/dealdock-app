@@ -3,6 +3,7 @@
  * (docs/research/04-writing-style-learning.md §4.0). Pure: no Node APIs, no
  * I/O. Only the API and worker use them; the web never imports @dealdock/ai.
  */
+import { extractAmountMinor } from "@dealdock/core";
 
 const EMOJI = /\p{Extended_Pictographic}/u;
 const EMOJI_GLOBAL = /\p{Extended_Pictographic}/gu;
@@ -289,4 +290,26 @@ export function wordDiff(before: string, after: string): DiffHunk[] {
 export function cleanSpan(span: string, max = 80): string {
   const trimmed = span.replace(/^[\s,.;:—–-]+|[\s,.;:—–-]+$/g, "");
   return trimmed.length > max ? `${trimmed.slice(0, max - 1).trimEnd()}…` : trimmed;
+}
+
+/**
+ * Pieces of text that hold at most one amount: clauses, brackets and list
+ * items ("₹40k, or ₹45k with stories"). "Rs. 500", "1.5L", "₹50,000/-" and
+ * ranges ("30-40k", which core never reads as an amount) stay whole.
+ */
+const MONEY_PIECES = /(?<!\b(?:rs|dhs))[.!?;:](?=\s|$)|[\n()]|,(?!\d)|\s(?:and|or|aur|ya|plus|&|\+)\s/i;
+
+/**
+ * Every amount in `text` denominated in `currencyCode`, as integer minor
+ * units: core's parser (extractAmountMinor) run one piece at a time, since it
+ * returns only the first amount. Hinglish "50 hazaar" reads as 50k.
+ */
+export function moneyAmounts(text: string, currencyCode: string): number[] {
+  return text
+    .replace(/(\d)\s?(?:hazaa?r|hajaa?r)(?![\p{L}])/giu, "$1k")
+    .split(MONEY_PIECES)
+    .flatMap((piece) => {
+      const minor = extractAmountMinor(piece, currencyCode);
+      return minor === null ? [] : [minor];
+    });
 }

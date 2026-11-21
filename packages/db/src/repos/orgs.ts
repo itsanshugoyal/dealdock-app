@@ -182,7 +182,7 @@ export async function getOrgSettings(orgId: OrgId) {
       monthlyGoalMinor: true,
       igAccounts: {
         orderBy: [{ connectedAt: "asc" }, { id: "asc" }],
-        select: { id: true, handle: true, status: true, provider: true, voice: { select: { consentedAt: true, revokedAt: true } } },
+        select: { id: true, handle: true, status: true, provider: true, rateCardToken: true, voice: { select: { consentedAt: true, revokedAt: true } } },
       },
     },
   });
@@ -192,7 +192,8 @@ export async function getOrgSettings(orgId: OrgId) {
     locale: org.locale,
     timezone: org.timezone,
     nudgeDelayDays: org.nudgeDelayDays,
-    accounts: org.igAccounts.map(({ id, handle, status, provider }) => ({ id, handle, status, provider })),
+    // The rate-card token is the creator's own link, for every seat that drafts their replies.
+    accounts: org.igAccounts.map(({ id, handle, status, provider, rateCardToken }) => ({ id, handle, status, provider, rateCardToken })),
     voiceConsent: voiceConsentOf(org.igAccounts),
     deletionRequestedAt: org.deletionRequestedAt,
     monthlyGoalMinor: org.monthlyGoalMinor === null ? null : minorUnitsToNumber(org.monthlyGoalMinor, "monthlyGoalMinor"),

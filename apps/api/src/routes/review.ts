@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { CLASSIFICATION_LABELS, type ReviewQueueResponse } from "@dealdock/core";
-import { listReviewQueue, reviewClassification } from "@dealdock/db";
+import { listReviewQueuePage, reviewClassification } from "@dealdock/db";
 import { requireAuth } from "../auth";
 import { requirePermission, requireWritable } from "../guards";
 
@@ -12,12 +12,15 @@ const ReviewBody = z.object({
   message: "An override needs the corrected label.",
   path: ["overrideLabel"],
 });
+const ReviewQuery = z.object({ cursor: z.string().min(1).max(512).optional() });
 
 export async function reviewRoutes(app: FastifyInstance) {
-  app.get("/review-queue", { preHandler: requireAuth }, async (req) => {
-    const rows = await listReviewQueue(req.auth!.orgId);
+  app.get("/review-queue", { preHandler: requireAuth }, async (req, reply) => {
+    const parsed = ReviewQuery.safeParse(req.query);
+    if (!parsed.success) return reply.code(400).send({ error: "invalid_query" });
+    const page = await listReviewQueuePage(req.auth!.orgId, 50, parsed.data.cursor);
     return {
-      rows: rows.map((row) => ({
+      rows: page.rows.map((row) => ({
         classificationId: row.classificationId,
         threadId: row.threadId,
         igAccountId: row.igAccountId,
@@ -28,6 +31,7 @@ export async function reviewRoutes(app: FastifyInstance) {
         confidence: row.confidence,
         rationale: row.rationale,
       })),
+      nextCursor: page.nextCursor,
     } satisfies ReviewQueueResponse;
   });
 

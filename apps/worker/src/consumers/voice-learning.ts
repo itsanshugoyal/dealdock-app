@@ -5,6 +5,7 @@ import { QUEUES } from "@dealdock/core";
 import {
   analyzeEdit,
   composeStyleCard,
+  configuredModelProvider,
   distillEditRules,
   draftScope,
   editEvidence,
@@ -87,13 +88,13 @@ export async function learnFromSend(data: z.infer<typeof VoiceLearnJob>, now = n
 }
 
 /**
- * Claude batch distillation once ≥ 5 edited sends piled up since the last run
- * (only with a configured model). Claude proposes; each proposal becomes
+ * Model-backed distillation once ≥ 5 edited sends piled up since the last run
+ * (only with a configured model). The model proposes; each proposal becomes
  * evidence on the drafts it cites and the deterministic rules decide whether
  * anything activates. A failed call is retried at the next send.
  */
 async function distillIfDue(orgId: OrgId, igAccountId: string, now: Date): Promise<number | false> {
-  if (!process.env.ANTHROPIC_API_KEY || !process.env.DRAFT_MODEL) return false;
+  if (!configuredModelProvider()) return false;
   const profile = await getVoiceProfileState(orgId, igAccountId);
   if (!profile.consent.granted || profile.learningPaused) return false;
   if ((await countEditedSendsSince(orgId, igAccountId, profile.lastDistilledAt)) < DISTILL_AFTER_EDITS) return false;
@@ -103,8 +104,15 @@ async function distillIfDue(orgId: OrgId, igAccountId: string, now: Date): Promi
       listVoiceRules(orgId, igAccountId, { statuses: ["active", "pinned", "candidate"] }),
       loadVoiceCorpus(orgId, igAccountId, 400),
     ]);
+    // Exclusions can change while the batch loads. Re-read the account's
+    // consent and exclusions before handing any native examples to the model.
+    const currentProfile = await getVoiceProfileState(orgId, igAccountId);
+    if (!currentProfile.consent.granted || currentProfile.learningPaused || currentProfile.version !== profile.version) return false;
+    const excluded = new Set(currentProfile.excludedMessageIds);
+    const eligibleBatch = batch.filter((draft) => !draft.sentMessageId || !excluded.has(draft.sentMessageId));
+    if (eligibleBatch.length < DISTILL_AFTER_EDITS) return false;
     const proposals = await distillEditRules(
-      batch.map((d) => ({
+      eligibleBatch.map((d) => ({
         draftId: d.id,
         scope: draftScope({ kind: d.kind, label: d.label }),
         inboundText: d.inboundText,
@@ -113,9 +121,9 @@ async function distillIfDue(orgId: OrgId, igAccountId: string, now: Date): Promi
         signals: signalTexts(d.editSignals),
       })),
       rules,
-      corpus.filter((row) => row.origin === "native").map((row) => row.text)
+      corpus.filter((row) => row.origin === "native" && !excluded.has(row.messageId)).map((row) => row.text)
     );
-    const byDraft = new Map(batch.map((d) => [d.id, d]));
+    const byDraft = new Map(eligibleBatch.map((d) => [d.id, d]));
     const evidence: RuleEvidence[] = proposals.flatMap((proposal) =>
       proposal.draftIds.map((draftId) => ({
         key: proposal.key,
@@ -129,8 +137,8 @@ async function distillIfDue(orgId: OrgId, igAccountId: string, now: Date): Promi
         seatRole: byDraft.get(draftId)?.sentBy?.role ?? null,
       }))
     );
-    await applyVoiceLearning(orgId, igAccountId, { distilledAt: now, plan: (current) => planRuleUpdates(current, evidence, now) }, now);
-    return proposals.length;
+    const applied = await applyVoiceLearning(orgId, igAccountId, { expectedVersion: currentProfile.version, distilledAt: now, plan: (current) => planRuleUpdates(current, evidence, now) }, now);
+    return applied.outcome === "applied" ? proposals.length : false;
   } catch (error) {
     // Never log DM content: the error class/message only.
     console.error(`voice distillation failed for account ${igAccountId}: ${error instanceof Error ? error.name : "unknown error"}`);

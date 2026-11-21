@@ -20,6 +20,7 @@ describe("MockInstagramAdapter contract", () => {
     expect(text.platformMessageId).not.toBe(audio.platformMessageId);
     expect(audio.platformMessageId).toMatch(/^mock-audio-mock-thread-0-/);
     expect(audio.sentAt.toISOString()).toBe("2026-10-31T12:00:00.000Z");
+    expect((await adapter.sendFile(ACCOUNT, target, "/media/invoices/inv1/INV-1.pdf")).platformMessageId).toMatch(/^mock-file-mock-thread-0-/);
   });
 
   it("serves fixture sender profiles for corpus participants", async () => {

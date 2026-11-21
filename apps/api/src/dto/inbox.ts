@@ -1,6 +1,6 @@
-import { computeReplyWindow, type InboxRow } from "@dealdock/core";
+import type { InboxRow } from "@dealdock/core";
 import type { InboxRow as InboxRecord } from "@dealdock/db";
-import { iso, toParticipant, toSource } from "./thread";
+import { iso, replyWindowOf, toParticipant, toSource } from "./thread";
 
 /** One Revenue Inbox row; the reply window is computed per request (it ticks). */
 export function toInboxRow(row: InboxRecord, now: Date, humanAgentEnabled: boolean): InboxRow {
@@ -26,6 +26,10 @@ export function toInboxRow(row: InboxRecord, now: Date, humanAgentEnabled: boole
     hasAudio: row.hasAudio,
     dealSignal: row.dealSignal,
     source: toSource(row.source),
-    replyWindow: computeReplyWindow(row.lastInboundAt, now, humanAgentEnabled),
+    replyWindow: replyWindowOf(row.channel, row.lastInboundAt, now, humanAgentEnabled),
+    channel: row.channel,
+    subject: row.subject,
+    scamReason: row.scamReason,
+    leadStage: row.leadStage,
   };
 }

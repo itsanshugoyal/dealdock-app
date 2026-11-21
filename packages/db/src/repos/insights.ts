@@ -48,7 +48,7 @@ export async function getInsights(orgId: OrgId, options: { months?: number; now?
   const [entries, allTime, open, atRisk, waiting, reviewCount, firstInbound, sent, leak] = await Promise.all([
     prisma.ledgerEntry.findMany({
       where: { orgId, deletedAt: null, closedAt: { gte: startOfZonedMonth(now, tz, monthCount - 1) } },
-      select: { id: true, threadId: true, dealType: true, amountMinor: true, closedAt: true, thread: { select: { participantHandle: true } } },
+      select: { id: true, threadId: true, counterpartyHandle: true, dealType: true, amountMinor: true, closedAt: true, thread: { select: { participantHandle: true } } },
     }),
     prisma.ledgerEntry.aggregate({ where: { orgId, deletedAt: null }, _sum: { amountMinor: true } }),
     prisma.thread.aggregate({ where: commerceOpen, _count: { _all: true }, _sum: { estValueMaxMinor: true } }),
@@ -185,7 +185,7 @@ export async function getInsights(orgId: OrgId, options: { months?: number; now?
       .map((entry) => ({
         id: entry.id,
         threadId: entry.threadId,
-        handle: entry.thread.participantHandle,
+        handle: entry.thread?.participantHandle ?? entry.counterpartyHandle,
         dealType: entry.dealType,
         amountMinor: minorUnitsToNumber(entry.amountMinor),
         closedAt: entry.closedAt.toISOString(),

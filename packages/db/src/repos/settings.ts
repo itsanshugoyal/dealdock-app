@@ -89,6 +89,12 @@ export async function upsertOnboardingProfile(
     if (current.currencyCode !== input.currencyCode) {
       throw new DomainError("currency_immutable_for_organization", 409);
     }
+    // Per-creator profiles may only name this workspace's accounts.
+    const creators = input.businessContext["creators"];
+    const creatorIds = creators && typeof creators === "object" && !Array.isArray(creators) ? Object.keys(creators) : [];
+    if (creatorIds.length > 0 && (await tx.igAccount.count({ where: { orgId, id: { in: creatorIds } } })) !== creatorIds.length) {
+      throw new DomainError("ig_account_not_in_org", 404);
+    }
     const context = { ...input.businessContext, currencyCode: input.currencyCode };
     const org = await tx.organization.update({
       where: { id: orgId },
@@ -110,9 +116,19 @@ export async function upsertOnboardingProfile(
   });
 }
 
-/** Honest inventory of stored data (PRD §6.11). */
+/** Connected email inboxes, disconnected ones included: the address and its state, never the OAuth tokens. */
+async function emailInboxes(orgId: OrgId) {
+  const rows = await prisma.igAccount.findMany({
+    where: { orgId, platform: "email" },
+    orderBy: [{ connectedAt: "asc" }, { id: "asc" }],
+    select: { id: true, handle: true, status: true, connectedAt: true },
+  });
+  return rows.map((row) => ({ id: row.id, address: row.handle, status: row.status, connectedAt: row.connectedAt }));
+}
+
+/** Honest inventory of stored data (PRD §6.11). Counts include deleted-but-kept rows (refunds, deleted deals). */
 export async function getDataSummary(orgId: OrgId) {
-  const [messages, classifications, drafts, ledgerEntries, auditRows, voiceRules, offers, audioClips, org] =
+  const [messages, classifications, drafts, ledgerEntries, auditRows, voiceRules, offers, audioClips, deals, invoices, billingProfiles, inboxes, org] =
     await Promise.all([
       prisma.message.count({ where: { orgId } }),
       prisma.classification.count({ where: { orgId } }),
@@ -122,6 +138,10 @@ export async function getDataSummary(orgId: OrgId) {
       prisma.voiceRule.count({ where: { orgId } }),
       prisma.offer.count({ where: { orgId } }),
       prisma.audioAsset.count({ where: { orgId } }),
+      prisma.deal.count({ where: { orgId } }),
+      prisma.invoice.count({ where: { orgId } }),
+      prisma.billingProfile.count({ where: { orgId } }),
+      emailInboxes(orgId),
       prisma.organization.findUnique({
         where: { id: orgId },
         select: { createdAt: true, deletionRequestedAt: true },
@@ -136,6 +156,10 @@ export async function getDataSummary(orgId: OrgId) {
     voiceRules,
     offers,
     audioClips,
+    deals,
+    invoices,
+    billingProfiles,
+    emailInboxes: inboxes,
     storingSince: org?.createdAt,
     deletionRequestedAt: org?.deletionRequestedAt,
   };
@@ -143,12 +167,14 @@ export async function getDataSummary(orgId: OrgId) {
 
 /**
  * Single-archive export: DMs (incl. voice-note transcripts), classifications,
- * drafts + feedback, ledger, offers, learned voice rules and speaking-voice
- * consent metadata (PRD §6.11). Audio bytes are never inlined in JSON; clips
+ * drafts + feedback, ledger, deals, invoices (each with the billing profile it
+ * was issued from, frozen as `supplier`), billing profiles, email inboxes
+ * (never their tokens), offers, learned voice rules, speaking-voice
+ * consent metadata and comment leads (PRD §6.11). Audio bytes are never inlined in JSON; clips
  * are listed as metadata only. Provider voice ids stay internal.
  */
 export async function exportOrgArchive(orgId: OrgId) {
-  const [org, threads, ledger, audit, offers, voiceRules, speakingVoices, audioAssets] = await Promise.all([
+  const [org, threads, ledger, audit, offers, voiceRules, speakingVoices, audioAssets, deals, invoices, billingProfiles, inboxes] = await Promise.all([
     prisma.organization.findUnique({
       where: { id: orgId },
       select: {
@@ -208,6 +234,17 @@ export async function exportOrgArchive(orgId: OrgId) {
       },
       orderBy: { createdAt: "asc" },
     }),
+    prisma.deal.findMany({ where: { orgId }, orderBy: [{ agreedAt: "asc" }, { id: "asc" }] }),
+    prisma.invoice.findMany({ where: { orgId }, orderBy: [{ issuedAt: "asc" }, { id: "asc" }] }),
+    prisma.billingProfile.findMany({ where: { orgId }, orderBy: { createdAt: "asc" } }),
+    emailInboxes(orgId),
+  ]);
+  // Keyword comments and the private replies sent to them.
+  const commentLeads = await prisma.commentLead.findMany({ where: { orgId }, orderBy: [{ commentedAt: "asc" }, { id: "asc" }] });
+  // Booking and payment tools (never their address token or signing secret) and what they reported.
+  const [leadSources, leadEvents] = await Promise.all([
+    prisma.leadSource.findMany({ where: { orgId }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true, provider: true, label: true, lastEventAt: true, createdAt: true } }),
+    prisma.leadEvent.findMany({ where: { orgId }, orderBy: [{ occurredAt: "asc" }, { id: "asc" }] }),
   ]);
 
   // BigInt → number for JSON.
@@ -218,11 +255,18 @@ export async function exportOrgArchive(orgId: OrgId) {
         org,
         threads,
         ledger,
+        deals,
+        invoices,
+        billingProfiles,
+        emailInboxes: inboxes,
         audit,
         offers,
         voiceRules,
         speakingVoices,
         audioAssets,
+        commentLeads,
+        leadSources,
+        leadEvents,
       },
       (_k, v) => (typeof v === "bigint" ? Number(v) : v)
     )

@@ -13,7 +13,7 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
     threadId: "t1", igAccountId: "ig-1", participantHandle: "brand", participant: person("brand"), state: "open",
     lastMessageAt: iso(60_000), lastInboundAt: iso(60_000), topLabel: "brand_deal", estValueMinMinor: 50_00, estValueMaxMinor: 100_00, estCurrencyCode: "INR",
     preview: "Rates?", previewOutbound: false, messageCount: 1, unreplied: true, waitingSince: null, nudgeDue: false, draftReady: false, hasAudio: false,
-    dealSignal: false, source: "dm", replyWindow: open(iso(60_000)), ...overrides,
+    dealSignal: false, source: "dm", replyWindow: open(iso(60_000)), channel: "instagram", subject: null, scamReason: null, ...overrides,
   };
 }
 function threadDetail(overrides: Partial<ThreadDetail> = {}): ThreadDetail {
@@ -22,13 +22,13 @@ function threadDetail(overrides: Partial<ThreadDetail> = {}): ThreadDetail {
     topLabel: "brand_deal", estValueMinMinor: 50_00, estValueMaxMinor: 100_00, estCurrencyCode: "INR", rationale: "Asks for rates.",
     lastInboundAt: iso(60_000), replyWindow: open(iso(60_000)), source: "dm",
     messages: [{ id: "m1", direction: "inbound", contentType: "text", text: "Rates?", sentAt: iso(60_000), origin: null, audio: null, classification: null }],
-    sendInFlight: false, currentDraft: null, closedDeals: [], dealSignal: null, canSendVoice: false, ...overrides,
+    sendInFlight: false, currentDraft: null, closedDeals: [], dealSignal: null, canSendVoice: false, channel: "instagram", subject: null, scamReason: null, deals: [], ...overrides,
   };
 }
 const reviewRow = (overrides: Partial<ReviewQueueRow> = {}): ReviewQueueRow => ({
   classificationId: "c1", threadId: "r1", igAccountId: "ig-1", handle: "maybe", text: "We should talk sometime.", sentAt: iso(120_000), bestGuess: "uncertain", confidence: 0.4, rationale: "Vague opener.", ...overrides,
 });
-const draft = { id: "d1", body: "Heyy!", kind: "reply" as const, status: "ready" as const, version: 1, label: "brand_deal" as const, instruction: null, chips: [], alternatives: [], chosenAlternative: null, context: null };
+const draft = { id: "d1", body: "Heyy!", kind: "reply" as const, status: "ready" as const, version: 1, label: "brand_deal" as const, instruction: null, chips: [], alternatives: [], chosenAlternative: null, context: null, purpose: null };
 
 const core = (path: string): unknown =>
   path === "/dashboard" ? { org: { currencyCode: "INR", locale: "en-IN", name: "Studio" }, mtdRecoveredMinor: 0, biggestMinor: 0, avgMinor: 0, mtdDealCount: 0 }
@@ -52,7 +52,8 @@ function serve(handlers: Record<string, (init: RequestInit) => unknown>) {
     const key = `${init.method ?? "GET"} ${pathname}${search}`;
     calls.push(key);
     const handler = handlers[key];
-    return Response.json(await (handler ? handler(init) : core(`${pathname}${search}`)));
+    const body = await (handler ? handler(init) : core(`${pathname}${search}`));
+    return body instanceof Response ? body : Response.json(body);
   }));
   return calls;
 }
@@ -91,6 +92,23 @@ describe("contract mapping", () => {
     expect(thread.closedDeals[0]).toMatchObject({ id: "l1", amountMinor: 500_00 });
   });
 
+  it("carries email, subject, scam and attachment facts, and recognises scams and email in review items", () => {
+    const row = fromInboxRow(inboxRow({ channel: "email", participantHandle: "brand@lumen.example", subject: "Winter brief", scamReason: null }));
+    expect(row).toMatchObject({ channel: "email", handle: "brand@lumen.example", subject: "Winter brief", scamReason: null });
+    // An API from before email sends none of these fields.
+    const { channel: _c, subject: _s, scamReason: _r, ...older } = inboxRow();
+    expect(fromInboxRow(older as InboxRow)).toMatchObject({ channel: "instagram", subject: null, scamReason: null });
+    const scam = fromReviewRow(reviewRow({ handle: "offers@glow.example", text: "To activate your profile, pay a one-time registration fee of ₹999." }));
+    expect(scam).toMatchObject({ channel: "email", scamReason: "They're asking you to pay to take part." });
+    expect(fromReviewRow(reviewRow()).scamReason).toBeNull();
+    const detail = fromThreadDetail(threadDetail({
+      channel: "email", subject: "Winter brief", participantHandle: "brand@lumen.example",
+      messages: [{ id: "m1", direction: "inbound", contentType: "text", text: "Brief attached.", sentAt: iso(60_000), origin: null, audio: null, classification: null, attachments: [{ partId: "1", filename: "brief.pdf", mimeType: "application/pdf", size: 2048 }] }],
+    }));
+    expect(detail).toMatchObject({ channel: "email", subject: "Winter brief" });
+    expect(detail.messages[0]?.attachments).toEqual([{ partId: "1", filename: "brief.pdf", mimeType: "application/pdf", size: 2048 }]);
+  });
+
   it("derives the row GET /inbox would list from a detail, by the inbox repository's rules", () => {
     const audio = { url: null, mimeType: "audio/ogg", durationMs: 4_000, transcript: "Kitna lagega?", transcriptLanguage: "hinglish", status: "ready" as const };
     const row = inboxRowFromDetail(threadDetail({
@@ -115,6 +133,91 @@ describe("contract mapping", () => {
 });
 
 describe("v2 store invariants", () => {
+  it("loads every inbox, waiting, review and closed page before exposing counts and filters", async () => {
+    online();
+    const first = Array.from({ length: 100 }, (_, i) => inboxRow({ threadId: `t${i}` }));
+    const reviews = Array.from({ length: 50 }, (_, i) => reviewRow({ classificationId: `c${i}`, threadId: `r${i}` }));
+    serve({
+      "GET /inbox": () => ({ rows: first, nextCursor: "open-next" }),
+      "GET /inbox?cursor=open-next": () => ({ rows: [inboxRow({ threadId: "t100", igAccountId: "ig-2", preview: "Find me" })], nextCursor: null }),
+      "GET /inbox?state=waiting": () => ({ rows: [], nextCursor: "wait-next" }),
+      "GET /inbox?state=waiting&cursor=wait-next": () => ({ rows: [inboxRow({ threadId: "waiting", state: "waiting" })], nextCursor: null }),
+      "GET /review-queue": () => ({ rows: reviews, nextCursor: "review-next" }),
+      "GET /review-queue?cursor=review-next": () => ({ rows: [reviewRow({ classificationId: "c50", threadId: "r50" })], nextCursor: null }),
+      "GET /inbox?state=closed": () => ({ rows: [], nextCursor: "closed-next" }),
+      "GET /inbox?state=closed&cursor=closed-next": () => ({ rows: [inboxRow({ threadId: "closed", state: "closed" })], nextCursor: null }),
+    });
+    const store = await signedIn();
+    expect(store.getSnapshot().threads).toHaveLength(153);
+    expect(store.getSnapshot().threads.find((row) => row.id === "t100")).toMatchObject({ igAccountId: "ig-2", preview: "Find me" });
+    expect((await store.loadClosed())?.map((row) => row.id)).toEqual(["closed"]);
+  });
+
+  it("keeps the previous complete list if a later page fails or repeats its cursor", async () => {
+    online();
+    let failure = false;
+    let cycle = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const { pathname, search } = new URL(url);
+      if (pathname === "/inbox" && !search) return Response.json(failure || cycle ? { rows: [inboxRow({ threadId: "partial" })], nextCursor: "next" } : { rows: [inboxRow()], nextCursor: null });
+      if (pathname === "/inbox" && search === "?cursor=next") return cycle ? Response.json({ rows: [], nextCursor: "next" }) : new Response("{}", { status: 500 });
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = await signedIn();
+    failure = true;
+    await store.refresh();
+    expect(store.getSnapshot().threads.map((row) => row.id)).toEqual(["t1"]);
+    expect(store.getSnapshot().state).toBe("error");
+    failure = false;
+    cycle = true;
+    await store.refresh();
+    expect(store.getSnapshot().threads.map((row) => row.id)).toEqual(["t1"]);
+    expect(store.getSnapshot().state).toBe("error");
+  });
+
+  it("does not continue an old account's cursor scan under a new account", async () => {
+    online();
+    let release: (() => void) | undefined;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      const { pathname, search } = new URL(url);
+      const tenant = tenantOf(init);
+      calls.push(`${tenant} ${pathname}${search}`);
+      if (tenant === "old" && pathname === "/inbox" && !search) {
+        await new Promise<void>((resolve) => { release = resolve; });
+        return Response.json({ rows: [inboxRow()], nextCursor: "old-next" });
+      }
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = new ApiStore();
+    store.authenticate("old", async () => "old");
+    await vi.waitFor(() => expect(release).toBeDefined());
+    store.authenticate("new", async () => "new");
+    release!();
+    await vi.waitFor(() => expect(store.getSnapshot().state).toBe("ready"));
+    expect(calls.some((call) => call.includes("cursor=old-next"))).toBe(false);
+    expect(store.getSnapshot().threads).toEqual([]);
+  });
+
+  it("saves a rule to its explicit account without changing another account's cached voice", async () => {
+    online();
+    const bodies: Array<{ igAccountId?: string }> = [];
+    const saved = { id: "rule-b", key: "edit.shorter", scope: "all", text: "Keep it short", status: "active" };
+    serve({
+      "GET /voice?igAccountId=ig-1": () => ({ igAccountId: "ig-1", rules: [{ id: "rule-a", key: "edit.shorter", scope: "all" }], samples: [] }),
+      "GET /voice?igAccountId=ig-2": () => ({ igAccountId: "ig-2", rules: [], samples: [] }),
+      "POST /voice/rules": (init) => { bodies.push(JSON.parse(String(init.body))); return saved; },
+    });
+    const store = await signedIn();
+    await store.loadVoice("ig-1");
+    await store.createRule({ igAccountId: "ig-2", text: "Keep it short", key: "edit.shorter" });
+    expect(bodies[0]?.igAccountId).toBe("ig-2");
+    expect(store.getSnapshot().voice.data?.rules.map((rule) => rule.id)).toEqual(["rule-a"]);
+    await store.loadVoice("ig-2");
+    await store.createRule({ igAccountId: "ig-2", text: "Keep it short", key: "edit.shorter" });
+    expect(store.getSnapshot().voice.data?.rules.map((rule) => rule.id)).toEqual(["rule-b"]);
+  });
+
   it("clears lazy slices on an account switch and never publishes a late old-tenant slice", async () => {
     online();
     let releaseOld: (() => void) | undefined;
@@ -155,7 +258,7 @@ describe("v2 store invariants", () => {
       if (path === "/threads/t1/send") {
         sendBodies.push(JSON.parse(String(init.body)));
         sendAttempts += 1;
-        return sendAttempts === 1 ? new Response(JSON.stringify({ error: "request_failed" }), { status: 500 }) : Response.json({ status: "accepted", sent: true, intentId: "i1" });
+        return sendAttempts === 1 ? new Response(JSON.stringify({ error: "request_failed" }), { status: 409 }) : Response.json({ status: "accepted", sent: true, intentId: "i1" });
       }
       return Response.json(core(path));
     }));
@@ -177,6 +280,103 @@ describe("v2 store invariants", () => {
     const calls = fetch.mock.calls.length;
     await expect(store.send("missing", "hello")).rejects.toThrow("fresh draft");
     expect(fetch.mock.calls.length).toBe(calls);
+  });
+
+  it.each(["network", "body", "server"])("treats a dispatched %s send failure as unknown and locks the draft", async (failure) => {
+    online();
+    let sends = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === "/threads/t1") return Response.json(threadDetail({ currentDraft: draft }));
+      if (path === "/threads/t1/send") {
+        sends++;
+        if (failure === "network") throw new TypeError("connection lost");
+        if (failure === "server") return new Response("{}", { status: 500 });
+        const response = Response.json({ status: "accepted", intentId: "sent" });
+        response.json = async () => { throw new TypeError("body interrupted"); };
+        return response;
+      }
+      return Response.json(core(path));
+    }));
+    const store = await signedIn();
+    await store.loadThread("t1");
+    const result = await store.send("t1", "Approved reply");
+    expect(result).toMatchObject({ status: "unknown", ambiguous: true, pending: false });
+    expect(result.hint).toContain("Check Instagram");
+    expect(store.getSnapshot().details.t1?.data?.sendInFlight).toBe(true);
+    await expect(store.send("t1", "Approved reply")).rejects.toThrow("unconfirmed");
+    expect(sends).toBe(1);
+  });
+
+  it("keeps offline, permission and known pre-send provider failures definite", async () => {
+    online();
+    let status = 403;
+    let sends = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === "/threads/t1") return Response.json(threadDetail({ currentDraft: draft }));
+      if (path === "/threads/t1/send") {
+        sends++;
+        return Response.json({ error: status === 502 ? "speech_synthesis_failed" : "forbidden" }, { status });
+      }
+      return Response.json(core(path));
+    }));
+    const store = await signedIn();
+    await store.loadThread("t1");
+    vi.stubGlobal("navigator", { onLine: false });
+    await expect(store.send("t1", "Reply")).rejects.toThrow("offline");
+    expect(sends).toBe(0);
+    vi.stubGlobal("navigator", { onLine: true });
+    await expect(store.send("t1", "Reply")).rejects.toMatchObject({ status: 403 });
+    status = 502;
+    await expect(store.send("t1", "Reply", { asVoice: true })).rejects.toMatchObject({ code: "speech_synthesis_failed" });
+    expect(store.getSnapshot().details.t1?.data?.sendInFlight).toBe(false);
+  });
+
+  it("treats a missing session before fetch as a definite failure", async () => {
+    online();
+    let token: string | null = "actor";
+    let sends = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = pathOf(url);
+      if (path === "/threads/t1") return Response.json(threadDetail({ currentDraft: draft }));
+      if (path === "/threads/t1/send") sends++;
+      return Response.json(core(path));
+    }));
+    const store = new ApiStore();
+    store.authenticate("actor", async () => token);
+    await vi.waitFor(() => expect(store.getSnapshot().state).toBe("ready"));
+    await store.loadThread("t1");
+    token = null;
+    await expect(store.send("t1", "Reply")).rejects.toThrow("session is unavailable");
+    token = "actor";
+    vi.stubEnv("NEXT_PUBLIC_API_URL", "not a URL");
+    await expect(store.send("t1", "Reply")).rejects.toThrow("not configured");
+    expect(sends).toBe(0);
+    expect(store.getSnapshot().details.t1?.data?.sendInFlight).toBe(false);
+  });
+
+  it("does not publish an ambiguous old-account send after switching workspaces", async () => {
+    online();
+    let release: (() => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      const path = pathOf(url);
+      if (path === "/threads/t1") return Response.json(threadDetail({ currentDraft: draft }));
+      if (path === "/threads/t1/send") {
+        await new Promise<void>((resolve) => { release = resolve; });
+        throw new TypeError("response lost");
+      }
+      return Response.json(core(path));
+    }));
+    const store = await signedIn();
+    await store.loadThread("t1");
+    const pending = store.send("t1", "Reply");
+    await vi.waitFor(() => expect(release).toBeDefined());
+    store.authenticate("new", async () => "new");
+    release!();
+    await expect(pending).rejects.toThrow();
+    await vi.waitFor(() => expect(store.getSnapshot().state).toBe("ready"));
+    expect(store.getSnapshot().details.t1).toBeUndefined();
   });
 
   it("reads the Leak Scan status, inferring it from the counts when the API sends none", async () => {
@@ -234,6 +434,64 @@ describe("writes refetch only what they change", () => {
     expect(snapshot.dashboard?.mtdRecoveredMinor).toBe(75_000_00);
     expect(snapshot.insights).toMatchObject({ status: "ready", stale: true });
     expect(snapshot.audit.status).toBe("idle");
+  });
+
+  it("a deal closes its conversation, its payment refetches Revenue, and its drafts carry their job", async () => {
+    online();
+    let stage: "agreed" | "paid" = "agreed";
+    let recorded = false;
+    const deal = () => ({
+      id: "deal-1", threadId: "t1", igAccountId: "ig-1", counterpartyHandle: "brand", counterpartyName: null, channel: "instagram", title: "1 reel", dealType: "brand",
+      amountMinor: 50_000_00, currencyCode: "INR", stage, terms: { deliverables: [], usage: null, usageEndsAt: null, exclusivity: null, exclusivityEndsAt: null, revisionsIncluded: null, advancePercent: null, paymentDays: null, notes: null, disclosure: [] },
+      agreedAt: iso(0), dueAt: null, invoicedAt: null, paidAt: stage === "paid" ? iso(0) : null, receivedMinor: stage === "paid" ? 50_000_00 : null, tdsMinor: null, createdAt: iso(0), updatedAt: iso(0),
+    });
+    const bodies: Record<string, unknown> = {};
+    const calls = serve({
+      "GET /inbox": () => ({ rows: recorded ? [] : [inboxRow()] }),
+      "GET /threads/t1": () => threadDetail({ state: recorded ? "closed" : "open", deals: recorded ? [deal()] as ThreadDetail["deals"] : [] }),
+      "POST /deals": (init) => { bodies.create = JSON.parse(String(init.body)); recorded = true; return deal(); },
+      "POST /deals/deal-1/paid": () => { stage = "paid"; return deal(); },
+      "POST /threads/t1/draft": (init) => { bodies.draft = JSON.parse(String(init.body)); return { ...draft, purpose: "payment_reminder" }; },
+    });
+    const store = await signedIn();
+    await store.loadThread("t1");
+    calls.length = 0;
+
+    await store.createDeal({ threadId: "t1", title: "1 reel", dealType: "brand", amountMinor: 50_000_00, idempotencyKey: "deal-key" });
+    expect(calls).toEqual(["POST /deals", "GET /threads/t1"]);
+    expect(bodies.create).toMatchObject({ threadId: "t1", idempotencyKey: "deal-key" });
+    expect(store.getSnapshot().threads.some((thread) => thread.id === "t1")).toBe(false);
+    expect(store.getSnapshot().details.t1?.data?.deals.map((item) => item.id)).toEqual(["deal-1"]);
+
+    calls.length = 0;
+    await store.generateDraft("t1", { purpose: "payment_reminder", dealId: "deal-1" });
+    expect(bodies.draft).toEqual({ purpose: "payment_reminder", dealId: "deal-1" });
+
+    calls.length = 0;
+    await store.markDealPaid("deal-1", { idempotencyKey: "paid-key" });
+    expect([...calls].sort()).toEqual(["GET /dashboard", "GET /ledger", "GET /threads/t1", "POST /deals/deal-1/paid"]);
+    expect(store.getSnapshot().details.t1?.data?.deals[0]?.stage).toBe("paid");
+  });
+
+  it("keeps Gmail inboxes out of the Instagram accounts, and connects, disconnects or hides email as the API says", async () => {
+    online();
+    let configured = true;
+    const calls = serve({
+      "GET /settings": () => ({ tier: "roster", accounts: [{ id: "ig-1", handle: "creator", status: "active", provider: "instagram_graph" }, { id: "gm-1", handle: "creator@studio.example", status: "active", provider: "gmail" }] }),
+      "GET /email/accounts": () => ({ accounts: [{ id: "gm-1", address: "creator@studio.example", status: "active", connectedAt: iso(86_400_000), lastSyncedAt: iso(60_000), ownerAccountId: "ig-1" }] }),
+      "GET /email/connect?igAccountId=ig-1": () => configured ? { authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=signed" } : new Response(JSON.stringify({ error: "email_not_configured" }), { status: 409 }),
+      "POST /email/accounts/gm-1/disconnect": () => ({ disconnected: true }),
+    });
+    const store = await signedIn();
+    expect((await store.loadSettings())?.accounts.map((account) => account.id)).toEqual(["ig-1"]);
+    expect(await store.loadEmailAccounts()).toEqual({ available: true, accounts: [expect.objectContaining({ id: "gm-1", address: "creator@studio.example", ownerAccountId: "ig-1" })] });
+    expect(await store.connectEmail("ig-1")).toEqual({ authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=signed" });
+    await store.disconnectEmail("gm-1");
+    expect(calls).toContain("POST /email/accounts/gm-1/disconnect");
+    expect(store.getSnapshot().emailAccounts.data?.accounts).toEqual([]);
+    configured = false;
+    await expect(store.connectEmail("ig-1")).rejects.toMatchObject({ status: 409, message: "Email isn't available for this workspace yet." });
+    expect(store.getSnapshot().emailAccounts.data?.available).toBe(false);
   });
 
   it("a review drops the decided item and refetches only the inbox lists", async () => {
@@ -333,5 +591,82 @@ describe("writes refetch only what they change", () => {
     await refreshing;
     await vi.waitFor(() => expect(calls).toContain("GET /inbox"));
     await vi.waitFor(() => expect(store.getSnapshot().threads.map((thread) => [thread.id, thread.state])).toEqual([["t1", "waiting"]]));
+  });
+});
+
+describe("creator ledger requests", () => {
+  it("scopes the requested month and drops stale creator results when switching back", async () => {
+    online();
+    const pending: Array<{ path: string; resolve: (body: unknown) => void }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const { pathname, search } = new URL(url);
+      if (pathname === "/ledger" && search) {
+        const body = await new Promise<unknown>((resolve) => pending.push({ path: search, resolve }));
+        return Response.json(body);
+      }
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = await signedIn();
+    const a1 = store.loadLedger("2026-01", "ig-a");
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    const b = store.loadLedger("2026-01", "ig-b");
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    const a2 = store.loadLedger("2026-01", "ig-a");
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    expect(pending.map((item) => item.path)).toEqual(["?month=2026-01&igAccountId=ig-a", "?month=2026-01&igAccountId=ig-b", "?month=2026-01&igAccountId=ig-a"]);
+    const data = (amount: number) => ({ selectedMonth: "2026-01", timezone: "Asia/Kolkata", currencyCode: "INR", totalMinor: amount, months: [], entries: [], byType: {} });
+    pending[2]!.resolve(data(12345)); await a2;
+    pending[1]!.resolve(data(67890)); pending[0]!.resolve(data(1)); await Promise.all([a1, b]);
+    expect(store.getSnapshot().ledgerView.data?.totalMinor).toBe(12345);
+  });
+
+  it("clears another creator's ledger while loading and after a failed request, but retains same-scope data on refresh", async () => {
+    online();
+    let release: ((response: Response) => void) | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const { pathname, search } = new URL(url);
+      if (pathname === "/ledger" && search.includes("igAccountId=ig-b")) return new Promise<Response>((resolve) => { release = resolve; });
+      if (pathname === "/ledger" && search.includes("igAccountId=ig-a")) return Response.json({ selectedMonth: "2026-01", totalMinor: 12345, months: [], entries: [], byType: {} });
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = await signedIn();
+    await store.loadLedger("2026-01", "ig-a");
+    expect(store.getSnapshot().ledgerView.data?.totalMinor).toBe(12345);
+    const changing = store.loadLedger("2026-01", "ig-b");
+    expect(store.getSnapshot().ledgerView).toMatchObject({ status: "loading", data: null });
+    await vi.waitFor(() => expect(release).toBeDefined());
+    release!(Response.json({ error: "Unavailable" }, { status: 500 }));
+    await changing;
+    expect(store.getSnapshot().ledgerView).toMatchObject({ status: "error", data: null });
+    await store.loadLedger("2026-01", "ig-a");
+    expect(store.getSnapshot().ledgerView.data?.totalMinor).toBe(12345);
+    const refreshing = store.loadLedger("2026-01", "ig-a");
+    expect(store.getSnapshot().ledgerView.data?.totalMinor).toBe(12345);
+    await refreshing;
+  });
+
+  it("keeps the latest voice creator through A-B-A and clears data on tenant reset", async () => {
+    online();
+    const pending: Array<(body: unknown) => void> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const { pathname, search } = new URL(url);
+      if (pathname === "/voice") return Response.json(await new Promise<unknown>((resolve) => pending.push(resolve)));
+      return Response.json(core(`${pathname}${search}`));
+    }));
+    const store = await signedIn();
+    const a1 = store.loadVoice("ig-a");
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    const b = store.loadVoice("ig-b");
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    const a2 = store.loadVoice("ig-a");
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    pending[2]!({ igAccountId: "ig-a", handle: "creator-a", rules: [], samples: [] });
+    await a2;
+    pending[1]!({ igAccountId: "ig-b", handle: "creator-b", rules: [], samples: [] });
+    pending[0]!({ igAccountId: "ig-a", handle: "old-a", rules: [], samples: [] });
+    await Promise.all([a1, b]);
+    expect(store.getSnapshot().voice.data).toMatchObject({ igAccountId: "ig-a", handle: "creator-a" });
+    store.authenticate(null, null);
+    expect(store.getSnapshot().voice).toMatchObject({ status: "idle", data: null });
   });
 });

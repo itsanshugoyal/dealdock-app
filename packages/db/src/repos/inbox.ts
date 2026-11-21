@@ -1,10 +1,11 @@
-import { Prisma, type ClassificationLabel, type ThreadState } from "@prisma/client";
-import { DEAL_SIGNAL_LOOKBACK, DomainError, findDealSignal, HIGH_INTENT_LABELS } from "@dealdock/core";
+import { Prisma, type ClassificationLabel, type LeadStage, type ThreadState } from "@prisma/client";
+import { checkScam, DEAL_SIGNAL_LOOKBACK, DomainError, findDealSignal, HIGH_INTENT_LABELS, type Channel } from "@dealdock/core";
 import { prisma } from "../client";
 import type { OrgId } from "../org-id";
 import { minorUnitsToNumber } from "../money";
 import { isNudgeDue } from "../schedule-rules";
 import { messageBody, participantOf, pickTopClassification, senderLedger, type InboxParticipant } from "../sender-context";
+import { channelOf, creatorAccountId } from "./deals";
 
 export type { InboxParticipant };
 
@@ -38,6 +39,13 @@ export interface InboxRow {
   hasAudio: boolean;
   dealSignal: boolean;
   source: string | null;
+  channel: Channel;
+  /** Email subject; null for DMs. */
+  subject: string | null;
+  /** Why the latest inbound message looks like a scam; null when it doesn't. */
+  scamReason: string | null;
+  /** Coach pipeline stage as stored (null: a coaching or course conversation is a lead). */
+  leadStage: LeadStage | null;
 }
 
 export interface InboxQuery {
@@ -160,6 +168,9 @@ export async function listInboxPage(orgId: OrgId, query: InboxQuery = {}): Promi
       topLabel: true,
       estValueMaxMinor: true,
       estCurrencyCode: true,
+      subject: true,
+      leadStage: true,
+      igAccount: { select: { platform: true, ownerAccountId: true } },
       _count: { select: { messages: true } },
     },
   });
@@ -169,7 +180,7 @@ export async function listInboxPage(orgId: OrgId, query: InboxQuery = {}): Promi
   if (page.length === 0) return { rows: [], nextCursor: null };
 
   const ids = page.map((thread) => thread.id);
-  const [org, recent, classifications, liveDrafts, audio, ledger] = await Promise.all([
+  const [org, recent, latestInbound, classifications, liveDrafts, audio, ledger, dealTimes] = await Promise.all([
     prisma.organization.findUnique({ where: { id: orgId }, select: { nudgeDelayDays: true, currencyCode: true } }),
     // Each thread's last RECENT_MESSAGES messages through the (orgId, threadId,
     // sentAt) index, oldest first within a thread.
@@ -184,6 +195,17 @@ export async function listInboxPage(orgId: OrgId, query: InboxQuery = {}): Promi
         LIMIT ${RECENT_MESSAGES}::int
       ) m
       ORDER BY m."threadId", m."sentAt", m."id"`,
+    // Each thread's latest inbound message (the scam check), which can be older than that window.
+    prisma.$queryRaw<Array<{ threadId: string; text: string; transcript: string | null }>>`
+      SELECT m."threadId", m."text", m."transcript"
+      FROM unnest(${ids}::text[]) AS t("threadId")
+      CROSS JOIN LATERAL (
+        SELECT "threadId", "text", "transcript"
+        FROM "Message"
+        WHERE "orgId" = ${orgId} AND "threadId" = t."threadId" AND "direction" = 'inbound'
+        ORDER BY "sentAt" DESC, "id" DESC
+        LIMIT 1
+      ) m`,
     prisma.classification.findMany({
       where: { orgId, routedTo: "inbox", label: { in: [...HIGH_INTENT_LABELS] }, message: { threadId: { in: ids } } },
       select: { label: true, routedTo: true, valueMinMinor: true, valueMaxMinor: true, createdAt: true, message: { select: { threadId: true } } },
@@ -191,11 +213,13 @@ export async function listInboxPage(orgId: OrgId, query: InboxQuery = {}): Promi
     prisma.draft.groupBy({ by: ["threadId"], where: { orgId, threadId: { in: ids }, status: { in: ["ready", "edited"] } } }),
     prisma.message.groupBy({ by: ["threadId"], where: { orgId, threadId: { in: ids }, contentType: "audio" } }),
     senderLedger(orgId, page),
+    prisma.deal.groupBy({ by: ["threadId"], where: { orgId, threadId: { in: ids }, deletedAt: null }, _max: { agreedAt: true } }),
   ]);
   if (!org) throw new DomainError("org_not_found", 404);
 
   const now = query.now ?? new Date();
   const recentBy = groupByThread(recent);
+  const inboundBy = new Map(latestInbound.map((message) => [message.threadId, message]));
   const draftReady = new Set(liveDrafts.map((row) => row.threadId));
   const withAudio = new Set(audio.map((row) => row.threadId));
   const classificationsBy = groupByThread(classifications.map((row) => ({ ...row, threadId: row.message.threadId })));
@@ -204,10 +228,12 @@ export async function listInboxPage(orgId: OrgId, query: InboxQuery = {}): Promi
     const top = pickTopClassification(classificationsBy.get(thread.id) ?? []);
     const messages = recentBy.get(thread.id) ?? [];
     const latestMessage = messages[messages.length - 1];
+    const inbound = inboundBy.get(thread.id);
     const lastClosedAt = ledger.lastClosedAt.get(thread.id);
+    const lastDealAt = dealTimes.find((row) => row.threadId === thread.id)?._max.agreedAt ?? null;
     return {
       threadId: thread.id,
-      igAccountId: thread.igAccountId,
+      igAccountId: creatorAccountId(thread),
       participantHandle: thread.participantHandle,
       participant: participantOf(thread, ledger.totals),
       state: thread.state,
@@ -232,9 +258,13 @@ export async function listInboxPage(orgId: OrgId, query: InboxQuery = {}): Promi
           state: thread.state,
           label: thread.topLabel,
           currencyCode: org.currencyCode,
-          recordedAt: lastClosedAt ? [lastClosedAt] : [],
+          recordedAt: [lastClosedAt, lastDealAt].filter((at): at is Date => at instanceof Date),
         }) !== null,
       source: thread.source,
+      channel: channelOf(thread.igAccount.platform),
+      subject: thread.subject,
+      scamReason: checkScam(inbound ? messageBody(inbound) : null).reason,
+      leadStage: thread.leadStage,
     };
   });
   return { rows, nextCursor };

@@ -15,6 +15,13 @@ export * from "./high-value";
 export * from "./speaking-voice";
 export * from "./audit-actions";
 export * from "./errors";
+export * from "./deals";
+export * from "./invoices";
+export * from "./scam";
+export * from "./rate-card";
+export * from "./comment-leads";
+export * from "./renewals";
+export * from "./lead-pipeline";
 
 /**
  * @dealdock/core — domain types, zod schemas, shared constants.
@@ -113,6 +120,8 @@ export const QUEUES = {
   retention: "retention",
   /** Writing-style learning: per-send edit learning, voice refresh, weekly refresh tick. */
   voiceLearning: "voice-learning",
+  /** Keyword comments from the Instagram webhook: create the lead, draft its private reply (never send it). */
+  commentLeads: "comment-leads",
 } as const;
 export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 

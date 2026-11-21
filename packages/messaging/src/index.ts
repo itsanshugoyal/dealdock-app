@@ -7,3 +7,7 @@ export * from "./mock/senders";
 export * from "./instagram/instagram-graph-adapter";
 export * from "./instagram/graph-rate-budget";
 export * from "./instagram/oauth";
+export * from "./instagram/comments";
+export * from "./gmail/gmail-provider";
+export * from "./gmail/oauth";
+export { MAX_SEND_ATTACHMENT_BYTES, type EmailAttachment } from "./gmail/mime";

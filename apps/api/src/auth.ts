@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { createClerkClient, verifyToken } from "@clerk/backend";
 import { activateInvitedSeat, asOrgId, findSeat, type OrgId } from "@dealdock/db";
-import { bearerToken, organizationClaim, verifiedPrimaryEmail } from "./clerk-claims";
+import { bearerToken, clerkVerifyOptions, organizationClaim, verifiedPrimaryEmail } from "./clerk-claims";
 
 /**
  * Auth context attached to every authenticated request (ARCHITECTURE.md §6).
@@ -60,7 +60,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   let clerkUserId: string;
   let claimedOrgId: string | undefined;
   try {
-    const claims = await verifyToken(token, { secretKey });
+    const claims = await verifyToken(token, clerkVerifyOptions(secretKey));
     clerkUserId = claims.sub;
     claimedOrgId = organizationClaim(claims as Record<string, unknown>);
   } catch {
@@ -90,7 +90,7 @@ export async function activateVerifiedInvite(req: FastifyRequest, reply: Fastify
   const token = bearerToken(req.headers.authorization);
   if (!token) return reply.code(401).send({ error: "unauthenticated" });
   try {
-    const claims = await verifyToken(token, { secretKey });
+    const claims = await verifyToken(token, clerkVerifyOptions(secretKey));
     const orgClaim = organizationClaim(claims as Record<string, unknown>);
     if (typeof orgClaim !== "string" || !orgClaim) return reply.code(403).send({ error: "org_membership_required" });
     const verifiedEmail = verifiedPrimaryEmail(await createClerkClient({ secretKey }).users.getUser(claims.sub));

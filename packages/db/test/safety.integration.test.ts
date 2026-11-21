@@ -8,6 +8,13 @@ if (shouldRun && !process.env.TEST_DATABASE_URL) {
 describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres safety invariants", () => {
   let db: typeof import("../src/index");
   let prisma: typeof import("../src/client").prisma;
+
+  async function createFixtureDraft(orgId: Parameters<typeof db.createDraft>[0], input: Omit<Parameters<typeof db.createDraft>[1], "expectedVoiceVersion">) {
+    const thread = await prisma.thread.findUniqueOrThrow({ where: { id: input.threadId }, select: { igAccountId: true } });
+    const { version } = await db.getVoiceProfileState(orgId, thread.igAccountId);
+    return db.createDraft(orgId, { ...input, expectedVoiceVersion: version });
+  }
+
   const organizations: string[] = [];
 
   async function organization(currencyCode = "INR", timezone = "Asia/Kolkata") {
@@ -50,7 +57,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres sa
       text: "I want to buy",
       sentAt: new Date("2026-01-31T23:30:00.000Z"),
     });
-    if (!("threadId" in inbound)) throw new Error("inbound write failed");
+    if (!inbound.threadId) throw new Error("inbound write failed");
     await expect(db.updateRegion(orgId, created.seat.id, { currencyCode: "INR" })).rejects.toThrow("currency_immutable_for_organization");
     const closeInput = {
       threadId: inbound.threadId,
@@ -84,7 +91,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres sa
       igAccountId: created.igAccount.id, igThreadId: "review-thread", participantHandle: "reviewer",
       participantIgId: "reviewer", igMessageId: `review-${created.org.id}`, direction: "inbound", text: "Can we work together?", sentAt: new Date(),
     });
-    if (!("messageId" in incoming)) throw new Error("inbound write failed");
+    if (!incoming.messageId) throw new Error("inbound write failed");
     const classification = await db.saveClassification(orgId, {
       messageId: incoming.messageId, label: "uncertain", confidence: 0.2, language: "en",
       valueMinMinor: null, valueMaxMinor: null, rationale: "uncertain", modelVersion: "test", promptVersion: "test", routedTo: "review_queue",
@@ -115,8 +122,8 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres sa
       igAccountId: created.igAccount.id, igThreadId: "send-thread", participantHandle: "buyer",
       participantIgId: "buyer", igMessageId: `send-${created.org.id}`, direction: "inbound", text: "Hello", sentAt: new Date(),
     });
-    if (!("threadId" in incoming)) throw new Error("inbound write failed");
-    const draft = await db.createDraft(orgId, { threadId: incoming.threadId, body: "Hello!", modelVersion: "test", promptVersion: "test" });
+    if (!incoming.threadId) throw new Error("inbound write failed");
+    const draft = await createFixtureDraft(orgId, { threadId: incoming.threadId, body: "Hello!", modelVersion: "test", promptVersion: "test" });
     const claimed = await db.createSendIntentClaim(orgId, { draftId: draft.id, seatId: created.seat.id, finalText: "Hello!", idempotencyKey: `intent-${created.org.id}` });
     expect(claimed.claimed).toBe(true);
     await db.markSendIntentUnknown(orgId, claimed.intentId, "timeout after request body");
@@ -128,6 +135,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres sa
       org: 0, accounts: 0, threads: 0, messages: 0, classifications: 0, drafts: 0, sendIntents: 0,
       ledger: 0, audit: 0, subs: 0, billingEvents: 0, ignores: 0, outbox: 0, webhookScopes: 0, voice: 0, checkpoints: 0, pushes: 0,
       voiceRules: 0, draftFeedback: 0, offers: 0, speakingVoices: 0, audioAssets: 0,
+      deals: 0, invoices: 0, billingProfiles: 0, commentLeads: 0, leadSources: 0, leadEvents: 0,
     });
   });
   it("refuses invalid region settings without breaking the existing workspace calendar", async () => {
@@ -147,7 +155,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres sa
         participantIgId: "buyer", igMessageId: `leak-${suffix}-${created.org.id}`,
         direction: "inbound", text: "Interested", sentAt: new Date(sentAt),
       });
-      if (!("messageId" in message)) throw new Error("leak scan fixture failed");
+      if (!message.messageId) throw new Error("leak scan fixture failed");
       await db.saveClassification(orgId, {
         messageId: message.messageId, label: "brand_deal", confidence: 0.99, language: "en",
         valueMinMinor: min, valueMaxMinor: min * 2, rationale: "enquiry", modelVersion: "test",

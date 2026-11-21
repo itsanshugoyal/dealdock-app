@@ -1,9 +1,12 @@
 import {
   computeReplyWindow,
+  noReplyWindow,
   type AudioAttachment,
+  type Channel,
   type DraftContextSummary,
   type MessageSource,
   type ParticipantProfile,
+  type ReplyWindow,
   type ThreadDetail,
 } from "@dealdock/core";
 import type { getThreadDetail, InboxParticipant } from "@dealdock/db";
@@ -22,6 +25,11 @@ export function iso(date: Date | null): string | null {
 
 export function toSource(source: string | null): MessageSource | null {
   return source !== null && SOURCES.has(source) ? (source as MessageSource) : null;
+}
+
+/** Instagram's reply window; email has none, so a send is never blocked by time. */
+export function replyWindowOf(channel: Channel, lastInboundAt: Date | null, now: Date, humanAgentEnabled: boolean): ReplyWindow {
+  return channel === "email" ? noReplyWindow(lastInboundAt) : computeReplyWindow(lastInboundAt, now, humanAgentEnabled);
 }
 
 export function toParticipant(participant: InboxParticipant): ParticipantProfile {
@@ -75,7 +83,7 @@ export function toThreadDetail(
     estCurrencyCode: detail.estCurrencyCode,
     rationale: detail.rationale,
     lastInboundAt: iso(detail.lastInboundAt),
-    replyWindow: computeReplyWindow(detail.lastInboundAt, ctx.now, ctx.humanAgentEnabled),
+    replyWindow: replyWindowOf(detail.channel, detail.lastInboundAt, ctx.now, ctx.humanAgentEnabled),
     source: toSource(detail.source),
     messages: detail.messages.map((message) => ({
       id: message.id,
@@ -85,6 +93,7 @@ export function toThreadDetail(
       sentAt: message.sentAt.toISOString(),
       origin: message.origin,
       audio: toAudio(message),
+      ...(message.attachments.length ? { attachments: message.attachments } : {}),
       classification: message.classification
         ? { ...message.classification, reviewedAt: iso(message.classification.reviewedAt) }
         : null,
@@ -94,5 +103,11 @@ export function toThreadDetail(
     closedDeals: detail.closedDeals.map((deal) => ({ ...deal, closedAt: deal.closedAt.toISOString() })),
     dealSignal: detail.dealSignal,
     canSendVoice: ctx.canSendVoice,
+    channel: detail.channel,
+    subject: detail.subject,
+    scamReason: detail.scamReason,
+    deals: detail.deals,
+    leadStage: detail.leadStage,
+    leadPayments: detail.leadPayments,
   };
 }

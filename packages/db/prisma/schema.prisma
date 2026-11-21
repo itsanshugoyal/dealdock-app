@@ -34,11 +34,13 @@ enum IgAccountStatus {
 enum Platform {
   instagram
   whatsapp
+  email
 }
 
 enum MessagingProviderKind {
   mock
   instagram_graph
+  gmail
 }
 
 enum ThreadState {
@@ -109,6 +111,69 @@ enum DealType {
   coaching
   course
   other
+}
+
+// Where an agreed deal is on its way to the money. "Overdue" is derived (open and past dueAt).
+enum DealStage {
+  agreed
+  invoiced
+  paid
+  cancelled
+}
+
+// "full" bills the whole fee; "advance" the agreed upfront share; "balance" what is left.
+enum InvoiceKind {
+  full
+  advance
+  balance
+}
+
+// A voided invoice keeps its number: numbers are never reused.
+enum InvoiceStatus {
+  issued
+  paid
+  void
+}
+
+// How tax applies: GST within India (or VAT), India export under LUT (no IGST) or with IGST, or untaxed.
+enum SupplyType {
+  domestic
+  export_lut
+  export_tax
+  untaxed
+}
+
+// Coach pipeline: where a coaching or course lead stands. A thread with no stage
+// that is labelled coaching_lead or course_inquiry shows as a lead.
+enum LeadStage {
+  lead
+  qualified
+  booked
+  paid
+}
+
+// Booking and payment tools that report back to the coach pipeline. "other"
+// is a plain JSON webhook (Zapier, Make, Topmate through an automation).
+enum LeadSourceProvider {
+  calendly
+  cal_com
+  razorpay
+  stripe
+  other
+}
+
+enum LeadEventKind {
+  booked
+  paid
+}
+
+// A keyword comment's private reply: drafted, then approved and sent once, or skipped.
+// "Expired" is derived: Instagram allows a private reply for 7 days after the comment.
+enum CommentLeadStatus {
+  new
+  sending
+  sent
+  skipped
 }
 
 enum SubscriptionStatus {
@@ -207,6 +272,8 @@ model Organization {
   offers           Offer[]
   speakingVoices   SpeakingVoice[]
   audioAssets      AudioAsset[]
+  billingProfiles  BillingProfile[]
+  leadSources      LeadSource[]
 }
 
 model User {
@@ -234,6 +301,8 @@ model Seat {
 
   sentDrafts     Draft[]         @relation("SentBy")
   ledgerEntries  LedgerEntry[]
+  deals          Deal[]
+  invoices       Invoice[]
   reviews        Classification[] @relation("ReviewedBy")
   auditLogs      AuditLog[]
   pushSubs       PushSubscription[]
@@ -256,6 +325,10 @@ model IgAccount {
   accountType    String // "business" | "creator" — personal rejected at connect (PRD §6.1)
   // AES-256-GCM encrypted at the application layer (ARCHITECTURE.md §8).
   accessTokenEnc String?
+  // Providers with long-lived refresh tokens (Gmail). Same AES-256-GCM envelope.
+  refreshTokenEnc String?
+  // Channel inboxes (Gmail) belong to one creator account, so their threads, deals and money count for that creator.
+  ownerAccountId  String?
   tokenRefreshedAt DateTime?
   tokenExpiresAt DateTime?
   status         IgAccountStatus @default(active)
@@ -268,7 +341,14 @@ model IgAccount {
   leakScanStartedAt   DateTime?
   leakScanCompletedAt DateTime?
 
+  // The private rate-card link (/rates/<token>); null = no link. Rotating it ends the old link.
+  rateCardToken   String?  @unique
+  // Comment words that make a commenter a lead ("PRICE", "LINK"), matched case-insensitively.
+  commentKeywords String[] @default([])
+
   org        Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner      IgAccount?           @relation("ChannelOwner", fields: [ownerAccountId], references: [id], onDelete: SetNull)
+  channelAccounts IgAccount[]     @relation("ChannelOwner")
   threads    Thread[]
   voice      VoiceProfile?
   checkpoint IngestionCheckpoint?
@@ -276,6 +356,10 @@ model IgAccount {
   voiceRules VoiceRule[]
   offers     Offer[]
   speakingVoice SpeakingVoice?
+  billingProfile BillingProfile?
+  deals         Deal[]
+  ledgerEntries LedgerEntry[]
+  commentLeads  CommentLead[]
 
   @@unique([platform, igUserId])
   @@index([orgId])
@@ -315,6 +399,11 @@ model Thread {
   profileFetchedAt         DateTime?
   // Where the conversation started when Instagram says so: dm|story|reel|ad|link.
   source                   String?
+  // Email threads only: the subject line. Null for DMs.
+  subject                  String?
+  // Coach pipeline stage, set by the creator or by a booking or payment that reports back.
+  leadStage                LeadStage?
+  leadStageAt              DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -323,6 +412,8 @@ model Thread {
   messages  Message[]
   drafts    Draft[]
   ledger    LedgerEntry[]
+  deals     Deal[]
+  leadEvents LeadEvent[]
 
   @@unique([igAccountId, igThreadId])
   @@index([orgId, state, estValueMaxMinor(sort: Desc)]) // Revenue Inbox default sort
@@ -423,6 +514,8 @@ model Draft {
   generationContext Json?     // {ruleIds[], exemplarMessageIds[], lessonDraftIds[], lintViolations, promptVersion}
   editSignals       Json?     // deterministic detector output at learn time
   learnedAt         DateTime? // idempotency marker for the learning sweep
+  // An invoice cover note: the approved send attaches this invoice's PDF.
+  invoiceId         String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -432,6 +525,7 @@ model Draft {
   sentMessage Message? @relation("SentAs", fields: [sentMessageId], references: [id])
   sendIntent  SendIntent?
   feedback    DraftFeedback[]
+  invoice     Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
 
   @@index([orgId, threadId, status])
   @@index([orgId, status, sentAt]) // voice-fidelity trend scan
@@ -442,7 +536,7 @@ model Draft {
 model LedgerEntry {
   id       String   @id @default(cuid())
   orgId    String
-  threadId String
+  threadId String? // null for a deal's payment recorded outside DealDock
   dealType DealType
   amountMinor  BigInt
   // Denormalized at write time — org currency changes never rewrite history (ADR-9).
@@ -452,6 +546,14 @@ model LedgerEntry {
   closedAt DateTime @default(now())
   createdBySeatId String?
   deletedAt DateTime? // soft delete for refunds (PRD §6.7)
+  // Set when the money comes from recording a deal's payment. A deal can have
+  // several (an advance and a balance), one per invoice.
+  dealId   String?
+  invoiceId String? @unique
+  // The creator account the money counts for (an email inbox's owner, never
+  // the inbox) and who paid, stored so an entry needs no conversation.
+  igAccountId        String
+  counterpartyHandle String
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -459,11 +561,149 @@ model LedgerEntry {
   // A close-out must not prevent the owning account/org's privacy deletion.
   // Seat attribution is retained while the seat exists, but removing a seat
   // (or hard-deleting an org) must not leave a restrictive foreign-key edge.
-  thread    Thread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  thread    Thread? @relation(fields: [threadId], references: [id], onDelete: Cascade)
   createdBy Seat?  @relation(fields: [createdBySeatId], references: [id], onDelete: SetNull)
+  deal      Deal?  @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  // Deletion reaches an entry without a conversation through its account.
+  igAccount IgAccount @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
 
   @@index([orgId, closedAt]) // monthly rollups
   @@unique([orgId, idempotencyKey])
+  @@index([dealId])
+  @@index([orgId, igAccountId, closedAt]) // per-creator totals (Roster, creator-scoped Revenue)
+}
+
+// ── Deals: one agreement carried from the conversation to the money ──────
+
+model Deal {
+  id       String    @id @default(cuid())
+  orgId    String
+  threadId String? // null for a deal agreed outside DealDock (a call, WhatsApp, in person)
+  title    String
+  dealType DealType
+  // Agreed fee in org-currency minor units, currency frozen at write time (ADR-9).
+  amountMinor  BigInt
+  currencyCode String
+  stage    DealStage @default(agreed)
+  // DealTerms (@dealdock/core): deliverables, usage, exclusivity, revisions, advance, payment days, notes.
+  terms    Json
+  agreedAt   DateTime  @default(now())
+  dueAt      DateTime? // when payment is due
+  invoicedAt DateTime? // when payment was requested
+  paidAt     DateTime?
+  receivedMinor BigInt? // what actually arrived
+  tdsMinor      BigInt? // tax the payer withheld (India TDS)
+  // The creator dealt with the usage-rights expiry reminder (renewed, stopped or dismissed it).
+  usageHandledAt   DateTime?
+  // The creator pitched this brand again, or dismissed the renewal prompt.
+  renewalHandledAt DateTime?
+  idempotencyKey  String
+  createdBySeatId String?
+  deletedAt DateTime?
+  // The creator account (an email inbox's owner, never the inbox) and who the
+  // deal is with, stored so a deal needs no conversation.
+  igAccountId        String
+  counterpartyHandle String
+  counterpartyName   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  thread      Thread?      @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  createdBy   Seat?        @relation(fields: [createdBySeatId], references: [id], onDelete: SetNull)
+  ledgerEntries LedgerEntry[]
+  invoices    Invoice[]
+  // Deletion reaches a deal without a conversation (and its invoices) through its account.
+  igAccount   IgAccount    @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, idempotencyKey])
+  @@index([orgId, stage, dueAt]) // money owed, soonest first
+  @@index([orgId, threadId])
+  @@index([orgId, igAccountId]) // one creator's deals (Roster)
+}
+
+// ── Invoices: a correct PDF from a deal, paid one invoice at a time ──────
+
+/**
+ * The legal identity printed on invoices: one per workspace, plus a creator
+ * account's own on Roster. `tax` and `payment` are validated at the API
+ * boundary (BillingProfileInputSchema in @dealdock/core).
+ */
+model BillingProfile {
+  id           String   @id @default(cuid())
+  orgId        String
+  // Null = the workspace profile; one per org (partial unique index in SQL,
+  // since PostgreSQL treats NULLs as distinct).
+  igAccountId  String?  @unique
+  legalName    String
+  addressLines String[] @default([])
+  city         String?
+  state        String? // India: GST state code ("27"), the supplier's place for place of supply
+  country      String  // ISO 3166-1 alpha-2
+  email        String?
+  phone        String?
+  tax          Json    // TaxRegistration: { kind, number, ratePercent, lutArn }
+  pan          String?
+  udyamNumber  String?
+  sacCode      String?
+  payment      Json    // PaymentDetails: UPI, bank, payment link
+  invoicePrefix String @default("INV")
+  // The (financial) year nextNumber counts in; a new year starts again at 1.
+  numberYear   String?
+  nextNumber   Int      @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  igAccount IgAccount?   @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+}
+
+/**
+ * One invoice for (part of) a deal. Everything it prints is frozen at issue
+ * (supplier, billTo, lines, taxes), so a later profile edit never changes it
+ * and its PDF renders the same bytes every time.
+ */
+model Invoice {
+  id       String        @id @default(cuid())
+  orgId    String
+  dealId   String
+  kind     InvoiceKind
+  number   String
+  issuedAt DateTime      @default(now())
+  dueAt    DateTime
+  // The deal's currency, frozen at write time (ADR-9).
+  currencyCode  String
+  supplier Json // InvoiceSupplier: the billing profile as issued, with its time zone and locale
+  billTo   Json // InvoiceParty: name, address, country, state, GSTIN or VAT number
+  lines    Json // InvoiceLine[]
+  taxes    Json // InvoiceTaxLine[]; subtotal + tax = total exactly (SQL CHECK)
+  subtotalMinor BigInt
+  taxMinor      BigInt
+  totalMinor    BigInt
+  supplyType    SupplyType
+  placeOfSupply String? // India: GST state code, "96" for exports
+  notes    String?
+  status   InvoiceStatus @default(issued)
+  paidAt   DateTime?
+  receivedMinor BigInt? // what actually arrived
+  tdsMinor      BigInt? // tax the payer withheld (India TDS)
+  voidedAt DateTime?
+  createdBySeatId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  deal        Deal         @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  createdBy   Seat?        @relation(fields: [createdBySeatId], references: [id], onDelete: SetNull)
+  ledgerEntry LedgerEntry?
+  drafts      Draft[]
+
+  @@unique([orgId, number])
+  @@index([orgId, dealId])
 }
 
 // ── Voice, ignore list, audit ────────────────────────────────────────────
@@ -559,6 +799,8 @@ model Offer {
   link          String?
   details       String?
   availability  String?
+  // Brand offers: OfferAddOns (@dealdock/core), add-on prices in org-currency minor units, validated at the API.
+  addOns        Json?
   active        Boolean  @default(true)
   sortOrder     Int      @default(0)
 
@@ -704,6 +946,8 @@ model IngestionCheckpoint {
   lastWebhookAt          DateTime?
   lastBackfillAt         DateTime?
   lastIgMessageTimestamp DateTime?
+  // Provider sync cursor (Gmail historyId). Null until the first full sync.
+  syncCursor             String?
 
   updatedAt DateTime @updatedAt
 
@@ -810,4 +1054,88 @@ model SendIntent {
 
   @@unique([orgId, idempotencyKey])
   @@index([orgId, status])
+}
+
+// ── Coach pipeline: booking and payment links that report back ───────────
+
+/** A booking or payment tool's webhook into one workspace. */
+model LeadSource {
+  id        String             @id @default(cuid())
+  orgId     String
+  provider  LeadSourceProvider
+  label     String?
+  // SHA-256 of the secret segment in the webhook URL (/webhooks/leads/<token>); the token itself is shown once.
+  tokenHash String             @unique
+  // The provider's signing secret, AES-256-GCM like account tokens. Null for "other", which the URL token alone authenticates.
+  secretEnc String?
+  lastEventAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  events LeadEvent[]
+
+  @@index([orgId])
+}
+
+/** A booking or payment a source reported. It moves its conversation's stage; a payment suggests recording the sale. */
+model LeadEvent {
+  id           String        @id @default(cuid())
+  orgId        String
+  sourceId     String
+  // The provider's id for the booking or payment: a redelivery is ignored.
+  externalId   String
+  kind         LeadEventKind
+  // The matched conversation; null until matched.
+  threadId     String?
+  // Payments only, in minor units of their own currency.
+  amountMinor  BigInt?
+  currencyCode String?
+  payerName    String?
+  occurredAt   DateTime
+  // The creator recorded the sale from this payment, or dismissed it.
+  handledAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  source LeadSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  thread Thread?    @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, externalId])
+  @@index([orgId, threadId])
+  @@index([orgId, handledAt])
+}
+
+// ── Comment leads: keyword comments answered by an approved private reply ──
+
+model CommentLead {
+  id              String            @id @default(cuid())
+  orgId           String
+  igAccountId     String
+  // Instagram's comment id: the private reply is addressed to it, once.
+  commentId       String
+  mediaId         String
+  // The post's permalink, when Instagram gives it.
+  mediaUrl        String?
+  commenterIgId   String
+  commenterHandle String
+  text            String
+  keyword         String
+  commentedAt     DateTime
+  status          CommentLeadStatus @default(new)
+  draftBody       String?
+  modelVersion    String?
+  sentAt          DateTime?
+  sentBySeatId    String?
+  // Facts the draft needed but the offers don't give ("your price"), shown before the one reply goes.
+  missingFacts    String[]          @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  igAccount IgAccount @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([igAccountId, commentId])
+  @@index([orgId, status, commentedAt])
 }

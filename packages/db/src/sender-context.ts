@@ -109,20 +109,21 @@ export async function senderLedger(orgId: OrgId, senders: SenderKey[]) {
       },
     },
     select: {
-      threadId: true,
       amountMinor: true,
       closedAt: true,
-      thread: { select: { igAccountId: true, participantIgId: true } },
+      thread: { select: { id: true, igAccountId: true, participantIgId: true } },
     },
   });
-  for (const entry of entries) {
-    const key = senderKey(entry.thread);
+  for (const { thread, amountMinor, closedAt } of entries) {
+    // Money recorded outside DealDock has no sender to match (the filter above already leaves it out).
+    if (!thread) continue;
+    const key = senderKey(thread);
     const sum = totals.get(key) ?? { closedTotalMinor: 0, closedDeals: 0 };
-    const next = sum.closedTotalMinor + minorUnitsToNumber(entry.amountMinor);
+    const next = sum.closedTotalMinor + minorUnitsToNumber(amountMinor);
     if (!Number.isSafeInteger(next)) throw new Error("ledger_total_exceeds_javascript_safe_integer");
     totals.set(key, { closedTotalMinor: next, closedDeals: sum.closedDeals + 1 });
-    const last = lastClosedAt.get(entry.threadId);
-    if (!last || last < entry.closedAt) lastClosedAt.set(entry.threadId, entry.closedAt);
+    const last = lastClosedAt.get(thread.id);
+    if (!last || last < closedAt) lastClosedAt.set(thread.id, closedAt);
   }
   return { totals, lastClosedAt };
 }

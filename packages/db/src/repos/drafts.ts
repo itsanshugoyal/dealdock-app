@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../client";
 import type { OrgId } from "../org-id";
-import { DomainError, editRatio, type ClassificationLabel } from "@dealdock/core";
+import { DomainError, editRatio, tagLinks, threadRef, type ClassificationLabel } from "@dealdock/core";
 import { writeAudit } from "../audit-log";
 import { requireSeatInOrg } from "../seat-scope";
 import { advanceThreadClocks, lockThread } from "../thread-writes";
@@ -18,6 +18,8 @@ export async function createDraft(
     body: string;
     modelVersion: string;
     promptVersion: string;
+    /** Voice profile version captured before generating this draft. */
+    expectedVoiceVersion: number | null;
     /** The label this draft was written for (the thread's top label drifts later). */
     label?: ClassificationLabel | null;
     /** The creator's free-text steering for this generation (≤ 200 chars). */
@@ -27,6 +29,8 @@ export async function createDraft(
     alternatives?: string[];
     /** "Why this draft": the DraftContextSummary (+ promptVersion, lintViolations). */
     generationContext?: Record<string, unknown> | null;
+    /** An invoice cover note: the approved send attaches this invoice's PDF. */
+    invoiceId?: string | null;
   }
 ) {
   // Read-discard-create must be atomic (F9): otherwise two concurrent draft
@@ -39,11 +43,15 @@ export async function createDraft(
       select: { id: true, igAccountId: true },
     });
     if (!thread) throw new DomainError("thread not in org", 404);
+    if (input.invoiceId && !(await tx.invoice.findFirst({ where: { id: input.invoiceId, orgId, deal: { threadId: thread.id } }, select: { id: true } }))) {
+      throw new DomainError("invoice not in org", 404);
+    }
     await lockThread(tx, thread.id);
     // Coordinate model generation with explicit consent revocation. A shared
     // lock means revocation either commits first (then this fresh read rejects)
     // or waits and discards any ready draft generated under prior consent.
-    await lockConsentedVoiceProfile(tx, orgId, thread.igAccountId, "share");
+    const profile = await lockConsentedVoiceProfile(tx, orgId, thread.igAccountId, "share");
+    if (profile.version !== input.expectedVoiceVersion) throw new DomainError("voice_context_changed", 409);
 
     // A human-approved message is in flight and must not be replaced by a
     // late generation job. It is reconciled as a SendIntent, never discarded.
@@ -68,21 +76,25 @@ export async function createDraft(
       orderBy: { version: "desc" },
       select: { version: true },
     });
+    // Links to a connected booking or payment tool carry this conversation back (core tagLinks), in every version the creator sees.
+    const tools = await tx.leadSource.findMany({ where: { orgId }, select: { provider: true }, distinct: ["provider"] });
+    const tag = (text: string) => (tools.length ? tagLinks(text, threadRef(thread.id), tools.map((tool) => tool.provider)) : text);
     return tx.draft.create({
       data: {
         orgId,
         threadId: input.threadId,
         replyToMessageId: input.replyToMessageId,
         kind: input.kind ?? "reply",
-        body: input.body,
+        body: tag(input.body),
         version: (latest?.version ?? 0) + 1,
         modelVersion: input.modelVersion,
         promptVersion: input.promptVersion,
         label: input.label ?? null,
         instruction: input.instruction?.slice(0, 200) || null,
         chips: input.chips ?? [],
-        alternatives: (input.alternatives ?? []).slice(0, 3),
+        alternatives: (input.alternatives ?? []).slice(0, 3).map(tag),
         ...(input.generationContext ? { generationContext: input.generationContext as Prisma.InputJsonValue } : {}),
+        invoiceId: input.invoiceId ?? null,
       },
     });
   });
@@ -171,6 +183,7 @@ export async function listDistillationBatch(orgId: OrgId, igAccountId: string, s
     take: limit,
     select: {
       id: true,
+      sentMessageId: true,
       threadId: true,
       kind: true,
       label: true,
@@ -240,6 +253,28 @@ export interface SendIntentClaim {
   claimed: boolean;
 }
 
+type SendApproval = { draftId: string; seatId: string; finalText: string; idempotencyKey: string; asVoice?: boolean };
+const intentSelect = { id: true, draftId: true, status: true, finalText: true, seatId: true, idempotencyKey: true, asVoice: true, draft: { select: { threadId: true } } } as const;
+
+function matchSendIntent(intent: { id: string; draftId: string; status: SendIntentClaim["status"]; finalText: string; seatId: string; idempotencyKey: string; asVoice: boolean; draft: { threadId: string } }, input: SendApproval, threadId?: string): SendIntentClaim {
+  if (intent.draftId !== input.draftId || intent.finalText !== input.finalText || intent.seatId !== input.seatId ||
+      intent.idempotencyKey !== input.idempotencyKey || intent.asVoice !== (input.asVoice ?? false) ||
+      (threadId !== undefined && intent.draft.threadId !== threadId)) {
+    throw new DomainError("send_idempotency_key_conflict", 409);
+  }
+  return { intentId: intent.id, draftId: intent.draftId, status: intent.status, claimed: false };
+}
+
+/** Read an existing approval before checking whether its draft is still live. */
+export async function findSendIntentForRetry(orgId: OrgId, input: SendApproval & { threadId: string }): Promise<SendIntentClaim | null> {
+  await requireSeatInOrg(orgId, input.seatId, prisma, "send_seat_not_in_org");
+  const intent = await prisma.sendIntent.findFirst({
+    where: { orgId, OR: [{ draftId: input.draftId }, { idempotencyKey: input.idempotencyKey }] },
+    select: intentSelect,
+  });
+  return intent ? matchSendIntent(intent, input, input.threadId) : null;
+}
+
 /**
  * Persist human approval before the remote call. A network timeout after the
  * platform may have accepted the message is deliberately recoverable only by
@@ -268,13 +303,10 @@ export async function createSendIntentClaim(
     if (!draft) throw new DomainError("draft_not_in_org", 404);
     const existing = await tx.sendIntent.findFirst({
       where: { orgId, OR: [{ draftId: input.draftId }, { idempotencyKey: input.idempotencyKey }] },
-      select: { id: true, draftId: true, status: true, finalText: true, seatId: true },
+      select: intentSelect,
     });
     if (existing) {
-      if (existing.draftId !== input.draftId || existing.finalText !== input.finalText || existing.seatId !== input.seatId) {
-        throw new DomainError("send_idempotency_key_conflict", 409);
-      }
-      return { intentId: existing.id, draftId: existing.draftId, status: existing.status, claimed: false };
+      return matchSendIntent(existing, input);
     }
 
     const claim = await tx.draft.updateMany({
@@ -287,13 +319,10 @@ export async function createSendIntentClaim(
       // receives that durable intent, not a misleading conflict/retry signal.
       const concurrent = await tx.sendIntent.findFirst({
         where: { orgId, OR: [{ draftId: input.draftId }, { idempotencyKey: input.idempotencyKey }] },
-        select: { id: true, draftId: true, status: true, finalText: true, seatId: true },
+        select: intentSelect,
       });
       if (concurrent) {
-        if (concurrent.draftId !== input.draftId || concurrent.finalText !== input.finalText || concurrent.seatId !== input.seatId) {
-          throw new DomainError("send_idempotency_key_conflict", 409);
-        }
-        return { intentId: concurrent.id, draftId: concurrent.draftId, status: concurrent.status, claimed: false };
+        return matchSendIntent(concurrent, input);
       }
       throw new DomainError("draft_not_sendable_or_already_claimed", 409);
     }
@@ -384,7 +413,7 @@ export async function persistSendIntent(
     await lockThread(tx, approved.draft.threadId);
     const intent = await tx.sendIntent.findFirstOrThrow({
       where: { id: input.intentId, orgId },
-      include: { draft: { select: { id: true, threadId: true, body: true, status: true } } },
+      include: { draft: { select: { id: true, threadId: true, body: true, status: true, generationContext: true } } },
     });
     // A claimed draft's body and approved text do not change; re-measure only if they somehow did.
     const edit = intent.draft.body === approved.draft.body && intent.finalText === approved.finalText
@@ -447,6 +476,11 @@ export async function persistSendIntent(
       data: { status: "persisted", platformMessageId: input.platformMessageId, platformSentAt: input.sentAt, lastError: null },
     });
     await advanceThreadClocks(tx, intent.draft.threadId, "outbound", input.sentAt);
+    // A renewal pitch that went out answers its prompt: the brand leaves Today's "Pitch again".
+    const job = (intent.draft.generationContext ?? {}) as { purpose?: unknown; dealId?: unknown };
+    if (sent.count && job.purpose === "renewal" && typeof job.dealId === "string") {
+      await tx.deal.updateMany({ where: { id: job.dealId, orgId, threadId: intent.draft.threadId, renewalHandledAt: null }, data: { renewalHandledAt: input.sentAt } });
+    }
     if (sent.count) {
       await writeAudit(tx, {
         orgId,

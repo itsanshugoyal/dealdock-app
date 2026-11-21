@@ -6,6 +6,7 @@ import { writeAudit } from "../audit-log";
 import { requireSeatInOrg } from "../seat-scope";
 import { pickTopClassification } from "../sender-context";
 import { lockThread } from "../thread-writes";
+import { creatorAccountId, threadsOfCreator } from "./deals";
 
 /** Rebuild the inbox denormalization under the thread lock from persisted rows. */
 async function refreshThreadClassificationState(
@@ -133,33 +134,53 @@ export async function saveClassification(orgId: OrgId, input: ClassificationInpu
   });
 }
 
-export async function listReviewQueue(orgId: OrgId, limit = 50) {
+export async function listReviewQueuePage(orgId: OrgId, limit = 50, cursor?: string) {
+  let after: { at: Date; id: string } | undefined;
+  if (cursor) {
+    try {
+      const value: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+      if (!Array.isArray(value) || value.length !== 2 || typeof value[0] !== "string" || typeof value[1] !== "string" || !value[1] || value[1].length > 64) throw new Error();
+      const at = new Date(value[0]);
+      if (!Number.isFinite(at.getTime()) || at.toISOString() !== value[0]) throw new Error();
+      after = { at, id: value[1] };
+    } catch {
+      throw new DomainError("invalid_cursor", 400);
+    }
+  }
   const rows = await prisma.classification.findMany({
-    where: { orgId, routedTo: "review_queue", reviewOutcome: null },
-    orderBy: { createdAt: "asc" },
-    take: limit,
+    where: { orgId, routedTo: "review_queue", reviewOutcome: null, ...(after ? { OR: [{ createdAt: { gt: after.at } }, { createdAt: after.at, id: { gt: after.id } }] } : {}) },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: limit + 1,
     include: {
       message: {
         select: {
           id: true,
           text: true,
           sentAt: true,
-          thread: { select: { id: true, participantHandle: true, igAccountId: true } },
+          thread: { select: { id: true, participantHandle: true, igAccountId: true, igAccount: { select: { ownerAccountId: true } } } },
         },
       },
     },
   });
-  return rows.map((c) => ({
+  const page = rows.slice(0, limit);
+  const last = page[page.length - 1];
+  const nextCursor = rows.length > limit && last ? Buffer.from(JSON.stringify([last.createdAt.toISOString(), last.id])).toString("base64url") : null;
+  return { nextCursor, rows: page.map((c) => ({
     classificationId: c.id,
     threadId: c.message.thread.id,
-    igAccountId: c.message.thread.igAccountId,
+    igAccountId: creatorAccountId(c.message.thread),
     handle: c.message.thread.participantHandle,
     text: c.message.text,
     sentAt: c.message.sentAt,
     bestGuess: c.label,
     confidence: c.confidence,
     rationale: c.rationale,
-  }));
+  })) };
+}
+
+/** Legacy bounded read for internal consumers. */
+export async function listReviewQueue(orgId: OrgId, limit = 50) {
+  return (await listReviewQueuePage(orgId, limit)).rows;
 }
 
 /**
@@ -233,7 +254,8 @@ export async function listRecentOverrides(orgId: OrgId, igAccountId: string, lim
     where: {
       orgId,
       reviewOutcome: "overridden",
-      message: { thread: { igAccountId } },
+      // A creator's corrections include those made on threads of the email inboxes they own.
+      message: { thread: threadsOfCreator(igAccountId) },
     },
     orderBy: { reviewedAt: "desc" },
     take: limit,

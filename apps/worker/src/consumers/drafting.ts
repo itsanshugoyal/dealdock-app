@@ -73,9 +73,14 @@ export function startDraftingWorker() {
       const result = await pipeline.draft({
         kind: data.kind,
         classificationLabel: label,
-        threadHistory: thread.messages.map((m) => ({ direction: m.direction, text: m.text, contentType: m.contentType, transcript: m.transcript })),
+        threadHistory: thread.messages.map((m) => ({ direction: m.direction, text: m.text, contentType: m.contentType, transcript: m.transcript, sentAt: m.sentAt.toISOString() })),
+        channel: thread.channel,
+        subject: thread.subject,
         creator,
         ...retrieveVoiceContext(query, pools),
+        timezone: thread.timezone,
+        // A brand reply must not accept work that breaks an exclusivity this creator agreed elsewhere.
+        exclusivities: thread.exclusivities,
       });
 
       const draft = await createDraft(orgId, {
@@ -86,6 +91,7 @@ export function startDraftingWorker() {
         body: result.body,
         modelVersion: result.modelVersion,
         promptVersion: result.promptVersion,
+        expectedVoiceVersion: creator.voiceVersion,
         label,
         generationContext: generationContextOf(result),
       });

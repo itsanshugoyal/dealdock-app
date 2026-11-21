@@ -1,8 +1,8 @@
 # Private pilot readiness — 30 October 2026
 
-This is the current readiness record. M0–M5 implementation does not establish that their external exit gates passed. The live public site at dealdock.io is separate from proof of the authenticated product. No deployment or push was performed during this remediation.
+This is the historical 30 October readiness record. The [1 November authenticated-product audit](ux-and-product-audit-2026-11-01.md) contains the current implementation, verification and outstanding owner actions. M0–M5 implementation does not establish that external exit gates passed. The live public site at dealdock.io is separate from proof of the authenticated product. No deployment or push was performed during either local audit.
 
-**31 October follow-up:** the [voice/audio audit](voice-and-audio-audit.md) found that live onboarding records style consent but does not initiate extraction. Manual refresh uses the first connected account, sample selection needs text/empty-content filtering, and consent without a saved card can still produce generic drafts. Finish and test that account-specific onboarding loop before promising automatic personalized writing. Business/offer context also needs per-creator scoping before broader Roster use. Audio detection/playback/transcription and spoken-audio replies are incomplete. These are engineering gaps, not account-configuration gates. No production code was changed in this follow-up.
+**Historical 31 October follow-up:** the earlier review found missing account-specific onboarding refresh, usable-text filtering, ongoing learning and audio handling. The rebuilt implementation supersedes those findings; consult the [current voice/audio audit](voice-and-audio-audit.md) for what now exists and its remaining limits. Per-creator business facts, consent ownership and spoken-voice approval/deletion controls still need engineering work before the affected agency/audio promises are enabled. The 31 October review itself was read-only.
 
 ## Must fix before the first design partner
 

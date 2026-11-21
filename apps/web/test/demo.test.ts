@@ -98,10 +98,12 @@ describe("demo store parity with the API store", () => {
     await demoStore.setIgnoreList(["masi.ji"]);
     await demoStore.updateOffer("offer-call", { availability: "Weekends only" });
     await demoStore.setSampleExcluded("sample-2", true);
-    await demoStore.setSpeakingDisclosure(false);
+    // An INR workspace can't switch the spoken AI disclosure off, as the API refuses it.
+    await expect(demoStore.setSpeakingDisclosure(false)).rejects.toMatchObject({ status: 409, code: "disclosure_required" });
+    await demoStore.setSpeakingDisclosure(true);
     const rows = (await demoStore.loadAudit(500)) ?? [];
     const actions = rows.map((row) => row.action);
-    expect(actions).toEqual(expect.arrayContaining(["settings.goal_changed", "settings.ignore_list_changed", "offer.updated", "voice.sample_excluded", "voice.disclosure_disabled", "nudge.dismissed", "ledger.created", "settings.region_changed"]));
+    expect(actions).toEqual(expect.arrayContaining(["settings.goal_changed", "settings.ignore_list_changed", "offer.updated", "voice.sample_excluded", "voice.disclosure_enabled", "nudge.dismissed", "ledger.created", "settings.region_changed"]));
     expect(actions.filter((action) => !isAuditAction(action))).toEqual([]);
   });
 
@@ -127,5 +129,22 @@ describe("demo store parity with the API store", () => {
     const audits = (await demoStore.loadAudit(500))?.length;
     await expect(demoStore.disconnectInstagram("ig-someone-else")).rejects.toMatchObject({ status: 404, code: "not_found" });
     expect((await demoStore.loadAudit(500))?.length).toBe(audits);
+  });
+});
+
+describe("demo creator ledger", () => {
+  it("scopes sales to their actual conversation creator", async () => {
+    await demoStore.init();
+    await demoStore.closeDeal("t-saffron", 22222, "brand", { idempotencyKey: "scoped-sale-test" });
+    const rohan = await demoStore.loadLedger(undefined, "ig-demo-rohan");
+    const diya = await demoStore.loadLedger(undefined, "ig-demo-diya");
+    expect(rohan?.totalMinor).toBe(22222);
+    expect(rohan?.entries.map((entry) => entry.threadId)).toContain("t-saffron");
+    expect(diya?.entries.map((entry) => entry.threadId)).not.toContain("t-saffron");
+    const roster = await demoStore.loadRoster();
+    expect(roster?.find((row) => row.igAccountId === "ig-demo-rohan")?.mtdRecoveredMinor).toBe(rohan?.totalMinor);
+    expect(roster?.reduce((sum, row) => sum + row.mtdRecoveredMinor, 0)).toBe(demoStore.getSnapshot().dashboard?.mtdRecoveredMinor);
+    expect(await demoStore.loadLedger(undefined, "foreign-account")).toBeNull();
+    expect(demoStore.getSnapshot().ledgerView.errorStatus).toBe(404);
   });
 });

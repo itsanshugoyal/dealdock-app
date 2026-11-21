@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { getThreadDetail, isSpeakingVoiceReady, resolveDraftContext } from "@dealdock/db";
+import { getThreadDetail, isSpeakingVoiceReady, listActiveExclusivities, resolveDraftContext } from "@dealdock/db";
 import { requireAuth } from "../auth";
 import { toThreadDetail } from "../dto/thread";
 import { isHumanAgentEnabled, isSpeechConfigured, speechProviderKind } from "../feature-flags";
@@ -16,15 +16,21 @@ export async function threadDetailRoutes(app: FastifyInstance) {
     // Sender context is best-effort (F5): a stale card refreshes after this
     // response and shows on the next read, so it never stalls the conversation.
     if (isProfileStale(detail.participant.fetchedAt)) refreshParticipantProfileInBackground(orgId, id, req.log);
-    const [draftContext, voiceReady] = await Promise.all([
+    const [draftContext, voiceReady, exclusivities] = await Promise.all([
       detail.currentDraft ? resolveDraftContext(orgId, detail.currentDraft.generationContext) : null,
-      isSpeechConfigured() ? isSpeakingVoiceReady(orgId, detail.igAccountId, speechProviderKind()) : false,
+      // Voice notes are an Instagram message type; an email thread never offers one.
+      detail.channel === "instagram" && isSpeechConfigured() ? isSpeakingVoiceReady(orgId, detail.igAccountId, speechProviderKind()) : false,
+      // A brand conversation shows the exclusivities this creator agreed with other brands that are still running.
+      detail.topLabel === "brand_deal" ? listActiveExclusivities(orgId, detail.igAccountId, detail.participantHandle) : [],
     ]);
-    return toThreadDetail(detail, {
-      now: new Date(),
-      humanAgentEnabled: isHumanAgentEnabled(),
-      canSendVoice: voiceReady,
-      draftContext,
-    });
+    return {
+      ...toThreadDetail(detail, {
+        now: new Date(),
+        humanAgentEnabled: isHumanAgentEnabled(),
+        canSendVoice: voiceReady,
+        draftContext,
+      }),
+      exclusivities,
+    };
   });
 }

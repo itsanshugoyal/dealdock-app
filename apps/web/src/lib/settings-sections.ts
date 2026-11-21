@@ -6,6 +6,11 @@
  */
 export const SETTINGS_SECTIONS = [
   { id: "instagram", label: "Instagram" },
+  { id: "email", label: "Email" },
+  { id: "comment-leads", label: "Comment leads" },
+  { id: "business", label: "What you sell" },
+  { id: "billing", label: "Billing details" },
+  { id: "tools", label: "Booking and payment links" },
   { id: "notifications", label: "Notifications" },
   { id: "region", label: "Follow-ups & region" },
   { id: "goal", label: "Monthly goal" },

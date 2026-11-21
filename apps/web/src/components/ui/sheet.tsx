@@ -77,8 +77,10 @@ export function Sheet({ open, onClose, title, description, placement = "center",
       aria-labelledby={titleId}
       aria-describedby={description ? descriptionId : undefined}
       className={cx("dd-sheet", className)}
-      onCancel={(event) => { event.preventDefault(); requestClose(); }}
-      onClose={() => {
+      // A sheet opened from inside this one is its own dialog: its Escape and close are not this sheet's.
+      onCancel={(event) => { if (event.target !== event.currentTarget) return; event.preventDefault(); requestClose(); }}
+      onClose={(event) => {
+        if (event.target !== event.currentTarget) return;
         const target = returnTo.current;
         if (target instanceof HTMLElement && target.isConnected) target.focus();
         // Keep content through the exit transition, then unmount.

@@ -91,7 +91,9 @@ Retention is a daily tick. If a creator requests deletion mid-incident, nothing 
 
 ## Notification and voice limits
 
-Quiet hours suppress notifications outside 08:00–23:00 in the organization's time zone; they are not delayed for morning delivery. Weekly push summaries have no scheduler and cannot be enabled. Voice refresh is manual from Settings after explicit consent and at least three sent samples; weekly automatic refresh is deferred. Verify real device delivery after VAPID configuration.
+Quiet hours suppress notifications outside 08:00–23:00 in the organization's time zone; they are not delayed for morning delivery. Weekly push summaries have no scheduler and cannot be enabled. Written-style learning now has post-history/manual and weekly eligible-profile refresh, plus per-send edit evidence and configured batch distillation. Check consent, pause state, usable sample count and the profile version when diagnosing missing updates; a changed version intentionally rejects in-flight stale work. Verify real device delivery after VAPID configuration. See the [current voice/audio implementation and limits](voice-and-audio-audit.md).
+
+An unconfirmed browser send is not proof of failure. A request may have reached the API before the connection was lost. Retain its idempotency key, inspect the durable intent and native Instagram, and never retry with a fresh key to bypass the lock. Exact retries return the existing intent; changed approval details conflict.
 
 ## Dependency record
 

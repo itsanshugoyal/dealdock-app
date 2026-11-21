@@ -11,6 +11,8 @@ const forbiddenSecrets = [
   "META_APP_ID",
   "META_WEBHOOK_VERIFY_TOKEN",
   "GRAPH_ACCESS_TOKEN",
+  "GOOGLE_CLIENT_SECRET",
+  "GMAIL_PUBSUB_VERIFICATION_TOKEN",
 ].filter((name) => process.env[name]);
 
 if (forbiddenSecrets.length) {

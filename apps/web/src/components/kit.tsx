@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { memo, useEffect, useId, useMemo, useRef, useState, type HTMLAttributes, type ReactNode } from "react";
-import { VOICE_CLIP_LIMITS, type ClassificationLabel } from "@dealdock/core";
-import { ArrowRight, AudioLines, CheckCheck, ChevronRight, Clock, Hourglass, Mic, Pause, PenLine, Play, Volume2 } from "lucide-react";
-import { byValueDesc, clockDuration, displayName, followUpDue, relativeAge, replyWindowInfo, textLang } from "../lib/format";
+import { pipelineStage, VOICE_CLIP_LIMITS, type ClassificationLabel } from "@dealdock/core";
+import { ArrowRight, AudioLines, CheckCheck, ChevronRight, Clock, Hourglass, Mail, Mic, Pause, PenLine, Play, ShieldAlert, Volume2 } from "lucide-react";
+import { atHandle, byValueDesc, clockDuration, displayName, followUpDue, relativeAge, replyWindowInfo, textLang } from "../lib/format";
 import { useMediaQuery, useReducedMotion } from "../lib/keyboard";
 import { errorMessage } from "../lib/snapshot";
 import { appStore, useMoneyContext, type DemoThread } from "../lib/use-demo";
+import { StageChip } from "./pipeline";
 import { Button } from "./ui/button";
 import { cx } from "./ui/cx";
 import { labelMeta } from "./ui/label-chip";
@@ -51,15 +52,15 @@ export function LargeTitle({ title, eyebrow, subtitle, accessory, as: Tag = "h1"
   className?: string;
 }) {
   return (
-    <header className={cx("px-4 pb-3 pt-4 md:px-8 md:pb-5 md:pt-8", className)}>
+    <header className={cx("px-4 pb-5 pt-5 md:px-8 md:pb-7 md:pt-9", className)}>
       <div className="flex items-end justify-between gap-4">
         <div className="min-w-0">
-          {eyebrow && <p className="mb-0.5 text-label font-semibold text-ink-3">{eyebrow}</p>}
-          <Tag className="truncate text-display-xl text-ink">{title}</Tag>
+          {eyebrow && <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-3">{eyebrow}</p>}
+          <Tag className="break-words text-display-xl text-ink">{title}</Tag>
         </div>
         {accessory && <div className="flex shrink-0 items-center gap-2">{accessory}</div>}
       </div>
-      {subtitle && <p className="mt-1 max-w-[62ch] text-body text-ink-2">{subtitle}</p>}
+      {subtitle && <p className="mt-2 max-w-[62ch] text-body leading-relaxed text-ink-2">{subtitle}</p>}
     </header>
   );
 }
@@ -128,7 +129,7 @@ export function HeroCard({ as: Tag = "section", glow = "money", glowSize = "md",
   const large = glowSize === "lg";
   return (
     // `isolate` keeps the glows (z-index -10) above the card's own background and under every child.
-    <Tag className={cx("relative isolate overflow-hidden bg-hero text-on-hero", !flat && "rounded-[26px] shadow-raised ring-1 ring-on-hero/5", className)} {...rest}>
+    <Tag className={cx("relative isolate overflow-hidden bg-hero text-on-hero", !flat && "rounded-[26px] shadow-raised ring-1 ring-on-hero/[0.08]", className)} {...rest}>
       {glow !== "none" && <span aria-hidden className={cx("dd-hero-glow pointer-events-none absolute -z-10 rounded-full", large ? "-right-32 -top-32 h-[420px] w-[420px]" : "-right-24 -top-28 h-72 w-72")} />}
       {glow === "both" && <span aria-hidden className={cx("dd-hero-glow-cool pointer-events-none absolute -z-10 rounded-full", large ? "-bottom-40 -left-24 h-[360px] w-[360px]" : "-bottom-32 -left-20 h-64 w-64")} />}
       {children}
@@ -167,7 +168,8 @@ export const ConversationRow = memo(function ConversationRow({ thread, href, now
   const name = displayName(thread.participant, thread.handle);
   const unread = thread.unreplied && thread.state === "open" && thread.routedTo === "inbox";
   const review = thread.routedTo === "review_queue";
-  const hasValue = showValue && thread.estValueMaxMinor !== null && !review;
+  // A message that looks like a scam never shows money.
+  const hasValue = showValue && thread.estValueMaxMinor !== null && !review && !thread.scamReason;
   const preview = thread.hasAudio && !thread.preview
     ? null
     : thread.preview;
@@ -189,18 +191,24 @@ export const ConversationRow = memo(function ConversationRow({ thread, href, now
         <div className="flex items-baseline gap-2">
           <p className={cx("min-w-0 flex-1 truncate text-[15px] leading-5 tracking-[-0.01em] text-ink", unread ? "font-semibold" : "font-medium")}>
             <bdi>{name}</bdi>
-            <span className="sr-only">, @{thread.handle}</span>
+            <span className="sr-only">, {atHandle(thread.handle)}</span>
           </p>
-          {hasValue
-            ? <MoneyValue minor={thread.estValueMinMinor ?? thread.estValueMaxMinor!} maxMinor={thread.estValueMaxMinor} kind="estimate" estimatePrefix={false} className="shrink-0 text-[14px] font-semibold text-ink" />
-            : <span className="shrink-0 text-caption text-ink-3">{relativeAge(thread.lastMessageAt, now, locale, timezone)}</span>}
+          {thread.scamReason
+            ? <Tag tone="danger" icon={<ShieldAlert aria-hidden size={12} />}>Possible scam</Tag>
+            : hasValue
+              ? <MoneyValue minor={thread.estValueMinMinor ?? thread.estValueMaxMinor!} maxMinor={thread.estValueMaxMinor} kind="estimate" estimatePrefix={false} className="shrink-0 text-[14px] font-semibold text-ink" />
+              : <span className="shrink-0 text-caption text-ink-3">{relativeAge(thread.lastMessageAt, now, locale, timezone)}</span>}
         </div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-caption">
-          {creator && <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-inset py-0.5 pl-0.5 pr-2 font-semibold text-ink-2"><Avatar handle={creator} size={20} />@{creator}</span>}
+        {/* Icons and spacing separate the facts, so the line fits a desk pane without wrapping. */}
+        <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-0.5 text-caption">
+          {creator && <span className="inline-flex min-w-0 max-w-full items-center gap-1 font-medium text-ink-2"><Avatar handle={creator} size={20} /><span className="truncate">@{creator}</span></span>}
           {thread.topLabel && <LabelDot label={thread.topLabel} />}
+          {/* Coaching and course rows show where the person stands (lead → qualified → booked → paid). */}
+          {!review && pipelineStage(thread) && <StageChip stage={pipelineStage(thread)!} />}
           <RowState thread={thread} window={window} />
         </div>
         <p lang={textLang(preview)} className={cx("mt-1 line-clamp-1 text-[14px] leading-5", unread ? "text-ink-2" : "text-ink-3")}>
+          {thread.channel === "email" && <><Mail aria-label="Email" role="img" size={13} className="mr-1 inline-block align-[-2px]" />{thread.subject && <><bdi className="font-medium text-ink-2">{thread.subject}</bdi> · </>}</>}
           {thread.hasAudio && !preview
             ? <span className="inline-flex items-center gap-1"><Mic aria-hidden size={14} />Voice note</span>
             : <>{thread.previewOutbound && <span className="text-ink-3">You: </span>}<bdi>{preview}</bdi></>}
@@ -237,7 +245,7 @@ function RowState({ thread, window }: { thread: DemoThread; window: ReturnType<t
   } else if (window.closed && thread.unreplied) {
     items.push(<span key="closed" className="text-ink-3">Reply in Instagram</span>);
   }
-  return <span className="flex min-w-0 items-center gap-2 truncate">{items.map((item, index) => <span key={index} className="flex shrink-0 items-center gap-2">{index > 0 && <span aria-hidden className="text-ink-3">·</span>}{item}</span>)}</span>;
+  return <>{items.map((item, index) => <span key={index} className="flex items-center whitespace-nowrap">{item}</span>)}</>;
 }
 
 /* ── Money on the table ────────────────────────────────────────────────── */
@@ -261,7 +269,7 @@ export function ValueStrip({ threads, onPick, className, height = 12 }: {
           <span
             key={thread.id}
             onClick={onPick ? () => onPick(thread) : undefined}
-            title={`@${thread.handle}`}
+            title={atHandle(thread.handle)}
             className={cx("h-full min-w-[6px] rounded-full transition-[filter,transform] duration-150", onPick && "cursor-pointer hover:brightness-110 active:scale-y-90")}
             style={{ flexGrow: share, flexBasis: 0, background: labelMeta(thread.topLabel).fill }}
           />
@@ -394,10 +402,13 @@ export function ListenButton({ text, igAccountId, label = "Listen", className }:
  * accessible name is "Approve & send" and `onConfirm` runs exactly once.
  * The composer swaps it for the sending banner, so a fresh one mounts for the next send.
  */
-export function SlideToSend({ onConfirm, disabled = false, label = "Slide to send", recipient, className }: {
+export function SlideToSend({ onConfirm, disabled = false, label = "Slide to send", action = "Approve & send", recipient, className }: {
   onConfirm: () => void;
   disabled?: boolean;
   label?: string;
+  /** The button's words and accessible name ("Approve & send email" for email). */
+  action?: string;
+  /** Who it goes to, as people read it: "@handle" or an email address. */
   recipient: string;
   className?: string;
 }) {
@@ -437,7 +448,7 @@ export function SlideToSend({ onConfirm, disabled = false, label = "Slide to sen
         iconRight={ArrowRight}
         className={className}
       >
-        Approve &amp; send
+        {action}
       </Button>
     );
   }
@@ -456,7 +467,7 @@ export function SlideToSend({ onConfirm, disabled = false, label = "Slide to sen
   const progress = Math.min(1, x / max);
   return (
     <>
-    <span id={hintId} className="sr-only">Sends your reply to @{recipient}. You get a few seconds to undo.</span>
+    <span id={hintId} className="sr-only">Sends your reply to {recipient}. You get a few seconds to undo.</span>
     <div
       ref={track}
       className={cx("dd-slide-track", disabled && "opacity-45", className)}
@@ -468,12 +479,18 @@ export function SlideToSend({ onConfirm, disabled = false, label = "Slide to sen
       onPointerCancel={() => { drag.current = null; setX(0); }}
     >
       <span className="dd-slide-fill" style={{ width: x + 60, opacity: progress, transition: drag.current ? "none" : reduced ? "none" : "width 260ms var(--ease-dd-out), opacity 260ms" }} />
-      <span aria-hidden className={cx("pointer-events-none absolute inset-0 flex items-center justify-center pl-12 text-[16px] font-semibold tracking-[-0.01em]", done ? "text-on-brand" : "dd-slide-hint")} style={{ opacity: done ? 1 : 1 - progress * 1.4 }}>
-        {done ? "Sending…" : `${label} to @${recipient}`}
+      {/* Two lines so a long handle truncates instead of running off the track. */}
+      <span aria-hidden className="pointer-events-none absolute inset-0 flex min-w-0 flex-col items-center justify-center pl-16 pr-6 text-center" style={{ opacity: done ? 1 : 1 - progress * 1.4 }}>
+        {done ? <span className="text-[16px] font-semibold tracking-[-0.01em] text-on-brand">Sending…</span> : (
+          <>
+            <span className="dd-slide-hint text-[16px] font-semibold leading-5 tracking-[-0.01em]">{label}</span>
+            <span className="max-w-full truncate text-[12px] font-medium leading-4 text-on-primary/60">to {recipient}</span>
+          </>
+        )}
       </span>
       <button
         type="button"
-        aria-label="Approve & send"
+        aria-label={action}
         aria-describedby={hintId}
         disabled={disabled}
         className="dd-slide-knob"
@@ -497,13 +514,22 @@ export function SlideToSend({ onConfirm, disabled = false, label = "Slide to sen
 
 /* ── Small pieces ──────────────────────────────────────────────────────── */
 
+/** The scam warning on a message that asks the creator to pay, log in or open a locked file (checkScam in @dealdock/core). */
+export function ScamWarning({ reason, className }: { reason: string; className?: string }) {
+  return (
+    <p role="note" className={cx("flex items-start gap-2.5 rounded-2xl bg-danger-tint px-3.5 py-2.5 text-[14px] leading-5 text-ink", className)}>
+      <ShieldAlert aria-hidden size={18} className="mt-px shrink-0 text-danger" />
+      <span><b className="font-semibold text-danger">Possible scam</b> — {reason} Don&apos;t pay, share logins or open files they send.</span>
+    </p>
+  );
+}
+
 /** "In your voice" provenance line for drafts — a waveform glyph, never a sparkle. */
 export function VoiceProvenance({ matchPct, className }: { matchPct?: number | null; className?: string }) {
   return (
-    <span className={cx("inline-flex items-center gap-1.5 text-caption font-semibold text-recovered", className)}>
+    <span title={typeof matchPct === "number" ? `${Math.round(matchPct)}% of this creator's sent drafts needed light edits or none. This is not a score for the current reply.` : undefined} className={cx("inline-flex items-center gap-1.5 text-caption font-semibold text-recovered", className)}>
       <AudioLines aria-hidden size={14} />
       In your voice
-      {typeof matchPct === "number" && <span className="font-medium text-ink-3">· {Math.round(matchPct)}% match</span>}
     </span>
   );
 }
@@ -513,7 +539,7 @@ export function Stat({ label, children, className }: { label: ReactNode; childre
   return (
     <div className={cx("min-w-0", className)}>
       <div className="truncate text-[20px] font-semibold leading-7 tracking-[-0.02em] text-ink tabular-nums">{children}</div>
-      <div className="truncate text-caption text-ink-3">{label}</div>
+      <div className="text-caption leading-4 text-ink-3">{label}</div>
     </div>
   );
 }

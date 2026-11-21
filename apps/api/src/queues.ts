@@ -23,3 +23,13 @@ export function getIngestionQueue(): Queue {
   }
   return ingestionQueue;
 }
+
+let notificationsQueue: Queue | null = null;
+
+/** Web push goes out from the worker; the API only queues it. */
+export function getNotificationsQueue(): Queue {
+  if (!notificationsQueue) {
+    notificationsQueue = new Queue(QUEUES.notifications, { connection: redisConnection() });
+  }
+  return notificationsQueue;
+}

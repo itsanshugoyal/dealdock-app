@@ -24,9 +24,11 @@ export async function resolveVoiceAccount(orgId: OrgId, igAccountId?: string | n
     if (!account) throw new DomainError("ig_account_not_in_org", 404);
     return account;
   }
+  // The default is a creator's own account, never a channel inbox (Gmail) it owns.
+  const creators = { orgId, ownerAccountId: null, NOT: { platform: "email" as const } };
   return (
-    (await prisma.igAccount.findFirst({ where: { orgId, status: "active" }, orderBy, select })) ??
-    (await prisma.igAccount.findFirst({ where: { orgId }, orderBy, select }))
+    (await prisma.igAccount.findFirst({ where: { ...creators, status: "active" }, orderBy, select })) ??
+    (await prisma.igAccount.findFirst({ where: creators, orderBy, select }))
   );
 }
 
@@ -262,9 +264,10 @@ export async function setSampleExcluded(orgId: OrgId, seatId: string, igAccountI
     if (!message) throw new DomainError("sample_not_found", 404);
     const profile = await lockConsentedVoiceProfile(tx, orgId, igAccountId);
     const current = new Set(profile.excludedMessageIds);
+    const changed = current.has(messageId) !== excluded;
     if (excluded) current.add(messageId);
     else current.delete(messageId);
-    await tx.voiceProfile.update({ where: { id: profile.id }, data: { excludedMessageIds: [...current] } });
+    if (changed) await tx.voiceProfile.update({ where: { id: profile.id }, data: { excludedMessageIds: [...current], version: { increment: 1 } } });
     await writeAudit(tx, {
       orgId, seatId, action: excluded ? "voice.sample_excluded" : "voice.sample_included", entityType: "message", entityId: messageId,
     });
@@ -441,11 +444,11 @@ export async function refreshVoiceProfile<Plan extends VoiceRefreshPlanShape>(
   }
   const extracted = await steps.extract(plan);
   const styleCard = steps.compose(extracted.styleCard, plan, now);
-  await saveStyleCard(orgId, igAccountId, styleCard, plan.sampleIds, state.version);
+  const saved = await saveStyleCard(orgId, igAccountId, styleCard, plan.sampleIds, state.version);
   // applyVoiceLearning re-checks the pause under the profile lock, so a pause
   // that lands mid-refresh also leaves the rules alone.
   const seeded = state.learningPaused
     ? 0
-    : (await applyVoiceLearning(orgId, igAccountId, { plan: (rules) => steps.seed(rules, plan, now) }, now)).changed;
+    : (await applyVoiceLearning(orgId, igAccountId, { expectedVersion: saved.version, plan: (rules) => steps.seed(rules, plan, now) }, now)).changed;
   return { status: "refreshed", sampleCount, styleCard, modelVersion: extracted.modelVersion, seeded };
 }

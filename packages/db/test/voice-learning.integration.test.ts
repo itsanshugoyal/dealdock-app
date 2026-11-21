@@ -10,6 +10,13 @@ if (shouldRun && !process.env.TEST_DATABASE_URL) {
 describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice learning persistence", () => {
   let db: typeof import("../src/index");
   let prisma: typeof import("../src/client").prisma;
+
+  async function createFixtureDraft(orgId: Parameters<typeof db.createDraft>[0], input: Omit<Parameters<typeof db.createDraft>[1], "expectedVoiceVersion">) {
+    const thread = await prisma.thread.findUniqueOrThrow({ where: { id: input.threadId }, select: { igAccountId: true } });
+    const { version } = await db.getVoiceProfileState(orgId, thread.igAccountId);
+    return db.createDraft(orgId, { ...input, expectedVoiceVersion: version });
+  }
+
   const organizations: string[] = [];
   type Org = Awaited<ReturnType<typeof import("../src/index").createOrganizationWithCreator>>;
   type Planner = import("../src/index").VoiceRulePlanner;
@@ -45,7 +52,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice learn
   async function sentDraft(created: Org, suffix: string, body: string, finalText: string) {
     const orgId = db.asOrgId(created.org.id);
     const row = await inbound(created, suffix);
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body, modelVersion: "test", promptVersion: "test", label: "brand_deal" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body, modelVersion: "test", promptVersion: "test", label: "brand_deal" });
     const claim = await db.createSendIntentClaim(orgId, { draftId: draft.id, seatId: created.seat.id, finalText, idempotencyKey: `voice-${suffix}-${created.org.id}` });
     const platformMessageId = `voice-out-${suffix}-${created.org.id}`;
     const sentAt = new Date();
@@ -96,7 +103,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice learn
     const row = await inbound(created, "echo-first");
     const body = "Thanks for reaching out! Could you share the brief?";
     const finalText = "Heyy! Could you share the brief?";
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body, modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body, modelVersion: "test", promptVersion: "test" });
     const claim = await db.createSendIntentClaim(orgId, { draftId: draft.id, seatId: created.seat.id, finalText, idempotencyKey: `echo-first-${created.org.id}` });
     const platformMessageId = `echo-first-out-${created.org.id}`;
     // The webhook echo lands before the send response, so ingestion sees no receipt yet.
@@ -129,7 +136,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice learn
     const orgId = db.asOrgId(created.org.id);
     const row = await inbound(created, "voice-note");
     const finalText = "Heyy, sending the media kit now";
-    const draft = await db.createDraft(orgId, { threadId: row.threadId, body: "Sending the media kit now", modelVersion: "test", promptVersion: "test" });
+    const draft = await createFixtureDraft(orgId, { threadId: row.threadId, body: "Sending the media kit now", modelVersion: "test", promptVersion: "test" });
     const asset = await prisma.audioAsset.create({
       data: { orgId: created.org.id, kind: "tts", mimeType: "audio/mpeg", bytes: Buffer.from("ID3"), sizeBytes: 3, durationMs: 1_200, text: finalText, sha256: "test" },
     });
@@ -203,6 +210,73 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice learn
     expect(await prisma.voiceRule.count({ where: { orgId: created.org.id } })).toBe(0);
   });
 
+  it("fences stale learning on exclusion and consent changes, scoped to the account", async () => {
+    const created = await organization("exclude-fence");
+    const orgId = db.asOrgId(created.org.id);
+    const account = created.igAccount.id;
+    const sent = await sentDraft(created, "exclude-fence", "Thanks for reaching out! Share the brief?", "Heyy! Share the brief?");
+    const message = await prisma.message.findUniqueOrThrow({ where: { igMessageId: sent.platformMessageId } });
+    const before = await db.getVoiceProfileState(orgId, account);
+    const other = await organization("exclude-other");
+    const otherOrg = db.asOrgId(other.org.id);
+    const otherBefore = await db.getVoiceProfileState(otherOrg, other.igAccount.id);
+    await db.setSampleExcluded(orgId, created.seat.id, account, message.id, true);
+    const after = await db.getVoiceProfileState(orgId, account);
+    expect(after.version).toBe(before.version + 1);
+    expect((await db.getVoiceProfileState(otherOrg, other.igAccount.id)).version).toBe(otherBefore.version);
+    expect((await db.applyVoiceLearning(orgId, account, { draftId: sent.draft.id, plan: greetingPlan })).outcome).toBe("excluded");
+    expect((await db.applyVoiceLearning(orgId, account, { expectedVersion: before.version, plan: greetingPlan })).outcome).toBe("voice_changed");
+    expect(await db.listVoiceRules(orgId, account)).toEqual([]);
+    await db.setSampleExcluded(orgId, created.seat.id, account, message.id, true);
+    expect((await db.getVoiceProfileState(orgId, account)).version).toBe(after.version);
+    await db.setVoiceConsent(orgId, account, created.seat.id, false);
+    await db.setVoiceConsent(orgId, account, created.seat.id, true);
+    expect((await db.applyVoiceLearning(orgId, account, { expectedVersion: after.version, plan: greetingPlan })).outcome).toBe("voice_changed");
+    expect(await db.listVoiceRules(orgId, account)).toEqual([]);
+  });
+
+  it.each(["exclusion", "revoke and regrant"])("rejects draft generation captured before %s without discarding a fresh draft", async (change) => {
+    const created = await organization(`draft-fence-${change}`);
+    const orgId = db.asOrgId(created.org.id);
+    const account = created.igAccount.id;
+    const sent = await sentDraft(created, `draft-fence-${change}`, "Thanks for reaching out!", "Heyy! Thanks for reaching out!");
+    const sample = await prisma.message.findUniqueOrThrow({ where: { igMessageId: sent.platformMessageId } });
+    const row = await inbound(created, `draft-target-${change}`);
+    const snapshot = await db.getCreatorContext(orgId, account);
+    expect(snapshot.voiceEnabled).toBe(true);
+    if (change === "exclusion") await db.setSampleExcluded(orgId, created.seat.id, account, sample.id, true);
+    else {
+      await db.setVoiceConsent(orgId, account, created.seat.id, false);
+      await db.setVoiceConsent(orgId, account, created.seat.id, true);
+    }
+    const freshContext = await db.getCreatorContext(orgId, account);
+    expect(freshContext.voiceVersion).not.toBe(snapshot.voiceVersion);
+    const input = { threadId: row.threadId, body: "Fresh draft", modelVersion: "test", promptVersion: "test" };
+    const fresh = await db.createDraft(orgId, { ...input, expectedVoiceVersion: freshContext.voiceVersion });
+    await expect(db.createDraft(orgId, { ...input, body: "Stale draft", expectedVoiceVersion: snapshot.voiceVersion })).rejects.toThrow("voice_context_changed");
+    await expect(db.createDraft(orgId, { ...input, expectedVoiceVersion: undefined as never })).rejects.toThrow("voice_context_changed");
+    expect(await prisma.draft.findUniqueOrThrow({ where: { id: fresh.id } })).toMatchObject({ status: "ready", body: "Fresh draft" });
+    expect(await prisma.draft.count({ where: { orgId, threadId: row.threadId } })).toBe(1);
+    const foreign = await organization(`draft-fence-foreign-${change}`);
+    await expect(db.createDraft(db.asOrgId(foreign.org.id), { ...input, expectedVoiceVersion: freshContext.voiceVersion })).rejects.toThrow("thread not in org");
+  });
+
+  it("omits an excluded previously learned sent message from future draft lessons", async () => {
+    const created = await organization("excluded-lesson");
+    const orgId = db.asOrgId(created.org.id);
+    const account = created.igAccount.id;
+    const sent = await sentDraft(created, "excluded-lesson", "Thanks for reaching out! Share the brief?", "Heyy! Share the brief?");
+    await db.applyVoiceLearning(orgId, account, { draftId: sent.draft.id, editSignals: { kind: "style" }, plan: greetingPlan });
+    expect((await db.getDraftVoiceContext(orgId, account)).lessonPool.map((lesson) => lesson.draftId)).toContain(sent.draft.id);
+    const message = await prisma.message.findUniqueOrThrow({ where: { igMessageId: sent.platformMessageId } });
+    await db.setSampleExcluded(orgId, created.seat.id, account, message.id, true);
+    const context = await db.getDraftVoiceContext(orgId, account);
+    expect(context.lessonPool.map((lesson) => lesson.draftId)).not.toContain(sent.draft.id);
+    expect(context.exemplarPool.map((sample) => sample.messageId)).not.toContain(message.id);
+    // Excluding samples does not retroactively erase previously learned rules.
+    expect(await db.listVoiceRules(orgId, account)).toHaveLength(1);
+  });
+
   it("revoking consent wipes that account's rules, feedback, exclusions, hand edits and draft provenance — not a sibling's", async () => {
     const created = await organization("revoke");
     const orgId = db.asOrgId(created.org.id);
@@ -217,7 +291,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice learn
     }
     const sent = await sentDraft(created, "revoke-sent", "Thanks! Brief?", "Heyy! Brief?");
     const row = await inbound(created, "revoke-live");
-    const live = await db.createDraft(orgId, {
+    const live = await createFixtureDraft(orgId, {
       threadId: row.threadId, body: "Draft body", modelVersion: "test", promptVersion: "test",
       generationContext: { rules: [], exemplars: [{ messageId: "m", text: "their words", inboundText: null }], offers: [], lessons: [], missingFacts: [] },
     });

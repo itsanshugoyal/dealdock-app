@@ -1,11 +1,13 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { MessageSource } from "@dealdock/core";
 import {
+  postShortcode,
   RateBudgetExceededError,
   SendWindowClosedError,
   TokenExpiredError,
   type ConnectedAccount,
   type InboundEvent,
+  type MediaInsights,
   type MessagingProvider,
   type RemoteMessage,
   type RemoteThread,
@@ -40,6 +42,14 @@ const BUDGET_CAPACITY = 180; // conservative vs Meta's ~200/hr
 const BUDGET_WINDOW_MS = 60 * 60_000;
 
 const PROFILE_FIELDS = "name,username,profile_pic,follower_count,is_verified_user,is_user_follow_business";
+/**
+ * Post results asked of /{media-id}/insights: lifetime totals, all valid for
+ * reels and feed posts (2026); `saved` reads into `saves`. Never the
+ * deprecated impressions, plays or video_views.
+ */
+export const INSIGHT_METRICS = ["views", "reach", "likes", "comments", "shares", "saved"] as const;
+/** Pages of 50 recent media searched for a post before giving up: the posts a deal covers are recent. */
+const MEDIA_PAGES = 4;
 
 interface GraphError {
   message?: string;
@@ -306,6 +316,46 @@ export class InstagramGraphAdapter implements MessagingProvider {
     };
   }
 
+  /**
+   * A post's results: find it by shortcode among the account's recent media
+   * (a carousel is its parent: children have no insights), then read its
+   * lifetime insights. Null when the link isn't an Instagram post or isn't
+   * among the last few pages. Insights can lag Instagram by up to 48 hours.
+   */
+  async getMediaInsights(account: ConnectedAccount, postUrl: string): Promise<MediaInsights | null> {
+    const shortcode = postShortcode(postUrl);
+    if (!shortcode) return null;
+    type Media = { id?: string; permalink?: string; timestamp?: string; media_type?: string };
+    type Page = { data?: Media[]; paging?: { next?: string } };
+    let page = await this.graphGet<Page>(account, "/me/media", { fields: "id,permalink,timestamp,media_type", limit: "50" });
+    let match: Media | undefined;
+    for (let read = 1; ; read += 1) {
+      match = (page.data ?? []).find((media) => media.permalink && postShortcode(media.permalink) === shortcode);
+      if (match || read >= MEDIA_PAGES || !page.paging?.next) break;
+      page = await this.graphNext<Page>(account, page.paging.next);
+    }
+    // Media ids are numeric: never build a Graph path from anything else.
+    if (!match?.id || !/^\d{1,32}$/.test(match.id)) return null;
+    const insights = await this.graphGet<{ data?: Array<{ name?: string; values?: Array<{ value?: unknown }>; total_value?: { value?: unknown } }> }>(
+      account,
+      `/${match.id}/insights`,
+      { metric: INSIGHT_METRICS.join(",") }
+    );
+    const read = (name: (typeof INSIGHT_METRICS)[number]) => {
+      const metric = insights.data?.find((item) => item.name === name);
+      const value = metric?.total_value?.value ?? metric?.values?.[0]?.value;
+      return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+    };
+    const postedAt = match.timestamp ? new Date(match.timestamp) : null;
+    return {
+      mediaId: match.id,
+      permalink: match.permalink!,
+      mediaType: stringOrNull(match.media_type),
+      postedAt: postedAt && Number.isFinite(postedAt.getTime()) ? postedAt.toISOString() : null,
+      metrics: { views: read("views"), reach: read("reach"), likes: read("likes"), comments: read("comments"), shares: read("shares"), saves: read("saved") },
+    };
+  }
+
   // ── Send (called ONLY by the API-layer send gate) ────────────────────────
 
   async sendMessage(
@@ -328,28 +378,63 @@ export class InstagramGraphAdapter implements MessagingProvider {
     return this.postMessage(account, target, { attachment: { type: "audio", payload: { url: audioUrl } } }, opts);
   }
 
+  /** A file message (an invoice PDF): Meta fetches `fileUrl`. Whether Instagram Login apps may send PDFs is unverified on a live account. */
+  async sendFile(
+    account: ConnectedAccount,
+    target: SendTarget,
+    fileUrl: string,
+    opts: SendOptions = {}
+  ): Promise<SendReceipt> {
+    if (!fileUrl.startsWith("https://")) throw new Error("Instagram files must be fetched over https");
+    return this.postMessage(account, target, { attachment: { type: "file", payload: { url: fileUrl } } }, opts);
+  }
+
+  /**
+   * Private reply to a comment (comment leads): addressed by the comment id,
+   * from the account's own messages edge. Meta takes one per comment, within
+   * 7 days of it, and replies { recipient_id, message_id }.
+   */
+  async sendPrivateReply(account: ConnectedAccount, commentId: string, text: string): Promise<SendReceipt> {
+    // The account id names the Graph path: never build one from anything else.
+    if (!/^\d{1,32}$/.test(account.platformUserId)) throw new Error("Instagram account id is invalid");
+    if (!commentId || commentId.length > 128) throw new Error("Instagram comment id is invalid");
+    return this.post(account, `/${account.platformUserId}/messages`, { recipient: { comment_id: commentId }, message: { text } });
+  }
+
+  /** A post's permalink, for a comment lead's link to the post (one Graph read); null when Meta gives none. */
+  async getMediaPermalink(account: ConnectedAccount, mediaId: string): Promise<string | null> {
+    if (!/^\d{1,40}$/.test(mediaId)) return null;
+    const body = await this.graphGet<{ permalink?: unknown }>(account, `/${mediaId}`, { fields: "permalink" });
+    return typeof body.permalink === "string" && /^https:\/\/(www\.)?instagram\.com\//.test(body.permalink) ? body.permalink : null;
+  }
+
   private async postMessage(
     account: ConnectedAccount,
     target: SendTarget,
     message: Record<string, unknown>,
     opts: SendOptions
   ): Promise<SendReceipt> {
+    return this.post(account, "/me/messages", {
+      recipient: { id: target.recipientPlatformId },
+      message,
+      // Meta documents MESSAGE_TAG + HUMAN_AGENT on the Page (Facebook Login)
+      // messages route ("only HUMAN_AGENT is available for Instagram
+      // Messaging"); the Instagram Login docs show no syntax. Verify on a live
+      // Instagram Login account before setting META_HUMAN_AGENT_ENABLED.
+      ...(opts.humanAgentTag ? { messaging_type: "MESSAGE_TAG", tag: "HUMAN_AGENT" } : {}),
+    }, target);
+  }
+
+  /** One POST to a messages edge; Meta answers with the new message's id. */
+  private async post(account: ConnectedAccount, path: string, payload: Record<string, unknown>, target?: SendTarget): Promise<SendReceipt> {
     await this.consumeBudget(account.accountId);
-    const res = await this.fetchImpl(`${GRAPH_BASE}/me/messages`, {
+    const res = await this.fetchImpl(`${GRAPH_BASE}${path}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${account.accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        recipient: { id: target.recipientPlatformId },
-        message,
-        // Meta documents MESSAGE_TAG + HUMAN_AGENT on the Page (Facebook Login)
-        // messages route ("only HUMAN_AGENT is available for Instagram
-        // Messaging"); the Instagram Login docs show no syntax. Verify on a live
-        // Instagram Login account before setting META_HUMAN_AGENT_ENABLED.
-        ...(opts.humanAgentTag ? { messaging_type: "MESSAGE_TAG", tag: "HUMAN_AGENT" } : {}),
-      }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15_000),
     });
 
@@ -374,6 +459,17 @@ export class InstagramGraphAdapter implements MessagingProvider {
       { platform: "instagram", user_id: participantId }
     );
     return conv.data?.[0]?.id;
+  }
+
+  /** The next page of a Graph listing: graph.instagram.com only, within the account's budget. */
+  private async graphNext<T>(account: ConnectedAccount, next: string): Promise<T> {
+    const url = new URL(next);
+    if (url.protocol !== "https:" || url.hostname !== "graph.instagram.com") throw new Error("Graph pagination returned an untrusted URL");
+    await this.consumeBudget(account.accountId);
+    const res = await this.fetchImpl(url.toString(), { headers: { Authorization: `Bearer ${account.accessToken}` }, signal: AbortSignal.timeout(15_000) });
+    const body = (await res.json()) as T & { error?: GraphError };
+    if (!res.ok || body.error) throw this.mapError(body.error, account);
+    return body;
   }
 
   private async graphGet<T>(

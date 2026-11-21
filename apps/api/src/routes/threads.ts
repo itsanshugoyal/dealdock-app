@@ -5,6 +5,7 @@ import {
   dismissNudge,
   getConnectedAccount,
   getDraftForSend,
+  findSendIntentForRetry,
   markTokenExpired,
   createSendIntentClaim,
   markSendIntentRemoteAccepted,
@@ -18,23 +19,26 @@ import {
   TokenExpiredError,
   type MessagingProvider,
 } from "@dealdock/messaging";
-import { DEAL_TYPES, computeReplyWindow, needsHumanAgentTag, type SendResponse } from "@dealdock/core";
+import { DEAL_TYPES, computeReplyWindow, needsHumanAgentTag, withSpokenDisclosure, type SendResponse } from "@dealdock/core";
 import { summarizeLearnedSignals } from "@dealdock/ai";
-import { attachVoiceNoteToMessage, getReadySpeakingVoice, recordVoiceNoteDisclosure } from "@dealdock/db";
+import { attachVoiceNoteToMessage, getInvoice, getReadySpeakingVoice } from "@dealdock/db";
 import { createSpeechProvider } from "@dealdock/speech";
-import type { SendReceipt } from "@dealdock/messaging";
 import { requireAuth } from "../auth";
 import { requirePermission, requireWritable } from "../guards";
 import { getGraphAdapter } from "../graph";
+import { getGmailProvider, gmailAccount } from "../gmail";
 import { isHumanAgentEnabled } from "../feature-flags";
 import { synthesizeVoiceClip } from "../voice-clip";
+import { invoiceFileName, renderInvoicePdf } from "../invoice-pdf";
+import { publicInvoiceUrl, signInvoicePath } from "../media-sign";
 
-/** One adapter instance per provider — the graph adapter keeps rate buckets. */
+/** One adapter instance per provider — the graph and Gmail providers keep rate buckets. */
 const mockAdapter = new MockInstagramAdapter();
 
 function providerFor(kind: string): MessagingProvider {
   if (kind === "mock") return mockAdapter;
   if (kind === "instagram_graph") return getGraphAdapter();
+  if (kind === "gmail") return getGmailProvider();
   throw new Error(`unknown provider ${kind}`);
 }
 
@@ -42,10 +46,11 @@ function providerFor(kind: string): MessagingProvider {
 const MAX_VOICE_TEXT = 1000;
 /** Meta fetches the clip when the note is sent; an hour leaves room for its retries. */
 const VOICE_URL_TTL_SECONDS = 60 * 60;
+/** Meta fetches an invoice PDF when it is sent; an hour leaves room for its retries. */
+const INVOICE_URL_TTL_SECONDS = 60 * 60;
 /** Generated clips are short-lived copies; the thread keeps the approved words. */
 const VOICE_CLIP_TTL_MS = 24 * 60 * 60_000;
 /** Labels synthetic audio after each voice note unless the creator turned it off (research 03 §5). */
-const VOICE_NOTE_DISCLOSURE = "🎙️ AI voice note in my voice";
 
 const SendBody = z.object({
   draftId: z.string(),
@@ -82,7 +87,8 @@ export async function threadRoutes(app: FastifyInstance) {
    *  1. an authenticated seat (requireAuth),
    *  2. a live draft whose final text the human echoes back,
    *  3. an active account within the platform reply window (24h, or 7 days
-   *     with Meta's HUMAN_AGENT tag when this app holds that permission).
+   *     with Meta's HUMAN_AGENT tag when this app holds that permission);
+   *     email has no window and sends a threaded Gmail reply, text only.
    * Edit distance is computed server-side; the audit row is written in the
    * same transaction as the outbound message. Never auto-send — structurally.
    * asVoice sends the same approved text as a voice note in the creator's
@@ -114,12 +120,36 @@ export async function threadRoutes(app: FastifyInstance) {
       });
     }
 
+    const approval = { threadId: id, draftId, seatId: auth.seatId, finalText, idempotencyKey, asVoice };
+    const retryResponse = (intent: { status: string; intentId: string }) => ({
+      status: intent.status,
+      intentId: intent.intentId,
+      hint: "This approved send is already being processed or was previously recorded.",
+    });
+    const previous = await findSendIntentForRetry(auth.orgId, approval);
+    if (previous) return reply.code(202).send(retryResponse(previous));
+
     const draft = await getDraftForSend(auth.orgId, draftId);
     if (!draft || draft.thread.id !== id) {
+      // A concurrent request may have claimed the draft since the first lookup.
+      const concurrent = await findSendIntentForRetry(auth.orgId, approval);
+      if (concurrent) return reply.code(202).send(retryResponse(concurrent));
       return reply.code(404).send({ error: "draft_not_found_or_already_sent" });
     }
     if (draft.thread.igAccount.status !== "active") {
       return reply.code(409).send({ error: "account_not_active" });
+    }
+    const email = draft.thread.igAccount.provider === "gmail";
+    if (email && asVoice) {
+      return reply.code(409).send({ error: "voice_not_supported", hint: "Email replies are sent as text." });
+    }
+    // An invoice cover note sends the invoice PDF too, so the invoice must still be owed.
+    const invoice = draft.invoiceId ? await getInvoice(auth.orgId, draft.invoiceId) : null;
+    if (draft.invoiceId && invoice?.status !== "issued") {
+      return reply.code(409).send({ error: "invoice_not_open", hint: "This invoice was paid or withdrawn. Draft a new note to send." });
+    }
+    if (invoice && asVoice) {
+      return reply.code(409).send({ error: "voice_not_supported", hint: "An invoice goes as text with its PDF." });
     }
 
     // Reply-window pre-check for the real platform — reject before spending a
@@ -147,8 +177,13 @@ export async function threadRoutes(app: FastifyInstance) {
       }
     }
 
-    const connected = await getConnectedAccount(auth.orgId, draft.thread.igAccount.id);
-    if (!connected) return reply.code(409).send({ error: "account_not_active" });
+    // Gmail's hour-long access token is refreshed here, before anything is claimed.
+    const connected = email
+      ? await gmailAccount(auth.orgId, draft.thread.igAccount.id)
+      : await getConnectedAccount(auth.orgId, draft.thread.igAccount.id);
+    if (!connected) {
+      return reply.code(409).send({ error: "account_not_active", ...(email ? { hint: "Reconnect this Gmail inbox in Settings → Email." } : {}) });
+    }
 
     // Synthesize before the durable approval: a vendor failure leaves nothing
     // claimed, so the human simply tries again. The link is signed here too,
@@ -157,7 +192,8 @@ export async function threadRoutes(app: FastifyInstance) {
     if (speech && voice) {
       const clip = await synthesizeVoiceClip(auth.orgId, speech, {
         externalVoiceId: voice.externalVoiceId,
-        text: finalText,
+        // The disclosure is part of the audio itself, so it can't be lost on its own.
+        text: voice.disclosureEnabled ? withSpokenDisclosure(finalText) : finalText,
         keepMs: VOICE_CLIP_TTL_MS,
         linkTtlSeconds: VOICE_URL_TTL_SECONDS,
         // Mock accounts never fetch the clip, so they need no public origin.
@@ -173,6 +209,16 @@ export async function threadRoutes(app: FastifyInstance) {
       audio = { assetId: clip.assetId, url: clip.url };
     }
 
+    // The PDF is rendered (email) or its link signed (DM) before the approval
+    // is claimed, so a failure here (e.g. Meta needs PUBLIC_API_URL on https
+    // to fetch it, 409 public_media_url_unconfigured) leaves nothing claimed.
+    const attachment = invoice && email
+      ? { filename: invoiceFileName(invoice), contentType: "application/pdf", bytes: await renderInvoicePdf(invoice) }
+      : null;
+    const fileUrl = invoice && !email
+      ? (graph ? publicInvoiceUrl : signInvoicePath)(invoice.id, invoiceFileName(invoice), INVOICE_URL_TTL_SECONDS)
+      : null;
+
     // A durable intent is created *before* Graph I/O. If the TCP response is
     // lost, its result remains unknown and this endpoint will never resend on
     // the caller's behalf. The reconciliation workflow can later match a
@@ -186,11 +232,7 @@ export async function threadRoutes(app: FastifyInstance) {
       audioAssetId: audio?.assetId ?? null,
     });
     if (!intent.claimed) {
-      return reply.code(202).send({
-        status: intent.status,
-        intentId: intent.intentId,
-        hint: "This approved send is already being processed or was previously recorded.",
-      });
+      return reply.code(202).send(retryResponse(intent));
     }
 
     const provider = providerFor(draft.thread.igAccount.provider);
@@ -208,22 +250,22 @@ export async function threadRoutes(app: FastifyInstance) {
     try {
       receipt = audio
         ? await provider.sendAudio(account, target, audio.url, { humanAgentTag })
-        : await provider.sendMessage(account, target, finalText, { humanAgentTag });
+        : await provider.sendMessage(account, target, finalText, { humanAgentTag, ...(attachment ? { attachments: [attachment] } : {}) });
     } catch (err) {
       // A provider error can be a response lost after a successful send. Do
       // not release/retry it automatically: retain an ambiguous durable intent.
-      await markSendIntentUnknown(auth.orgId, intent.intentId, (err as Error).message);
-      if ((err as Error).name === "SendWindowClosedError") {
+      await markSendIntentUnknown(auth.orgId, intent.intentId, err instanceof Error ? err.message : "unknown_provider_error");
+      if (err instanceof Error && err.name === "SendWindowClosedError") {
         return reply.code(202).send({ error: "send_result_ambiguous", status: "unknown", intentId: intent.intentId });
       }
       if (err instanceof TokenExpiredError) {
         await markTokenExpired(auth.orgId, draft.thread.igAccount.id);
-        return reply.code(202).send({ error: "send_result_ambiguous", status: "unknown", intentId: intent.intentId, hint: "Instagram needs reconnecting; DealDock will not retry this send automatically." });
+        return reply.code(202).send({ error: "send_result_ambiguous", status: "unknown", intentId: intent.intentId, hint: `${email ? "Gmail" : "Instagram"} needs reconnecting; DealDock will not retry this send automatically.` });
       }
       if (err instanceof RateBudgetExceededError) {
         return reply.code(202).send({ error: "send_result_ambiguous", status: "unknown", intentId: intent.intentId });
       }
-      throw err;
+      return reply.code(202).send({ error: "send_result_ambiguous", status: "unknown", intentId: intent.intentId });
     }
 
     await markSendIntentRemoteAccepted(auth.orgId, intent.intentId, receipt.platformMessageId, receipt.sentAt);
@@ -233,31 +275,24 @@ export async function threadRoutes(app: FastifyInstance) {
       sentAt: receipt.sentAt,
     });
 
-    let hint: string | undefined;
     if (audio) {
       // The note is sent; showing it as audio in the thread is best effort.
       await attachVoiceNoteToMessage(auth.orgId, result.messageId, audio.assetId)
         .catch(() => req.log.warn("sent voice note not linked to its message"));
-      if (voice?.disclosureEnabled) {
-        // Same human approval: label the synthetic audio. Best effort — a
-        // failure is reported, and the voice note itself is never resent.
-        let disclosed: SendReceipt | undefined;
-        try {
-          disclosed = await provider.sendMessage(account, target, VOICE_NOTE_DISCLOSURE, { humanAgentTag });
-        } catch (err) {
-          if (err instanceof TokenExpiredError) await markTokenExpired(auth.orgId, draft.thread.igAccount.id);
-          hint = "Voice note sent. The AI-voice label couldn't be sent — add it in Instagram if you want it.";
-        }
-        if (disclosed) {
-          await recordVoiceNoteDisclosure(auth.orgId, {
-            threadId: draft.thread.id,
-            platformMessageId: disclosed.platformMessageId,
-            text: VOICE_NOTE_DISCLOSURE,
-            sentAt: disclosed.sentAt,
-          }).catch(() => req.log.warn("voice note disclosure sent but not recorded"));
-        }
-      }
     }
+
+    // Instagram takes the PDF as its own message after the text. If it refuses, the text still stands.
+    const attachmentSent = attachment
+      ? true
+      : fileUrl
+        ? await provider.sendFile(account, target, fileUrl, { humanAgentTag }).then(
+            () => true,
+            (err: unknown) => {
+              req.log.warn({ code: err instanceof Error ? err.name : "unknown" }, "invoice pdf not attached");
+              return false;
+            },
+          )
+        : undefined;
 
     return {
       status: "accepted",
@@ -267,7 +302,10 @@ export async function threadRoutes(app: FastifyInstance) {
       // Measured once, when the send was persisted.
       editDistance: result.editDistance,
       learned: summarizeLearnedSignals(draft.body, finalText),
-      ...(hint ? { hint } : {}),
+      ...(attachmentSent === undefined ? {} : { attachmentSent }),
+      ...(attachmentSent === false && invoice
+        ? { hint: `Instagram didn't take the PDF. Download ${invoiceFileName(invoice)} and share it in the chat.` }
+        : {}),
     } satisfies SendResponse;
   });
 

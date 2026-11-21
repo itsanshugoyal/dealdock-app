@@ -14,7 +14,7 @@ import {
 } from "@dealdock/db";
 import { listSpeakingVoicesToRevoke } from "@dealdock/db";
 import { requireAuth } from "../auth";
-import { isHumanAgentEnabled, isSpeechConfigured } from "../feature-flags";
+import { isHumanAgentEnabled, isInsightsEnabled, isSpeechConfigured } from "../feature-flags";
 import { revokeSpeakingVoiceFully } from "./speaking";
 import { requirePermission, requireWritable } from "../guards";
 
@@ -39,7 +39,8 @@ export async function settingsRoutes(app: FastifyInstance) {
     // One organization read (region, goal, tier, deletion, accounts with their voice consent).
     const settings = await getOrgSettings(req.auth!.orgId);
     if (!settings) return reply.code(404).send({ error: "org_not_found" });
-    return { ...settings, humanAgentEnabled: isHumanAgentEnabled(), speechAvailable: isSpeechConfigured() };
+    // insightsAvailable: "Fetch from Instagram" shows only when META_INSIGHTS_ENABLED is on.
+    return { ...settings, humanAgentEnabled: isHumanAgentEnabled(), speechAvailable: isSpeechConfigured(), insightsAvailable: isInsightsEnabled() };
   });
 
   /** Monthly confirmed-revenue goal for the Revenue goal ring; null clears it. */

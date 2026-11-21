@@ -30,7 +30,8 @@ export async function scheduleLeakScan(orgId: string, igAccountId: string) {
 export async function scanAccountHistory(orgIdValue: string, accountId: string, since: Date, source: "live" | "leak_scan") {
   const orgId = asOrgId(orgIdValue);
   const connected = await getConnectedAccount(orgId, accountId);
-  if (!connected || connected.status !== "active") return 0;
+  // Instagram accounts only: a Gmail token must never be sent to graph.instagram.com (email syncs in email-sync.ts).
+  if (!connected || connected.status !== "active" || (connected.provider !== "instagram_graph" && connected.provider !== "mock")) return 0;
   if (connected.provider === "instagram_graph" && connected.tokenRefreshedAt && Date.now() - connected.tokenRefreshedAt.getTime() >= 7 * 864e5) {
     const refreshed = await refreshLongLivedToken({}, connected.accessToken);
     await saveRefreshedGraphToken(orgId, accountId, refreshed.accessToken, refreshed.expiresIn);

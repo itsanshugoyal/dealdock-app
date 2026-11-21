@@ -397,6 +397,16 @@ describe("send payloads", () => {
     expect(bodies).toHaveLength(1);
   });
 
+  it("sends an invoice PDF as a file attachment fetched from an https url", async () => {
+    const { adapter, bodies } = capture();
+    const url = "https://api.example.test/media/invoices/inv1/INV-2026-27-001.pdf?exp=1&sig=s";
+    const receipt = await adapter.sendFile(ACCOUNT, target, url);
+    expect(receipt.platformMessageId).toBe("mid.sent");
+    expect(bodies[0]).toEqual({ recipient: { id: "igsid-user-9" }, message: { attachment: { type: "file", payload: { url } } } });
+    await expect(adapter.sendFile(ACCOUNT, target, "http://insecure.test/x.pdf")).rejects.toThrow("https");
+    expect(bodies).toHaveLength(1);
+  });
+
   it("maps audio send rejections like text sends", async () => {
     const adapter = new InstagramGraphAdapter({
       appSecret: APP_SECRET,

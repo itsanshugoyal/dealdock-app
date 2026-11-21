@@ -19,7 +19,8 @@
     "design:preview": "node design/serve.mjs",
     "design:package": "node design/studio/package.mjs",
     "test:safety": "node --test scripts/runtime-boundaries.test.mjs scripts/production-auth.test.mjs",
-    "design:check": "node design/studio/verify.mjs"
+    "design:check": "node design/studio/verify.mjs",
+    "test:ui": "node scripts/run-ui-gate.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",

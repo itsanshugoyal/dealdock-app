@@ -3,6 +3,8 @@
 > Readiness update (30 October 2026): see [private pilot readiness](docs/private-pilot-readiness.md). Next.js is now 16. Graph I/O, token decryption, history polling and token refresh live only in `apps/api`; workers receive normalized jobs and reject API-only secrets. A durable PostgreSQL outbox recovers queue handoffs. Sending uses durable human-approval intents; ambiguous delivery never triggers an automatic resend. Organization currency is immutable, and monthly ledger grouping uses its time zone. Older diagrams below describe the original milestone plan where they differ from this update.
 
 **Status:** Living document · v1.1 · Pilot scope, global-ready
+
+**1 November implementation update:** the v3 product includes creator-scoped revenue/CSV, complete cursor scans, written-style learning and a gated speech integration. See the [current audit](docs/ux-and-product-audit-2026-11-01.md) and [voice/audio implementation](docs/voice-and-audio-audit.md). Voice exclusions and consent changes fence learning and draft persistence by profile version. Remaining account-specific business-context, consent-ownership and vendor-deletion limitations are explicit launch gates, not completed isolation claims.
 **Source of truth for requirements:** `DealDock_Product_PRD.md` (PRD v1.1 — in this repo)
 **Companions:** `DESIGN.md` (design system + screens) · `PLAN.md` (milestones + risks)
 
@@ -233,7 +235,7 @@ Classification + value estimation are **one structured-output call** (Haiku, tem
 |---|---|---|
 | Classify + value estimate | Claude Haiku | High volume (50–500 DMs/day/creator), structured output, strong multilingual; cost scales linearly with inbox size |
 | Draft replies | Claude Sonnet | Quality bar is "sent without edits" (≥70% target §7.4); runs on far fewer messages |
-| Voice style-card extraction | Explicitly configured Claude model | Manual consented refresh; weekly automatic refresh is deferred |
+| Voice style-card extraction | Explicitly configured Claude model | Consented refresh after history, manual refresh and weekly eligible-account refresh; per-send edit evidence and bounded batch distillation |
 
 **Prompt caching:** the per-creator system block (business context + voice style card + label definitions) is cache-marked; only the message content varies per call. This is the main cost lever at 500 DMs/day.
 
@@ -248,6 +250,8 @@ Review Queue confirm/override actions write `reviewOutcome` to the Classificatio
 - Onboarding: with explicit consent, sample recent **sent** DMs → Sonnet extracts a **style card** (greeting, sentence length, formality, signoff, characteristic phrases, emoji habits, code-switching ratio) → stored as JSONB, human-readable, editable by us during pilot support.
 - Drafting prompts receive the style card + 5–8 exemplar sent messages (few-shot), not a fine-tuned model. Cold start (PRD risk §10.1.3) is mitigated by the onboarding questionnaire seeding the style card on day one.
 - `editDistance` recorded at send → weekly voice-fidelity metric per creator → style card refresh when fidelity trends down.
+
+Current learning implementation: successful human-approved sends enqueue durable learning references. Deterministic edit evidence updates account rules; configured Claude distillation considers batches of edited sends, and a weekly scheduler refreshes eligible consented, unpaused profiles. Excluded samples are removed from future corpus, edit-batch and lesson inputs. Model-derived learning and draft creation compare the captured profile version under the existing consent lock, so exclusion or revoke/regrant cannot persist stale results. Exclusion does not erase influence already distilled into old rules, and native outbound authorship is not individually verified.
 
 ### 5.5 Quality harness
 

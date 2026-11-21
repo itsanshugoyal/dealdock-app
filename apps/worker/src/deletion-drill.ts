@@ -12,8 +12,8 @@ import {
   upsertInboundMessage,
 } from "@dealdock/db";
 
-/** Redesign tables that must be populated before, and empty after, the delete. */
-const REDESIGN_TABLES = ["voiceRules", "draftFeedback", "offers", "speakingVoices", "audioAssets"] as const;
+/** Redesign and money tables that must be populated before, and empty after, the delete. */
+const REDESIGN_TABLES = ["voiceRules", "draftFeedback", "offers", "speakingVoices", "audioAssets", "deals", "invoices", "billingProfiles", "commentLeads", "leadSources", "leadEvents"] as const;
 
 /**
  * M5 deletion drill (PLAN.md exit criterion): export → delete → PROVE GONE.
@@ -53,8 +53,10 @@ async function main() {
   }
 
   // One row in every redesign table (voice rules, feedback, offers, speaking
-  // voice, audio clips) so the drill proves they are covered too.
-  await seedDrillCoverageRows(org.id, igAccount.id, seat.id);
+  // voice, audio clips) and money table (billing profile, a deal agreed
+  // outside DealDock with its invoice and payment, an email inbox) so the
+  // drill proves they are covered too.
+  const { inboxToken } = await seedDrillCoverageRows(org.id, igAccount.id, seat.id);
 
   // Expired audio clips are purged by the retention tick, not only on delete.
   const { purgedAudioAssets } = await purgeExpiredAudioAssets();
@@ -78,7 +80,7 @@ async function main() {
     process.exit(1);
   }
   const exported = archive as Record<string, unknown[] | undefined>;
-  for (const key of ["offers", "voiceRules", "speakingVoices", "audioAssets"]) {
+  for (const key of ["offers", "voiceRules", "speakingVoices", "audioAssets", "deals", "invoices", "billingProfiles", "emailInboxes", "commentLeads", "leadSources", "leadEvents"]) {
     if (exported[key]?.length !== 1) {
       console.error(`DRILL FAILED: expected 1 ${key} row in export, got ${exported[key]?.length ?? 0}`);
       process.exit(1);
@@ -86,6 +88,10 @@ async function main() {
   }
   if ((exported.audioAssets as Array<Record<string, unknown>>).some((clip) => "bytes" in clip)) {
     console.error("DRILL FAILED: audio bytes leaked into the JSON export");
+    process.exit(1);
+  }
+  if (JSON.stringify(archive).includes(inboxToken)) {
+    console.error("DRILL FAILED: an email inbox token leaked into the JSON export");
     process.exit(1);
   }
 

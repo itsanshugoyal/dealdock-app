@@ -9,17 +9,18 @@ process.env.NODE_ENV='test';process.env.DEALDOCK_AI_MODE='heuristic';process.env
 delete process.env.CLERK_SECRET_KEY;delete process.env.ANTHROPIC_API_KEY;
 const db=require('@dealdock/db');
 const {buildServer}=require('../apps/api/dist/index.js');
+const {MockInstagramAdapter}=require('@dealdock/messaging');
 const {startIngestionWorker}=require('../apps/worker/dist/consumers/ingestion.js');
 const {startClassificationWorker}=require('../apps/worker/dist/consumers/classification.js');
 const {startDraftingWorker}=require('../apps/worker/dist/consumers/drafting.js');
 const {startOutboxDispatcher}=require('../apps/worker/dist/consumers/outbox.js');
 const {Queue}=require('bullmq');const {QUEUES,parseRedisConnection}=require('@dealdock/core');
-const workers=[],orgs=[];let app;
+const workers=[],orgs=[],fixtureOrgIds=new Set();let app;
 const wait=async(read,predicate,description)=>{const end=Date.now()+25000;while(Date.now()<end){const value=await read();if(predicate(value))return value;await new Promise(r=>setTimeout(r,150));}throw new Error(`Timed out: ${description}`)};
 async function main(){
  const nonce=crypto.randomUUID();
- const first=await db.createOrganizationWithCreator({name:`Pilot integration ${nonce}`,creator:{clerkUserId:'user_demo_local',email:`${nonce}@example.test`},igAccount:{igUserId:`ig-${nonce}`,handle:'test.creator',accountType:'creator'}});orgs.push(first.org.id);
- const second=await db.createOrganizationWithCreator({name:`Foreign integration ${nonce}`,creator:{clerkUserId:`user-${nonce}`,email:`foreign-${nonce}@example.test`},igAccount:{igUserId:`foreign-ig-${nonce}`,handle:'foreign.creator',accountType:'creator'}});orgs.push(second.org.id);
+ const first=await db.createOrganizationWithCreator({name:`Pilot integration ${nonce}`,creator:{clerkUserId:'user_demo_local',email:`${nonce}@example.test`},igAccount:{igUserId:`ig-${nonce}`,handle:'test.creator',accountType:'creator'}});orgs.push(first.org.id);fixtureOrgIds.add(first.org.id);
+ const second=await db.createOrganizationWithCreator({name:`Foreign integration ${nonce}`,creator:{clerkUserId:`user-${nonce}`,email:`foreign-${nonce}@example.test`},igAccount:{igUserId:`foreign-ig-${nonce}`,handle:'foreign.creator',accountType:'creator'}});orgs.push(second.org.id);fixtureOrgIds.add(second.org.id);
  const orgId=db.asOrgId(first.org.id);process.env.DEALDOCK_DEV_ORG_ID=orgId;
  await db.setVoiceConsent(orgId,first.igAccount.id,first.seat.id,true);
  await db.upsertBusinessContext(orgId,{businessSummary:'Movement coach with a coaching programme',typicalCoachingMinor:{min:1000000,max:2500000}});
@@ -63,7 +64,35 @@ async function main(){
  const [sendA,sendB]=await Promise.all([request('POST',sendUrl,sendPayload),request('POST',sendUrl,sendPayload)]);
  assert.ok([sendA,sendB].some(r=>r.statusCode===200&&r.json().sent),`${sendA.statusCode} ${sendA.body} / ${sendB.statusCode} ${sendB.body}`);
  const sent=await db.getThreadDetail(orgId,threadId);assert.equal(sent.messages.filter(m=>m.direction==='outbound').length,1,'Concurrent human approvals cause one send');
- await request('POST',sendUrl,sendPayload);assert.equal((await db.getThreadDetail(orgId,threadId)).messages.filter(m=>m.direction==='outbound').length,1,'A retried send never duplicates');
+ const persistedRetry=await request('POST',sendUrl,sendPayload);
+ assert.equal(persistedRetry.statusCode,202,persistedRetry.body);assert.equal(persistedRetry.json().status,'persisted');
+ assert.equal((await request('POST',sendUrl,{...sendPayload,finalText:'Different text'})).statusCode,409,'A retry cannot change the approved text');
+ assert.equal((await request('POST',sendUrl,{...sendPayload,asVoice:true})).statusCode,409,'A retry cannot change the delivery mode');
+ assert.equal((await request('POST',sendUrl,{...sendPayload,idempotencyKey:`different-${nonce}`})).statusCode,409,'A retry cannot change the key');
+ assert.equal((await request('POST',`/threads/another-thread/send`,sendPayload)).statusCode,409,'A retry is bound to the original thread');
+ assert.equal((await db.getThreadDetail(orgId,threadId)).messages.filter(m=>m.direction==='outbound').length,1,'A retried send never duplicates');
+ // An in-flight and an ambiguous approval return their existing status, never send.
+ const pendingRow=await db.upsertInboundMessage(orgId,{igAccountId:first.igAccount.id,igThreadId:`pending-${nonce}`,participantHandle:'pending',participantIgId:'pending',igMessageId:`pending-${nonce}`,direction:'inbound',text:'Question',sentAt:new Date()});
+ const pendingDraft=await db.createDraft(orgId,{threadId:pendingRow.threadId,body:'Reply',modelVersion:'test',promptVersion:'test',expectedVoiceVersion:(await db.getVoiceProfileState(orgId,first.igAccount.id)).version});
+ const pendingPayload={draftId:pendingDraft.id,finalText:'Approved reply',idempotencyKey:`pending-${nonce}`};
+ const pending=await db.createSendIntentClaim(orgId,{...pendingPayload,seatId:first.seat.id});
+ const pendingUrl=`/threads/${pendingRow.threadId}/send`;
+ const pendingRetry=await request('POST',pendingUrl,pendingPayload);assert.equal(pendingRetry.statusCode,202,pendingRetry.body);assert.equal(pendingRetry.json().status,'pending');
+ await db.markSendIntentUnknown(orgId,pending.intentId,'test ambiguous result');
+ const unknownRetry=await request('POST',pendingUrl,pendingPayload);assert.equal(unknownRetry.statusCode,202,unknownRetry.body);assert.equal(unknownRetry.json().status,'unknown');
+ assert.equal((await db.getThreadDetail(orgId,pendingRow.threadId)).messages.filter(m=>m.direction==='outbound').length,0,'Retries never send an in-flight or ambiguous approval');
+ // Even an unusual non-Error provider failure is ambiguous and must not be retried.
+ const failedRow=await db.upsertInboundMessage(orgId,{igAccountId:first.igAccount.id,igThreadId:`failure-${nonce}`,participantHandle:'failure',participantIgId:'failure',igMessageId:`failure-${nonce}`,direction:'inbound',text:'Question',sentAt:new Date()});
+ const failedDraft=await db.createDraft(orgId,{threadId:failedRow.threadId,body:'Reply',modelVersion:'test',promptVersion:'test',expectedVoiceVersion:(await db.getVoiceProfileState(orgId,first.igAccount.id)).version});
+ const failedPayload={draftId:failedDraft.id,finalText:'Approved',idempotencyKey:`failure-${nonce}`};
+ const originalSend=MockInstagramAdapter.prototype.sendMessage;let calls=0;
+ MockInstagramAdapter.prototype.sendMessage=async()=>{calls++;throw null};
+ try {
+   const failure=await request('POST',`/threads/${failedRow.threadId}/send`,failedPayload);
+   assert.equal(failure.statusCode,202,failure.body);assert.equal(failure.json().status,'unknown');assert.ok(failure.json().intentId);
+   const retry=await request('POST',`/threads/${failedRow.threadId}/send`,failedPayload);
+   assert.equal(retry.statusCode,202,retry.body);assert.equal(retry.json().status,'unknown');assert.equal(calls,1,'Ambiguous result never triggers another provider send');
+ } finally { MockInstagramAdapter.prototype.sendMessage=originalSend; }
  const closePayload={amountMinor:123456,dealType:'coaching',note:'Confirmed, "not estimated"'};
  const closes=await Promise.all([request('POST',`/threads/${threadId}/close`,closePayload,{'idempotency-key':`close-${nonce}`}),request('POST',`/threads/${threadId}/close`,closePayload,{'idempotency-key':`close-${nonce}`})]);
  for(const response of closes)assert.equal(response.statusCode,200,response.body);
@@ -82,7 +111,18 @@ async function main(){
 let exitCode=0;
 try{await main()}catch(error){console.error(error);exitCode=1}finally{
  await Promise.allSettled(workers.map(worker=>worker.close()));
- for(const name of Object.values(QUEUES)){const queue=new Queue(name,{connection:parseRedisConnection(process.env.REDIS_URL)});for(const job of await queue.getJobs(['completed','failed','waiting','delayed']))if(orgs.includes(job.data?.orgId))await job.remove().catch(()=>{});await queue.close();}
+ let remainingFixtureJobs=0;
+ for(const name of Object.values(QUEUES)){
+   const queue=new Queue(name,{connection:parseRedisConnection(process.env.REDIS_URL)});
+   try {
+     const states=['completed','failed','waiting','delayed','active','waiting-children'];
+     for(const job of await queue.getJobs(states))if(fixtureOrgIds.has(job.data?.orgId))await job.remove();
+     remainingFixtureJobs+=(await queue.getJobs(states)).filter(job=>fixtureOrgIds.has(job.data?.orgId)).length;
+   } catch(error){console.error('Integration queue cleanup failed:',error);exitCode=1;remainingFixtureJobs++;}
+   finally {await queue.close();}
+ }
+ console.log(`Pilot fixture queue jobs remaining: ${remainingFixtureJobs}`);
+ if(remainingFixtureJobs)exitCode=1;
  for(const id of orgs)await db.hardDeleteOrg(id).catch(error=>{console.error('Integration cleanup failed',error.message);exitCode=1});
  await app?.close();
 }
