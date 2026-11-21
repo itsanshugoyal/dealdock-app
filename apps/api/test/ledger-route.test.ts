@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
 const { getLedger } = vi.hoisted(() => ({ getLedger: vi.fn() }));
 vi.mock("@dealdock/db", () => ({ getLedger, getDashboard: vi.fn(), updateLedgerEntry: vi.fn(), deleteLedgerEntry: vi.fn() }));
-vi.mock("../../api/src/auth", () => ({ requireAuth: async (req: { auth: unknown }) => { req.auth = { orgId: "org-a", seatId: "seat-a", role: "creator" }; } }));
-import { ledgerRoutes } from "../../api/src/routes/ledger";
+vi.mock("../src/auth", () => ({ requireAuth: async (req: { auth: unknown }) => { req.auth = { orgId: "org-a", seatId: "seat-a", role: "creator" }; } }));
+import { ledgerRoutes } from "../src/routes/ledger";
 
 // Loading the API route module compiles the whole Fastify app on a cold run, which can pass 5s under load.
 describe("ledger route scope", { timeout: 30_000 }, () => {

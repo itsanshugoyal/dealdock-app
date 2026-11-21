@@ -66,7 +66,7 @@ describe("Unified Login OAuth helpers", () => {
     const url = new URL(buildUnifiedAuthorizeUrl({ ...cfg, configId: "cfg_9" }, "signed-state"));
     expect(url.origin + url.pathname).toBe("https://www.facebook.com/dialog/oauth");
     expect(Object.fromEntries(url.searchParams)).toEqual({
-      client_id: "meta_app", config_id: "cfg_9", redirect_uri: cfg.redirectUri, response_type: "code", state: "signed-state", prompt: "login",
+      client_id: "meta_app", config_id: "cfg_9", redirect_uri: cfg.redirectUri, response_type: "code", override_default_response_type: "true", state: "signed-state", prompt: "login",
     });
   });
 

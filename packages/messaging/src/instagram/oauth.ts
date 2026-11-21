@@ -150,6 +150,8 @@ export function buildUnifiedAuthorizeUrl(cfg: Pick<IgOauthConfig, "appId" | "red
     config_id: cfg.configId,
     redirect_uri: cfg.redirectUri,
     response_type: "code",
+    // As in the login URL Meta generates for the configuration.
+    override_default_response_type: "true",
     state,
     // Shows the Instagram login option even when the person is signed in to Facebook.
     prompt: "login",
