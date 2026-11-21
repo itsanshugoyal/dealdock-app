@@ -1,11 +1,13 @@
 import { Prisma } from "@prisma/client";
-import { DomainError, findDealSignal, type DraftContextSummary } from "@dealdock/core";
+import { checkScam, DomainError, findDealSignal, type DraftContextSummary, type MessageAttachment } from "@dealdock/core";
 import { prisma } from "../client";
 import type { OrgId } from "../org-id";
 import { writeAudit } from "../audit-log";
 import { minorUnitsToNumber } from "../money";
 import { isNudgeDue } from "../schedule-rules";
 import { messageBody, participantOf, pickTopClassification, senderLedger } from "../sender-context";
+import { channelOf, creatorAccountId, listDeals } from "./deals";
+import { listLeadPayments } from "./lead-sources";
 
 function money(value: bigint | null): number | null {
   return value === null ? null : minorUnitsToNumber(value);
@@ -40,7 +42,9 @@ export async function getThreadDetail(orgId: OrgId, threadId: string, now = new 
       topLabel: true,
       estValueMaxMinor: true,
       estCurrencyCode: true,
-      igAccount: { select: { org: { select: { nudgeDelayDays: true, currencyCode: true } } } },
+      subject: true,
+      leadStage: true,
+      igAccount: { select: { platform: true, ownerAccountId: true, org: { select: { nudgeDelayDays: true, currencyCode: true } } } },
       messages: {
         // The id tiebreak matches the inbox row's message window (deal signal).
         orderBy: [{ sentAt: "asc" }, { id: "asc" }],
@@ -90,6 +94,7 @@ export async function getThreadDetail(orgId: OrgId, threadId: string, now = new 
           alternatives: true,
           chosenAlternative: true,
           generationContext: true,
+          invoiceId: true,
         },
       },
       ledger: {
@@ -102,9 +107,15 @@ export async function getThreadDetail(orgId: OrgId, threadId: string, now = new 
   if (!thread) return null;
 
   const org = thread.igAccount.org;
-  const { totals } = await senderLedger(orgId, [thread]);
+  const [{ totals }, deals, attachments, leadPayments] = await Promise.all([
+    senderLedger(orgId, [thread]),
+    listDeals(orgId, { status: "all", threadId: thread.id }),
+    thread.igAccount.platform === "email" ? emailAttachments(orgId, thread.id) : Promise.resolve(new Map<string, MessageAttachment[]>()),
+    listLeadPayments(orgId, thread.id),
+  ]);
   const top = pickTopClassification(thread.messages.flatMap((m) => (m.classification ? [m.classification] : [])));
   const draft = thread.drafts[0];
+  const latestInbound = thread.messages.filter((m) => m.direction === "inbound").at(-1);
 
   return {
     id: thread.id,
@@ -120,7 +131,7 @@ export async function getThreadDetail(orgId: OrgId, threadId: string, now = new 
     rationale: top?.rationale ?? null,
     lastInboundAt: thread.lastInboundAt,
     source: thread.source,
-    igAccountId: thread.igAccountId,
+    igAccountId: creatorAccountId(thread),
     igThreadRemoteId: thread.igThreadId,
     messages: thread.messages.map((m) => ({
       id: m.id,
@@ -135,6 +146,7 @@ export async function getThreadDetail(orgId: OrgId, threadId: string, now = new 
       durationMs: m.durationMs,
       transcript: m.transcript,
       transcriptLanguage: m.transcriptLanguage,
+      attachments: attachments.get(m.id) ?? [],
       classification: m.classification
         ? {
             id: m.classification.id,
@@ -162,6 +174,7 @@ export async function getThreadDetail(orgId: OrgId, threadId: string, now = new 
             alternatives: draft.alternatives,
             chosenAlternative: draft.chosenAlternative,
             generationContext: draft.generationContext,
+            invoiceId: draft.invoiceId,
           }
         : null,
     closedDeals: thread.ledger.map((l) => ({
@@ -177,8 +190,15 @@ export async function getThreadDetail(orgId: OrgId, threadId: string, now = new 
       state: thread.state,
       label: thread.topLabel,
       currencyCode: org.currencyCode,
-      recordedAt: thread.ledger.map((l) => l.closedAt),
+      // A recorded deal, paid or not, answers the "looks like a deal" prompt just as a sale does.
+      recordedAt: [...thread.ledger.map((l) => l.closedAt), ...deals.map((deal) => new Date(deal.agreedAt))],
     }),
+    channel: channelOf(thread.igAccount.platform),
+    subject: thread.subject,
+    scamReason: checkScam(latestInbound ? messageBody(latestInbound) : null).reason,
+    deals,
+    leadStage: thread.leadStage,
+    leadPayments,
   };
 }
 
@@ -337,4 +357,26 @@ export async function setThreadState(
 
     return updated;
   });
+}
+
+/**
+ * Attachment metadata for one email thread's messages, read from the stored Gmail
+ * payload without loading the payload itself (the detail never selects raw).
+ */
+async function emailAttachments(orgId: OrgId, threadId: string): Promise<Map<string, MessageAttachment[]>> {
+  const rows = await prisma.$queryRaw<Array<{ id: string; attachments: unknown }>>`
+    SELECT "id", "raw"->'attachments' AS "attachments"
+    FROM "Message"
+    WHERE "orgId" = ${orgId} AND "threadId" = ${threadId} AND jsonb_typeof("raw"->'attachments') = 'array'`;
+  const byMessage = new Map<string, MessageAttachment[]>();
+  for (const row of rows) {
+    const list = (Array.isArray(row.attachments) ? row.attachments : []).flatMap((item): MessageAttachment[] => {
+      const a = item as Record<string, unknown>;
+      return typeof a.partId === "string" && a.partId && typeof a.filename === "string"
+        ? [{ partId: a.partId, filename: a.filename, mimeType: typeof a.mimeType === "string" ? a.mimeType : "application/octet-stream", size: typeof a.size === "number" ? a.size : 0 }]
+        : [];
+    });
+    if (list.length) byMessage.set(row.id, list);
+  }
+  return byMessage;
 }

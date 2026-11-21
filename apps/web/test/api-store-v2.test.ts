@@ -13,7 +13,7 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
     threadId: "t1", igAccountId: "ig-1", participantHandle: "brand", participant: person("brand"), state: "open",
     lastMessageAt: iso(60_000), lastInboundAt: iso(60_000), topLabel: "brand_deal", estValueMinMinor: 50_00, estValueMaxMinor: 100_00, estCurrencyCode: "INR",
     preview: "Rates?", previewOutbound: false, messageCount: 1, unreplied: true, waitingSince: null, nudgeDue: false, draftReady: false, hasAudio: false,
-    dealSignal: false, source: "dm", replyWindow: open(iso(60_000)), ...overrides,
+    dealSignal: false, source: "dm", replyWindow: open(iso(60_000)), channel: "instagram", subject: null, scamReason: null, ...overrides,
   };
 }
 function threadDetail(overrides: Partial<ThreadDetail> = {}): ThreadDetail {
@@ -22,13 +22,13 @@ function threadDetail(overrides: Partial<ThreadDetail> = {}): ThreadDetail {
     topLabel: "brand_deal", estValueMinMinor: 50_00, estValueMaxMinor: 100_00, estCurrencyCode: "INR", rationale: "Asks for rates.",
     lastInboundAt: iso(60_000), replyWindow: open(iso(60_000)), source: "dm",
     messages: [{ id: "m1", direction: "inbound", contentType: "text", text: "Rates?", sentAt: iso(60_000), origin: null, audio: null, classification: null }],
-    sendInFlight: false, currentDraft: null, closedDeals: [], dealSignal: null, canSendVoice: false, ...overrides,
+    sendInFlight: false, currentDraft: null, closedDeals: [], dealSignal: null, canSendVoice: false, channel: "instagram", subject: null, scamReason: null, deals: [], ...overrides,
   };
 }
 const reviewRow = (overrides: Partial<ReviewQueueRow> = {}): ReviewQueueRow => ({
   classificationId: "c1", threadId: "r1", igAccountId: "ig-1", handle: "maybe", text: "We should talk sometime.", sentAt: iso(120_000), bestGuess: "uncertain", confidence: 0.4, rationale: "Vague opener.", ...overrides,
 });
-const draft = { id: "d1", body: "Heyy!", kind: "reply" as const, status: "ready" as const, version: 1, label: "brand_deal" as const, instruction: null, chips: [], alternatives: [], chosenAlternative: null, context: null };
+const draft = { id: "d1", body: "Heyy!", kind: "reply" as const, status: "ready" as const, version: 1, label: "brand_deal" as const, instruction: null, chips: [], alternatives: [], chosenAlternative: null, context: null, purpose: null };
 
 const core = (path: string): unknown =>
   path === "/dashboard" ? { org: { currencyCode: "INR", locale: "en-IN", name: "Studio" }, mtdRecoveredMinor: 0, biggestMinor: 0, avgMinor: 0, mtdDealCount: 0 }
@@ -52,7 +52,8 @@ function serve(handlers: Record<string, (init: RequestInit) => unknown>) {
     const key = `${init.method ?? "GET"} ${pathname}${search}`;
     calls.push(key);
     const handler = handlers[key];
-    return Response.json(await (handler ? handler(init) : core(`${pathname}${search}`)));
+    const body = await (handler ? handler(init) : core(`${pathname}${search}`));
+    return body instanceof Response ? body : Response.json(body);
   }));
   return calls;
 }
@@ -89,6 +90,23 @@ describe("contract mapping", () => {
     expect(thread).toMatchObject({ id: "t1", igAccountId: "ig-1", detail: true, draft, draftReady: true, sendInFlight: true, canSendVoice: true, hasDealSignal: true, rationale: "Asks for rates." });
     expect(thread.messages[0]).toMatchObject({ id: "m1", contentType: "text", origin: null, audio: null, classification: { id: "c1", label: "brand_deal" } });
     expect(thread.closedDeals[0]).toMatchObject({ id: "l1", amountMinor: 500_00 });
+  });
+
+  it("carries email, subject, scam and attachment facts, and recognises scams and email in review items", () => {
+    const row = fromInboxRow(inboxRow({ channel: "email", participantHandle: "brand@lumen.example", subject: "Winter brief", scamReason: null }));
+    expect(row).toMatchObject({ channel: "email", handle: "brand@lumen.example", subject: "Winter brief", scamReason: null });
+    // An API from before email sends none of these fields.
+    const { channel: _c, subject: _s, scamReason: _r, ...older } = inboxRow();
+    expect(fromInboxRow(older as InboxRow)).toMatchObject({ channel: "instagram", subject: null, scamReason: null });
+    const scam = fromReviewRow(reviewRow({ handle: "offers@glow.example", text: "To activate your profile, pay a one-time registration fee of ₹999." }));
+    expect(scam).toMatchObject({ channel: "email", scamReason: "They're asking you to pay to take part." });
+    expect(fromReviewRow(reviewRow()).scamReason).toBeNull();
+    const detail = fromThreadDetail(threadDetail({
+      channel: "email", subject: "Winter brief", participantHandle: "brand@lumen.example",
+      messages: [{ id: "m1", direction: "inbound", contentType: "text", text: "Brief attached.", sentAt: iso(60_000), origin: null, audio: null, classification: null, attachments: [{ partId: "1", filename: "brief.pdf", mimeType: "application/pdf", size: 2048 }] }],
+    }));
+    expect(detail).toMatchObject({ channel: "email", subject: "Winter brief" });
+    expect(detail.messages[0]?.attachments).toEqual([{ partId: "1", filename: "brief.pdf", mimeType: "application/pdf", size: 2048 }]);
   });
 
   it("derives the row GET /inbox would list from a detail, by the inbox repository's rules", () => {
@@ -416,6 +434,64 @@ describe("writes refetch only what they change", () => {
     expect(snapshot.dashboard?.mtdRecoveredMinor).toBe(75_000_00);
     expect(snapshot.insights).toMatchObject({ status: "ready", stale: true });
     expect(snapshot.audit.status).toBe("idle");
+  });
+
+  it("a deal closes its conversation, its payment refetches Revenue, and its drafts carry their job", async () => {
+    online();
+    let stage: "agreed" | "paid" = "agreed";
+    let recorded = false;
+    const deal = () => ({
+      id: "deal-1", threadId: "t1", igAccountId: "ig-1", counterpartyHandle: "brand", counterpartyName: null, channel: "instagram", title: "1 reel", dealType: "brand",
+      amountMinor: 50_000_00, currencyCode: "INR", stage, terms: { deliverables: [], usage: null, usageEndsAt: null, exclusivity: null, exclusivityEndsAt: null, revisionsIncluded: null, advancePercent: null, paymentDays: null, notes: null, disclosure: [] },
+      agreedAt: iso(0), dueAt: null, invoicedAt: null, paidAt: stage === "paid" ? iso(0) : null, receivedMinor: stage === "paid" ? 50_000_00 : null, tdsMinor: null, createdAt: iso(0), updatedAt: iso(0),
+    });
+    const bodies: Record<string, unknown> = {};
+    const calls = serve({
+      "GET /inbox": () => ({ rows: recorded ? [] : [inboxRow()] }),
+      "GET /threads/t1": () => threadDetail({ state: recorded ? "closed" : "open", deals: recorded ? [deal()] as ThreadDetail["deals"] : [] }),
+      "POST /deals": (init) => { bodies.create = JSON.parse(String(init.body)); recorded = true; return deal(); },
+      "POST /deals/deal-1/paid": () => { stage = "paid"; return deal(); },
+      "POST /threads/t1/draft": (init) => { bodies.draft = JSON.parse(String(init.body)); return { ...draft, purpose: "payment_reminder" }; },
+    });
+    const store = await signedIn();
+    await store.loadThread("t1");
+    calls.length = 0;
+
+    await store.createDeal({ threadId: "t1", title: "1 reel", dealType: "brand", amountMinor: 50_000_00, idempotencyKey: "deal-key" });
+    expect(calls).toEqual(["POST /deals", "GET /threads/t1"]);
+    expect(bodies.create).toMatchObject({ threadId: "t1", idempotencyKey: "deal-key" });
+    expect(store.getSnapshot().threads.some((thread) => thread.id === "t1")).toBe(false);
+    expect(store.getSnapshot().details.t1?.data?.deals.map((item) => item.id)).toEqual(["deal-1"]);
+
+    calls.length = 0;
+    await store.generateDraft("t1", { purpose: "payment_reminder", dealId: "deal-1" });
+    expect(bodies.draft).toEqual({ purpose: "payment_reminder", dealId: "deal-1" });
+
+    calls.length = 0;
+    await store.markDealPaid("deal-1", { idempotencyKey: "paid-key" });
+    expect([...calls].sort()).toEqual(["GET /dashboard", "GET /ledger", "GET /threads/t1", "POST /deals/deal-1/paid"]);
+    expect(store.getSnapshot().details.t1?.data?.deals[0]?.stage).toBe("paid");
+  });
+
+  it("keeps Gmail inboxes out of the Instagram accounts, and connects, disconnects or hides email as the API says", async () => {
+    online();
+    let configured = true;
+    const calls = serve({
+      "GET /settings": () => ({ tier: "roster", accounts: [{ id: "ig-1", handle: "creator", status: "active", provider: "instagram_graph" }, { id: "gm-1", handle: "creator@studio.example", status: "active", provider: "gmail" }] }),
+      "GET /email/accounts": () => ({ accounts: [{ id: "gm-1", address: "creator@studio.example", status: "active", connectedAt: iso(86_400_000), lastSyncedAt: iso(60_000), ownerAccountId: "ig-1" }] }),
+      "GET /email/connect?igAccountId=ig-1": () => configured ? { authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=signed" } : new Response(JSON.stringify({ error: "email_not_configured" }), { status: 409 }),
+      "POST /email/accounts/gm-1/disconnect": () => ({ disconnected: true }),
+    });
+    const store = await signedIn();
+    expect((await store.loadSettings())?.accounts.map((account) => account.id)).toEqual(["ig-1"]);
+    expect(await store.loadEmailAccounts()).toEqual({ available: true, accounts: [expect.objectContaining({ id: "gm-1", address: "creator@studio.example", ownerAccountId: "ig-1" })] });
+    expect(await store.connectEmail("ig-1")).toEqual({ authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=signed" });
+    await store.disconnectEmail("gm-1");
+    expect(calls).toContain("POST /email/accounts/gm-1/disconnect");
+    expect(store.getSnapshot().emailAccounts.data?.accounts).toEqual([]);
+    configured = false;
+    await expect(store.connectEmail("ig-1")).rejects.toMatchObject({ status: 409, message: "Email isn't available for this workspace yet." });
+    expect(store.getSnapshot().emailAccounts.data?.available).toBe(false);
   });
 
   it("a review drops the decided item and refetches only the inbox lists", async () => {

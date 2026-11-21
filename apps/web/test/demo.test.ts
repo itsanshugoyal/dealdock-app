@@ -98,10 +98,12 @@ describe("demo store parity with the API store", () => {
     await demoStore.setIgnoreList(["masi.ji"]);
     await demoStore.updateOffer("offer-call", { availability: "Weekends only" });
     await demoStore.setSampleExcluded("sample-2", true);
-    await demoStore.setSpeakingDisclosure(false);
+    // An INR workspace can't switch the spoken AI disclosure off, as the API refuses it.
+    await expect(demoStore.setSpeakingDisclosure(false)).rejects.toMatchObject({ status: 409, code: "disclosure_required" });
+    await demoStore.setSpeakingDisclosure(true);
     const rows = (await demoStore.loadAudit(500)) ?? [];
     const actions = rows.map((row) => row.action);
-    expect(actions).toEqual(expect.arrayContaining(["settings.goal_changed", "settings.ignore_list_changed", "offer.updated", "voice.sample_excluded", "voice.disclosure_disabled", "nudge.dismissed", "ledger.created", "settings.region_changed"]));
+    expect(actions).toEqual(expect.arrayContaining(["settings.goal_changed", "settings.ignore_list_changed", "offer.updated", "voice.sample_excluded", "voice.disclosure_enabled", "nudge.dismissed", "ledger.created", "settings.region_changed"]));
     expect(actions.filter((action) => !isAuditAction(action))).toEqual([]);
   });
 

@@ -21,7 +21,7 @@ test.describe("live product critical path", () => {
     await expect(page.getByRole("button", { name: "Notify me" })).toHaveCount(0);
   });
 
-  test("human draft approval sends once and records a sale", async ({ page }, testInfo) => {
+  test("human draft approval sends once and records a paid deal", async ({ page }, testInfo) => {
     await page.goto("/inbox");
     await page.locator('a[href^="/thread/"]').filter({ hasText: `@e2e.${testInfo.project.name}` }).click();
     const generate = page.getByRole("button", { name: /Generate draft|Regenerate draft/ });
@@ -41,12 +41,18 @@ test.describe("live product critical path", () => {
     const beforeResponse = await page.request.get("/api/dev/dashboard");
     expect(beforeResponse.ok()).toBeTruthy();
     const before = await beforeResponse.json() as { mtdRecoveredMinor: number; mtdDealCount: number };
-    await page.getByRole("button", { name: "Record a sale" }).click();
-    await expect(page.getByRole("dialog", { name: "Record a sale" })).toBeVisible();
-    await page.getByLabel(/Amount/).fill("1200.50");
-    await page.getByLabel("Offer type").selectOption("brand");
-    await page.getByRole("button", { name: "Confirm sale" }).click();
-    await expect(page.getByText("Sale recorded:")).toBeVisible();
+    await page.getByRole("button", { name: "Record a deal", exact: true }).click();
+    const sheet = page.getByRole("dialog", { name: "Record a deal" });
+    await expect(sheet).toBeVisible();
+    await sheet.getByLabel("What", { exact: true }).fill("E2E brand collaboration");
+    await sheet.getByLabel(/^Amount/).fill("1200.50");
+    await sheet.getByLabel("Type", { exact: true }).selectOption("brand");
+    // Already paid: the deal's money goes into Revenue now, as the old "Record a sale" did.
+    const paid = sheet.getByRole("switch", { name: "Already paid?" });
+    if (await paid.getAttribute("aria-checked") !== "true") await paid.click();
+    await sheet.getByRole("button", { name: "Save deal" }).click();
+    await expect(sheet).toBeHidden();
+    await expect(page.getByText("Deal recorded.", { exact: false })).toBeVisible();
     const dashboardResponse = await page.request.get("/api/dev/dashboard");
     expect(dashboardResponse.ok()).toBeTruthy();
     const dashboard = await dashboardResponse.json() as { mtdRecoveredMinor: number; mtdDealCount: number };

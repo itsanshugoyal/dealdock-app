@@ -1,15 +1,19 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { IngestionJob } from "@dealdock/core";
+import { IngestionJob, matchCommentKeyword } from "@dealdock/core";
 import {
+  COMMENT_LEAD_OUTBOX_KIND,
   findAccountByPlatformUserId,
+  findCommentLeadAccount,
   markWebhookProcessed,
   recordWebhookIngress,
+  type IngestionOutboxInput,
 } from "@dealdock/db";
-import { ingestionContent, ingestionDedupeKey } from "@dealdock/messaging";
+import { ingestionContent, ingestionDedupeKey, parseCommentWebhook } from "@dealdock/messaging";
 import { captureRawBody, rawBodyOf } from "../raw-body";
 import { getGraphAdapter } from "../graph";
+import { isCommentLeadsEnabled } from "../feature-flags";
 
 const MockWebhookBody = z.object({
   events: z.array(IngestionJob).min(1).max(500),
@@ -113,16 +117,53 @@ export async function webhookRoutes(app: FastifyInstance) {
           raw: event.message.raw,
         });
       }
+      // Keyword comments (comment leads) take the same path: only comments that become leads are stored.
+      const comments = isCommentLeadsEnabled() ? await commentLeadEvents(req.body) : [];
       // DM content lives only in its tenant-scoped outbox/message row. A
       // provider batch can contain several tenants, so never retain it globally.
-      const persisted = await recordWebhookIngress("instagram", { eventCount: events.length }, normalized.map((event) => ({
-        orgId: event.orgId as never,
-        // Shared with the Graph backfill, so a message both deliver is ingested once.
-        dedupeKey: ingestionDedupeKey(event.igAccountId, event.igMessageId),
-        payload: event,
-      })));
+      const persisted = await recordWebhookIngress("instagram", { eventCount: events.length + comments.length }, [
+        ...normalized.map((event) => ({
+          orgId: event.orgId as never,
+          // Shared with the Graph backfill, so a message both deliver is ingested once.
+          dedupeKey: ingestionDedupeKey(event.igAccountId, event.igMessageId),
+          payload: event,
+        })),
+        ...comments,
+      ]);
       if (persisted.webhookEventId) await markWebhookProcessed(persisted.webhookEventId);
-      return reply.code(200).send({ received: events.length, accepted: persisted.outbox.length, deduplicated: persisted.deduplicated });
+      return reply.code(200).send({ received: events.length + comments.length, accepted: persisted.outbox.length, deduplicated: persisted.deduplicated });
     }
   );
+}
+
+/**
+ * The outbox events for keyword comments: a comment by someone other than
+ * the creator, on the creator's media, that uses one of their keywords. Any
+ * other comment is dropped here, before anything about it is stored.
+ */
+async function commentLeadEvents(body: unknown): Promise<IngestionOutboxInput[]> {
+  const leads: IngestionOutboxInput[] = [];
+  for (const comment of parseCommentWebhook(body)) {
+    const account = await findCommentLeadAccount(comment.accountPlatformUserId);
+    if (!account) continue; // not one of ours (or disconnected): ack and drop
+    if (comment.commenterId === account.igUserId || comment.commenterHandle.toLowerCase() === account.handle.toLowerCase()) continue;
+    const keyword = matchCommentKeyword(comment.text, account.commentKeywords);
+    if (!keyword) continue;
+    leads.push({
+      orgId: account.orgId as never,
+      kind: COMMENT_LEAD_OUTBOX_KIND,
+      dedupeKey: `instagram:comment:${account.id}:${comment.commentId}`,
+      payload: {
+        igAccountId: account.id,
+        commentId: comment.commentId,
+        mediaId: comment.mediaId,
+        commenterIgId: comment.commenterId,
+        commenterHandle: comment.commenterHandle,
+        text: comment.text,
+        keyword,
+        commentedAt: comment.commentedAt.toISOString(),
+      },
+    });
+  }
+  return leads;
 }

@@ -5,6 +5,7 @@ import { QUEUES } from "@dealdock/core";
 import {
   analyzeEdit,
   composeStyleCard,
+  configuredModelProvider,
   distillEditRules,
   draftScope,
   editEvidence,
@@ -87,13 +88,13 @@ export async function learnFromSend(data: z.infer<typeof VoiceLearnJob>, now = n
 }
 
 /**
- * Claude batch distillation once ≥ 5 edited sends piled up since the last run
- * (only with a configured model). Claude proposes; each proposal becomes
+ * Model-backed distillation once ≥ 5 edited sends piled up since the last run
+ * (only with a configured model). The model proposes; each proposal becomes
  * evidence on the drafts it cites and the deterministic rules decide whether
  * anything activates. A failed call is retried at the next send.
  */
 async function distillIfDue(orgId: OrgId, igAccountId: string, now: Date): Promise<number | false> {
-  if (!process.env.ANTHROPIC_API_KEY || !process.env.DRAFT_MODEL) return false;
+  if (!configuredModelProvider()) return false;
   const profile = await getVoiceProfileState(orgId, igAccountId);
   if (!profile.consent.granted || profile.learningPaused) return false;
   if ((await countEditedSendsSince(orgId, igAccountId, profile.lastDistilledAt)) < DISTILL_AFTER_EDITS) return false;

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getDraft: vi.fn(), profile: vi.fn(), count: vi.fn(), batch: vi.fn(), rules: vi.fn(),
-  corpus: vi.fn(), apply: vi.fn(), distill: vi.fn(),
+  corpus: vi.fn(), apply: vi.fn(), distill: vi.fn(), provider: vi.fn(),
 }));
 
 vi.mock("@dealdock/db", () => ({
@@ -19,6 +19,7 @@ vi.mock("@dealdock/ai", () => ({
   analyzeEdit: () => ({ kind: "edited", editRatio: 0.2, signals: [] }),
   editEvidence: () => [], draftScope: () => "all", planRuleUpdates: () => ({ upserts: [], deletes: [] }),
   distillEditRules: mocks.distill,
+  configuredModelProvider: mocks.provider,
 }));
 
 import { learnFromSend } from "../src/consumers/voice-learning";
@@ -47,6 +48,7 @@ describe("voice distillation privacy", () => {
     mocks.rules.mockResolvedValue([]);
     mocks.apply.mockResolvedValue({ outcome: "applied", changed: 0 });
     mocks.distill.mockResolvedValue([]);
+    mocks.provider.mockReturnValue("anthropic");
   });
 
   it("uses the latest account exclusions and never passes excluded or non-native samples to the model", async () => {
@@ -93,6 +95,14 @@ describe("voice distillation privacy", () => {
     await learnFromSend({ orgId: "org-a", draftId: "draft-b" });
     expect(mocks.distill.mock.calls.map((call) => call[2])).toEqual([["a allowed"], ["b allowed"]]);
     expect(mocks.corpus.mock.calls.map((call) => call.slice(0, 2))).toEqual([["org-a", "account-a"], ["org-a", "account-b"]]);
+  });
+
+  it("uses the same consent and exclusion checks when Groq is selected", async () => {
+    mocks.provider.mockReturnValue("groq");
+    mocks.profile.mockResolvedValue(state(["excluded"]));
+    mocks.corpus.mockResolvedValue([{ messageId: "excluded", origin: "native", text: "private" }, { messageId: "ok", origin: "native", text: "allowed" }]);
+    await learnFromSend({ orgId: "org-a", draftId: "draft-a" });
+    expect(mocks.distill).toHaveBeenCalledWith(expect.any(Array), [], ["allowed"]);
   });
 
   it.each([

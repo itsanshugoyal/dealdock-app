@@ -129,6 +129,15 @@ export const useOffers = () => useLazy("offers", () => appStore.loadOffers());
 export const useVoice = (igAccountId?: string) => useLazy("voice", () => appStore.loadVoice(igAccountId), [igAccountId]);
 export const useAudit = (limit = 100) => useLazy("audit", () => appStore.loadAudit(limit), [limit]);
 export const useLedger = (month?: string, igAccountId?: string) => useLazy("ledgerView", () => appStore.loadLedger(month, igAccountId), [month, igAccountId]);
+export const useEmailAccounts = (enabled = true) => useLazy("emailAccounts", () => appStore.loadEmailAccounts(), [], enabled);
+/** Every creator's comment keywords and leads; `available` false hides the feature. */
+export const useCommentLeads = () => useLazy("commentLeads", () => appStore.loadCommentLeads());
+export const useDeals = (status: "open" | "all" = "open", igAccountId?: string) => useLazy("deals", () => appStore.loadDeals({ status, igAccountId }), [status, igAccountId]);
+export const useRenewals = () => useLazy("renewals", () => appStore.loadRenewals());
+/** Needs manage_settings: pass `enabled` false for seats that can't read it (the API answers 403). */
+export const useLeadSources = (enabled = true) => useLazy("leadSources", () => appStore.loadLeadSources(), [], enabled);
+/** Needs manage_settings: pass `enabled` false for seats that can't read it (the API answers 403). */
+export const useBillingProfile = (igAccountId?: string, enabled = true) => useLazy("billingProfile", () => appStore.loadBillingProfile(igAccountId), [igAccountId], enabled);
 /** Closed threads load on demand (e.g. the Inbox "Closed" group's first expand). */
 export const useClosedThreads = (enabled = true) => useLazy("closed", () => appStore.loadClosed(), [], enabled);
 export const useSettings = () => useLazy("settings", () => appStore.loadSettings());

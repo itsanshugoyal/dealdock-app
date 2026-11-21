@@ -1,18 +1,40 @@
 import type {
   AudioAttachment,
   AuditRow,
+  BillingProfileDto,
+  BillingProfileInput,
+  BillingProfileResponse,
+  Channel,
   ChooseAlternativeRequest,
   ClassificationLabel,
   ClosedDealDto,
+  CommentLeadDto,
   ContentType,
   CreateSpeakingVoiceRequest,
   CurrencyCode,
+  DealCreateRequest,
+  DealDto,
+  DealPaidRequest,
   DealSignal,
+  DealSuggestion,
   DealType,
+  DealUpdateRequest,
   DraftDto,
   DraftRequest,
+  ExclusivityNote,
   Insights,
+  InvoiceCreateRequest,
+  InvoiceDto,
+  InvoicePaidRequest,
+  InvoicePaidResponse,
+  LeadEventDto,
+  LeadSourceCreated,
+  LeadSourceCreateRequest,
+  LeadSourcesResponse,
+  LeadStage,
+  RenewalDto,
   AudioPreviewResponse,
+  MessageAttachment,
   LeakScanSummary,
   MessageOrigin,
   MessageSource,
@@ -20,6 +42,7 @@ import type {
   OfferDto,
   OfferInput,
   ParticipantProfile,
+  PublicRateCard,
   ReplyWindow,
   SeatRole,
   SendResponse,
@@ -69,6 +92,8 @@ export interface DemoMessage {
   contentType: ContentType;
   origin: MessageOrigin | null;
   audio: AudioAttachment | null;
+  /** Files on an email (GET /email/messages/:id/attachments/:partId); absent for DMs. */
+  attachments?: MessageAttachment[];
   classification?: {
     id?: string;
     label: ClassificationLabel;
@@ -120,22 +145,43 @@ export interface DemoThread {
   replyWindow: ReplyWindow;
   sendInFlight: boolean;
   closedDeals: ClosedDealDto[];
+  /** Deals agreed in this conversation, newest first (thread detail only; rows carry none). */
+  deals: DealDto[];
   canSendVoice: boolean;
   /** True once GET /threads/:id filled messages, draft and deal facts. */
   detail: boolean;
+  /** Instagram DM or email; email has no reply window and its handle is an address. */
+  channel: Channel;
+  /** Email subject; null for DMs. */
+  subject: string | null;
+  /** Why the latest inbound message looks like a scam; null when it doesn't. */
+  scamReason: string | null;
+  /** Coach pipeline stage as stored (core pipelineStage reads null as "lead" on coaching and course conversations). */
+  leadStage?: LeadStage | null;
+  /** Payments a booking or payment tool reported here, not recorded or dismissed yet (thread detail only). */
+  leadPayments?: LeadEventDto[];
+  /** Brand conversations: exclusivities this creator agreed with other brands that are still running (thread detail only). */
+  exclusivities?: ExclusivityNote[];
   messages: DemoMessage[];
   draft: DraftDto | null;
 }
 
 export interface DemoLedgerEntry {
   id: string;
-  threadId: string;
+  /** Null for a deal agreed outside DealDock. */
+  threadId: string | null;
+  /** Where that conversation lives (an email counterparty's handle is an address); null without one. Sessions saved before it lack it. */
+  channel?: Channel | null;
   handle: string;
   dealType: DealType;
   amountMinor: number;
   /** Epoch ms. */
   closedAt: number;
   note?: string;
+  /** The deal this payment recorded (demo store; deleting either one follows the API's rules). */
+  dealId?: string;
+  /** The invoice this payment settled (demo store): deleting the entry reopens it, as the API does. */
+  invoiceId?: string;
 }
 
 export interface DashboardView {
@@ -143,6 +189,32 @@ export interface DashboardView {
   biggestMinor: number;
   avgMinor: number;
   mtdDealCount: number;
+}
+
+/** GET /email/accounts: one connected Gmail inbox, owned by a creator account. */
+export interface EmailAccountView {
+  id: string;
+  address: string;
+  status: "active" | "token_expired";
+  connectedAt: string;
+  lastSyncedAt: string | null;
+  /** The creator (Instagram account) the inbox belongs to. */
+  ownerAccountId: string | null;
+}
+export interface EmailInboxes {
+  accounts: EmailAccountView[];
+  /** False once the API says email isn't set up for this deployment: Settings hides the section. */
+  available: boolean;
+}
+
+/** GET /comment-leads: people who commented a creator's keyword, each with one private reply to approve. */
+export interface CommentLeadsView {
+  /** False where the API says comment leads aren't turned on: every screen hides them. */
+  available: boolean;
+  /** Keywords by Instagram account id. */
+  keywords: Record<string, string[]>;
+  /** Newest first; skipped ones are gone. */
+  leads: CommentLeadDto[];
 }
 
 /** GET /ledger?month=YYYY-MM (months are org-timezone months, oldest first). */
@@ -166,12 +238,15 @@ export interface SettingsView {
   locale: string;
   timezone: string;
   nudgeDelayDays: number;
-  accounts: Array<{ id: string; handle: string; status: AccountStatus; provider: string }>;
+  /** rateCardToken: the creator's private rate-card link (/rates/<token>); null when off. */
+  accounts: Array<{ id: string; handle: string; status: AccountStatus; provider: string; rateCardToken?: string | null }>;
   voiceConsent: Array<{ igAccountId: string; consented: boolean }>;
   deletionRequestedAt: string | null;
   monthlyGoalMinor: number | null;
   humanAgentEnabled: boolean;
   speechAvailable: boolean;
+  /** "Fetch from Instagram" for post results (META_INSIGHTS_ENABLED on the API). */
+  insightsAvailable?: boolean;
   tier: Tier;
 }
 
@@ -249,6 +324,11 @@ export interface DataSummary {
   draftsGenerated: number;
   ledgerEntries: number;
   auditRows: number;
+  deals: number;
+  invoices: number;
+  billingProfiles: number;
+  /** Connected Gmail inboxes, disconnected ones included: the address and its state, never its tokens. */
+  emailInboxes: Array<{ id: string; address: string; status: AccountStatus; connectedAt: string }>;
   storingSince: string | null;
   deletionRequestedAt: string | null;
 }
@@ -287,6 +367,17 @@ export interface AppSnapshot {
   details: Record<string, Slice<DemoThread>>;
   closed: Slice<DemoThread[]>;
   ledgerView: Slice<LedgerView>;
+  /** GET /deals: open (or all) deals, optionally for one creator. */
+  deals: Slice<DealDto[]>;
+  /** GET /renewals: brands to pitch again (Today). */
+  renewals: Slice<RenewalDto[]>;
+  /** GET /lead-sources: connected booking and payment tools, and what they reported that matched no conversation. */
+  leadSources: Slice<LeadSourcesResponse>;
+  /** GET /settings/billing-profile: the workspace's, or one creator's (falling back to the workspace's). */
+  billingProfile: Slice<BillingProfileResponse>;
+  emailAccounts: Slice<EmailInboxes>;
+  /** GET /comment-leads: keywords and the leads they caught, every creator's. */
+  commentLeads: Slice<CommentLeadsView>;
   insights: Slice<Insights>;
   offers: Slice<OfferDto[]>;
   voice: Slice<VoiceStudio>;
@@ -349,11 +440,66 @@ export interface AppStoreApi {
   setGoal(monthlyGoalMinor: number | null): Promise<void>;
   loadAudit(limit?: number): Promise<AuditRow[] | null>;
 
+  // Deals (agreed → payment requested → paid)
+  loadDeals(options?: { status?: "open" | "all"; igAccountId?: string }): Promise<DealDto[] | null>;
+  createDeal(request: DealCreateRequest): Promise<DealDto>;
+  updateDeal(dealId: string, patch: DealUpdateRequest): Promise<DealDto>;
+  markDealPaid(dealId: string, request: DealPaidRequest): Promise<DealDto>;
+  deleteDeal(dealId: string): Promise<void>;
+  /** Filled from the conversation; never saved. */
+  suggestDeal(threadId: string): Promise<DealSuggestion>;
+
+  // Renewals: pitch a brand that paid again
+  loadRenewals(): Promise<RenewalDto[] | null>;
+  /** "Not now", or the pitch copied to send outside DealDock: the brand leaves Today. */
+  handleRenewal(dealId: string, how: "not_now" | "copied"): Promise<void>;
+  /** A paid deal agreed outside DealDock: its pitch as text to copy, never stored or sent. */
+  draftForDeal(dealId: string): Promise<string>;
+
+  // Coach pipeline: stages, and booking and payment tools that report back
+  setLeadStage(threadId: string, stage: LeadStage): Promise<void>;
+  loadLeadSources(): Promise<LeadSourcesResponse | null>;
+  connectLeadSource(request: LeadSourceCreateRequest): Promise<LeadSourceCreated>;
+  /** Razorpay's or Stripe's signing secret, saved after the address (Stripe shows it only then). */
+  saveLeadSourceSecret(sourceId: string, secret: string): Promise<void>;
+  removeLeadSource(sourceId: string): Promise<void>;
+  matchLeadEvent(eventId: string, threadId: string): Promise<void>;
+  dismissLeadEvent(eventId: string): Promise<void>;
+
+  // Comment leads: one private reply per keyword comment, each approved by a person
+  loadCommentLeads(): Promise<CommentLeadsView | null>;
+  /** Replaces one creator's keywords (the workspace's account when omitted). */
+  setCommentKeywords(keywords: string[], igAccountId?: string): Promise<string[]>;
+  /** Sends the approved, possibly edited, reply. Throws when it was not sent. */
+  sendCommentLead(leadId: string, text: string): Promise<void>;
+  skipCommentLead(leadId: string): Promise<void>;
+  /** Drafts the reply again from the creator's offers. */
+  redraftCommentLead(leadId: string): Promise<void>;
+  /** Removes leads whose 7 days ran out without a reply; returns how many. */
+  clearExpiredCommentLeads(igAccountId?: string): Promise<number>;
+
+  // Invoices (a PDF from a deal) and the billing details printed on them
+  loadBillingProfile(igAccountId?: string): Promise<BillingProfileResponse | null>;
+  saveBillingProfile(input: BillingProfileInput, igAccountId?: string): Promise<BillingProfileDto>;
+  createInvoice(dealId: string, request: InvoiceCreateRequest): Promise<InvoiceDto>;
+  voidInvoice(invoiceId: string): Promise<InvoiceDto>;
+  markInvoicePaid(invoiceId: string, request: InvoicePaidRequest): Promise<InvoicePaidResponse>;
+
   // Offers
   loadOffers(): Promise<OfferDto[] | null>;
   createOffer(input: OfferInput): Promise<OfferDto>;
   updateOffer(offerId: string, patch: Partial<OfferInput>): Promise<OfferDto>;
   deleteOffer(offerId: string): Promise<void>;
+  /** A creator's private rate-card link: on makes a new one (ending the old), off turns it off. Returns the token, or null. */
+  setRateCardLink(igAccountId: string, on: boolean): Promise<string | null>;
+  /** The public page behind a link, without a session; null when the link is off or unknown. */
+  loadPublicRateCard(token: string): Promise<PublicRateCard | null>;
+
+  // Usage rights and proof of results
+  /** Today's usage-rights reminder: Done, or back again (Undo). */
+  setUsageHandled(dealId: string, handled: boolean): Promise<DealDto>;
+  /** "Fetch from Instagram": a posted deliverable's results, saved on the deal. */
+  fetchInsights(dealId: string, deliverableId: string): Promise<DealDto>;
 
   // Your voice (writing style)
   loadVoice(igAccountId?: string): Promise<VoiceStudio | null>;
@@ -390,6 +536,12 @@ export interface AppStoreApi {
   loadDataSummary(): Promise<DataSummary | null>;
   scheduleDeletion(): Promise<unknown>;
   cancelDeletion(): Promise<void>;
+
+  // Email (Gmail) inboxes
+  loadEmailAccounts(): Promise<EmailInboxes | null>;
+  /** Google's consent URL for one creator's inbox (required on Roster). */
+  connectEmail(igAccountId?: string): Promise<{ authorizeUrl: string }>;
+  disconnectEmail(accountId: string): Promise<void>;
 
   // Instagram + onboarding
   connectInstagram(): Promise<{ authorizeUrl: string }>;

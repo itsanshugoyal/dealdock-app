@@ -22,6 +22,16 @@ export async function requireSeatInOrg(
 }
 
 /** An account id from a request must be this org's before anything reads or writes through it. */
+/**
+ * The creator account an account speaks for. An email inbox (ownerAccountId set)
+ * classifies, drafts and is credited as its creator; every other account as itself.
+ */
+export async function creatorAccountOf(orgId: OrgId, igAccountId: string, client: ScopeClient = prisma): Promise<string> {
+  const account = await client.igAccount.findFirst({ where: { id: igAccountId, orgId }, select: { id: true, ownerAccountId: true } });
+  if (!account) throw new DomainError("ig_account_not_in_org", 404);
+  return account.ownerAccountId ?? account.id;
+}
+
 export async function requireIgAccountInOrg(orgId: OrgId, igAccountId: string, client: ScopeClient = prisma): Promise<{ id: string }> {
   const account = await client.igAccount.findFirst({ where: { id: igAccountId, orgId }, select: { id: true } });
   if (!account) throw new DomainError("ig_account_not_in_org", 404);

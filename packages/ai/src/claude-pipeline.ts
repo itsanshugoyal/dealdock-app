@@ -1,7 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { ClassificationResult, HIGH_INTENT_LABELS, MINOR_PER_MAJOR } from "@dealdock/core";
-import type { AiPipeline, ClassifyInput, DraftInput, DraftResult } from "./types";
-import { buildClassifySystem, buildDraftPrompt, CLASSIFY_TOOL, DRAFT_TOOL, parseDraftToolInput, PROMPT_VERSION } from "./prompts";
+import { ClassificationResult, HIGH_INTENT_LABELS, MINOR_PER_MAJOR, type DealSuggestion } from "@dealdock/core";
+import type { AiPipeline, ClassifyInput, DealSuggestionInput, DraftInput, DraftResult } from "./types";
+import { mergeDealSuggestion, suggestDealHeuristically } from "./deal-suggestion";
+import { HEURISTIC_MODEL_VERSION } from "./heuristic-pipeline";
+import { buildClassifySystem, buildDealPrompt, buildDraftPrompt, CLASSIFY_TOOL, classifyUserText, DEAL_TOOL, DRAFT_TOOL, mergeMissingFacts, parseDraftToolInput, PROMPT_VERSION } from "./prompts";
 import { lintDraft, lintRetryInstruction } from "./style-learning";
 
 /**
@@ -45,7 +47,7 @@ export class ClaudePipeline implements AiPipeline {
       messages: [
         {
           role: "user",
-          content: `Sender: @${input.senderHandle}\nMessage:\n${input.messageText}`,
+          content: classifyUserText(input),
         },
       ],
     });
@@ -153,11 +155,29 @@ export class ClaudePipeline implements AiPipeline {
     return {
       body: result.drafts[0]!,
       alternatives: prompt.variants > 1 ? result.drafts : [],
-      context: { ...prompt.context, missingFacts: result.missingFacts },
+      context: { ...prompt.context, missingFacts: mergeMissingFacts(prompt.context.missingFacts, result.missingFacts) },
       lintViolations: violations,
       modelVersion: this.draftModel,
       promptVersion: PROMPT_VERSION,
     };
+  }
+
+  /** Extraction at temperature 0 on the classify model; invalid fields fall back to the heuristic reading. */
+  async suggestDeal(input: DealSuggestionInput): Promise<DealSuggestion> {
+    const fallback = suggestDealHeuristically(input, HEURISTIC_MODEL_VERSION);
+    const prompt = buildDealPrompt(input);
+    const response = await this.client.messages.create({
+      model: this.classifyModel,
+      max_tokens: 1_000,
+      temperature: 0,
+      system: prompt.system,
+      tools: [DEAL_TOOL],
+      tool_choice: { type: "tool", name: DEAL_TOOL.name },
+      messages: [{ role: "user", content: prompt.user }],
+    });
+    const toolUse = response.content.find((b) => b.type === "tool_use");
+    if (!toolUse || toolUse.type !== "tool_use") throw new Error("deal suggestion: model did not call the tool");
+    return mergeDealSuggestion(toolUse.input, fallback, input, this.classifyModel);
   }
 }
 

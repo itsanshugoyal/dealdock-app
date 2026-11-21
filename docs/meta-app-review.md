@@ -1,5 +1,7 @@
 # Meta App Review — Preparation Checklist
 
+**3 November provider update:** if Groq is selected, include the actual Groq processing, data controls and location in the privacy/subprocessor review before submitting claims to Meta or processing real creator data. See [provider setup](groq-provider.md).
+
 > Status (30 October 2026): no external checkboxes were completed by the local remediation. Use dealdock.io as the current public domain and configure the actual API callback origin in META/hosting settings; the API origin must be confirmed rather than inferred from the public domain. The review recording must demonstrate a real incoming message, classification/review, explicit human approval, one delivered reply and its receipt, and disconnect/reconnect. Local mock-provider tests do not satisfy app review.
 
 **Why this exists now:** Meta Tech Provider registration + `instagram_business_manage_messages` approval is the longest lead-time item in the project (weeks). PLAN.md M0 starts this track so M3 (real Instagram) is never blocked. Owner: founding team. Status: ☐ = not started.
@@ -15,7 +17,7 @@
 
 - ☐ Create Meta App → type **Business**.
 - ☐ Add products: **Instagram** (Instagram API with Instagram Login / Messaging).
-- ☐ Configure Instagram webhooks: callback `<approved API origin>/webhooks/instagram`, verify token from env (`META_WEBHOOK_VERIFY_TOKEN`), subscribe to `messages` field.
+- ☐ Configure Instagram webhooks: callback `<approved API origin>/webhooks/instagram`, verify token from env (`META_WEBHOOK_VERIFY_TOKEN`), subscribe to `messages` field (and `comments` once comment leads are approved: `META_COMMENTS_ENABLED`).
 - ☐ App domains, privacy policy URL, data deletion callback URL (Settings → Basic). Privacy policy must explicitly cover DM processing (PRD §7.1 FAQ doubles as source).
 
 ## 3. Permissions to request (Advanced Access)
@@ -24,6 +26,7 @@
 |---|---|
 | `instagram_business_basic` | Account identity: handle, account type detection (Business/Creator vs Personal — PRD §6.1) |
 | `instagram_business_manage_messages` | Read DMs for classification + send creator-approved replies. **Core product.** |
+| `instagram_business_manage_comments` | Comment leads (Phase 3): read comments on the creator's own posts that use the creator's keywords ("PRICE"), and send the one private reply Instagram allows per comment (within 7 days), **each written for and approved by a person** in Inbox → Comments. Behind `META_COMMENTS_ENABLED`; needs Advanced Access, Business Verification, a Live app and the `comments` webhook field. |
 
 Justification framing (from the PRD, use verbatim ideas): human-in-the-loop assistant for creators' OWN inboxes; classification + drafts; **never auto-sends**; official API only; per-creator data isolation; creators connect via OAuth and can disconnect anytime.
 
@@ -55,6 +58,7 @@ Required: a video showing the full permission usage on a REAL test account.
 - 24-hour messaging window respected; out-of-window sends rejected with user-facing messaging.
 - Rate limits respected via per-account budgeter (ARCHITECTURE.md §4.2).
 - Data deletion callback implemented (maps to our §6.11 deletion flow).
+- Comment leads: a keyword comment gets a *drafted* private reply that a person edits and sends, one per comment, within 7 days; nothing is sent automatically, so it is not an "automated chat experience". **Confirm in App Review** that no automation disclosure is needed for human-approved private replies, and that the comments field and private replies work for an Instagram Login (creator-side) app.
 
 ## 8. Timeline & fallback
 

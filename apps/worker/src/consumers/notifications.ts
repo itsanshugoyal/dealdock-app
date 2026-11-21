@@ -17,7 +17,7 @@ const WEEKLY_DIGEST_TICK = "weekly-digest-tick";
 
 export const NotificationJob = z.object({
   orgId: z.string(),
-  kind: z.enum(["high_value", "nudge", "weekly_summary", "billing_checkout_ready"]),
+  kind: z.enum(["high_value", "nudge", "weekly_summary", "billing_checkout_ready", "lead_paid"]),
   threadId: z.string().optional(),
   handle: z.string().optional(),
   valueMaxMinor: z.number().optional(),
@@ -58,6 +58,13 @@ function buildPayload(data: NotificationJob): { title: string; body: string; url
         title: "Your week in recovered revenue",
         body: data.summaryText ?? "Open your dashboard for the numbers.",
         url: "/",
+      };
+    case "lead_paid":
+      // A payment a booking or payment tool reported, matched to its conversation: record the sale there.
+      return {
+        title: money ? `Paid ${money}` : "Payment received",
+        body: data.handle ? `@${data.handle} paid. Record the sale in DealDock.` : "Record the sale in DealDock.",
+        url: data.threadId ? `/thread/${data.threadId}` : "/inbox",
       };
     case "billing_checkout_ready":
       return {

@@ -58,3 +58,12 @@ describe("PCM16 WAV encoding", () => {
     expect(encodePcm16Wav(new Float32Array(), 24_000)).toHaveLength(44);
   });
 });
+
+describe("spoken AI disclosure", () => {
+  it("is required for Indian workspaces and speaks before the reply", async () => {
+    const { voiceDisclosureRequired, withSpokenDisclosure, SPOKEN_AI_DISCLOSURE } = await import("../src/speaking-voice");
+    expect(voiceDisclosureRequired("INR")).toBe(true);
+    expect(voiceDisclosureRequired("USD")).toBe(false);
+    expect(withSpokenDisclosure("Hey! Rate is ₹50,000.")).toBe(`${SPOKEN_AI_DISCLOSURE} Hey! Rate is ₹50,000.`);
+  });
+});

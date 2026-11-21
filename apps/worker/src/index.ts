@@ -10,6 +10,7 @@ import { startNotificationWorker, startWeeklyDigestScheduler } from "./consumers
 import { startRetentionScheduler } from "./consumers/retention";
 import { startOutboxDispatcher } from "./consumers/outbox";
 import { startVoiceLearningWorker } from "./consumers/voice-learning";
+import { startCommentLeadWorker } from "./consumers/comment-leads";
 
 /**
  * apps/worker — BullMQ consumers: ingestion (live), classification/drafting/
@@ -39,6 +40,7 @@ async function main() {
     startRetentionScheduler(),
     startOutboxDispatcher(),
     startVoiceLearningWorker(),
+    startCommentLeadWorker(),
   ];
   console.log(
     `dealdock-worker up — consuming: ${QUEUES.ingestion}, ${QUEUES.classification}, ${QUEUES.drafting}. Registered queues: ${Object.values(QUEUES).join(", ")}`

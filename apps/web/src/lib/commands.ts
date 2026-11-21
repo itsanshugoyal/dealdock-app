@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 
 /**
  * Global command bus: the palette and shortcut layer dispatch, screens listen.
- * Example: a thread page handles "record-sale" by opening its sale sheet.
+ * Example: a thread page handles "record-sale" by opening its deal sheet.
  */
 export type AppCommand =
   | "open-palette"

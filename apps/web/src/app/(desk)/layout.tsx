@@ -14,11 +14,13 @@ export default function DeskLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname() ?? "";
   const threadId = pathname.startsWith("/thread/") ? decodeURIComponent(pathname.split("/")[2] ?? "") : null;
   return (
-    <div className="lg:grid lg:h-dvh lg:grid-cols-[400px_minmax(0,1fr)] xl:grid-cols-[430px_minmax(0,1fr)]">
+    // The shell gives desk routes a viewport-tall column on large screens, so `h-full` here
+    // leaves room for any banner above (demo, offline, errors) instead of overflowing by its height.
+    <div className="lg:grid lg:h-full lg:grid-cols-[400px_minmax(0,1fr)] xl:grid-cols-[460px_minmax(0,1fr)]">
       <Suspense fallback={<div className="hidden lg:block" />}>
-        <InboxPane className={cx("lg:flex lg:h-dvh lg:border-r lg:border-hairline", threadId && "hidden")} selectedId={threadId} headingLevel={threadId ? "h2" : "h1"} />
+        <InboxPane className={cx("lg:flex lg:h-full lg:border-r lg:border-hairline", threadId && "hidden")} selectedId={threadId} headingLevel={threadId ? "h2" : "h1"} />
       </Suspense>
-      <div className={cx("min-w-0 lg:h-dvh lg:overflow-y-auto", !threadId && "hidden lg:block")} id="desk-detail">{children}</div>
+      <div className={cx("min-w-0 lg:h-full lg:overflow-y-auto", !threadId && "hidden lg:block")} id="desk-detail">{children}</div>
     </div>
   );
 }

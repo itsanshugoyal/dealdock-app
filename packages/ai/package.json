@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:evals": "tsc -p tsconfig.evals.json",
     "test": "vitest run",
     "eval": "tsx evals/run-eval.ts",
     "draft-sample": "tsx evals/draft-sample.ts"

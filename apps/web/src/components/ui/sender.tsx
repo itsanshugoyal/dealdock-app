@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { MessageSource, ParticipantProfile } from "@dealdock/core";
 import { UserCheck } from "lucide-react";
-import { agoText, compactCount, displayName, formatDate, pluralize } from "../../lib/format";
+import { agoText, atHandle, compactCount, displayName, formatDate, pluralize } from "../../lib/format";
 import { useMinuteClock } from "../../lib/keyboard";
 import { useMoneyContext } from "../../lib/use-demo";
 import { cx } from "./cx";
@@ -124,13 +124,13 @@ export function SenderCard({ participant, variant = "compact", source, firstMess
       <div className={cx("min-w-0", variant === "full" && "flex flex-col items-center")}>
         <Title className={cx("truncate text-ink", variant === "full" ? "text-title" : "text-heading")}><bdi>{display}</bdi></Title>
         <p className="flex flex-wrap items-center gap-x-1.5 truncate text-caption text-ink-3">
-          {participant.name?.trim() && <bdi>@{participant.handle}</bdi>}
+          {participant.name?.trim() && <bdi>{atHandle(participant.handle)}</bdi>}
           {participant.followerCount !== null && <span>· {compactCount(participant.followerCount, locale)} followers</span>}
         </p>
       </div>
       {variant === "full" && (
         <dl className="grid w-full gap-px overflow-hidden rounded-2xl bg-hairline text-left text-body">
-          <Fact term="Follows you" value={participant.followsYou ? <span className="inline-flex items-center gap-1 text-ink"><UserCheck aria-hidden size={16} className="text-brand" />Yes</span> : "No"} />
+          {participant.followsYou !== null && <Fact term="Follows you" value={participant.followsYou ? <span className="inline-flex items-center gap-1 text-ink"><UserCheck aria-hidden size={16} className="text-brand" />Yes</span> : "No"} />}
           {sourceText(source) && <Fact term="Came from" value={sourceText(source)} />}
           {firstMessageAt ? <Fact term="First message" value={formatDate(firstMessageAt, locale, timezone)} /> : null}
           <Fact

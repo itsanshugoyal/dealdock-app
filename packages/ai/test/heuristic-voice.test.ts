@@ -60,7 +60,7 @@ describe("heuristic drafts mirror the v2 voice inputs", () => {
   it("quotes a listed rate and reports missing facts instead of inventing them", async () => {
     const offers = [{ id: "o1", name: "Reel package", dealType: "brand" as const, priceMinMinor: 5_000_000, priceMaxMinor: 5_000_000, link: null, details: null, availability: null }];
     const quoted = await draft({ creator: { ...creator, offers }, chips: ["quote_rate"] });
-    expect(quoted.body).toContain("My rate for Reel package is ₹50K.");
+    expect(quoted.body).toContain("My rate for Reel package is ₹50,000.");
     expect(quoted.context?.missingFacts).toEqual([]);
     const missing = await draft({ classificationLabel: "coaching_lead" });
     expect(missing.context?.missingFacts).toEqual(["your coaching price"]);

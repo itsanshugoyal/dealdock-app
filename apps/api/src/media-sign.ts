@@ -29,13 +29,35 @@ export function signMediaPath(assetId: string, ttlSeconds = DEFAULT_TTL_SECONDS,
   return `/media/a/${encodeURIComponent(assetId)}?exp=${exp}&sig=${signature(assetId, exp)}`;
 }
 
-/** Absolute https URL Meta's servers can fetch when sending a voice note. */
-export function publicMediaUrl(assetId: string, ttlSeconds = DEFAULT_TTL_SECONDS, now = Date.now()): string {
+function publicOrigin(): string {
   const base = process.env.PUBLIC_API_URL;
   if (!base || !/^https:\/\//.test(base)) {
     throw Object.assign(new Error("public_media_url_unconfigured"), { statusCode: 409 });
   }
-  return `${base.replace(/\/$/, "")}${signMediaPath(assetId, ttlSeconds, now)}`;
+  return base.replace(/\/$/, "");
+}
+
+/** Absolute https URL Meta's servers can fetch when sending a voice note. */
+export function publicMediaUrl(assetId: string, ttlSeconds = DEFAULT_TTL_SECONDS, now = Date.now()): string {
+  return `${publicOrigin()}${signMediaPath(assetId, ttlSeconds, now)}`;
+}
+
+/** Invoices are signed under their own subject, so an audio link can never open an invoice. */
+const invoiceSubject = (invoiceId: string) => `invoice:${invoiceId}`;
+
+/** Signed path to an invoice's PDF; the file name in the path is what Instagram shows. */
+export function signInvoicePath(invoiceId: string, fileName: string, ttlSeconds = DEFAULT_TTL_SECONDS, now = Date.now()): string {
+  const exp = Math.floor(now / 1000) + ttlSeconds;
+  return `/media/invoices/${encodeURIComponent(invoiceId)}/${encodeURIComponent(fileName)}?exp=${exp}&sig=${signature(invoiceSubject(invoiceId), exp)}`;
+}
+
+/** Absolute https URL Meta's servers fetch when an invoice PDF is sent in a DM. */
+export function publicInvoiceUrl(invoiceId: string, fileName: string, ttlSeconds = DEFAULT_TTL_SECONDS, now = Date.now()): string {
+  return `${publicOrigin()}${signInvoicePath(invoiceId, fileName, ttlSeconds, now)}`;
+}
+
+export function verifyInvoiceSignature(invoiceId: string, exp: unknown, sig: unknown, now = Date.now()): boolean {
+  return verifyMediaSignature(invoiceSubject(invoiceId), exp, sig, now);
 }
 
 export function verifyMediaSignature(assetId: string, exp: unknown, sig: unknown, now = Date.now()): boolean {

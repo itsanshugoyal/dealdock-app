@@ -1,5 +1,5 @@
 /** Fixed-tenant localhost bridge for real integration tests, never a deployed auth bypass. */
-const API_ROOTS=new Set(["onboarding","inbox","review-queue","dashboard","threads","classifications","ledger","settings","notifications","billing","account","me","seats","roster","ig","voice","offers","insights","audit","drafts","media","metrics","organizations"]);
+const API_ROOTS=new Set(["onboarding","inbox","review-queue","dashboard","threads","classifications","ledger","deals","email","settings","notifications","billing","account","me","seats","roster","ig","voice","offers","insights","audit","drafts","media","metrics","organizations","renewals","lead-sources","lead-events","comment-leads","public"]);
 async function proxy(request:Request,context:{params:Promise<{path:string[]}>}) {
   if(process.env.NODE_ENV!=="development"||process.env.DEALDOCK_DISABLE_AUTH!=="true"||!process.env.DEALDOCK_DEV_ORG_ID||!process.env.DEALDOCK_API_URL) return new Response(null,{status:404});
   const incoming=new URL(request.url),origin=request.headers.get("origin");

@@ -4,10 +4,13 @@ import {
   buildAuthorizeUrl,
   exchangeCodeForToken,
   fetchIgProfile,
+  IG_COMMENTS_SCOPE,
+  IG_INSIGHTS_SCOPE,
   subscribeToInstagramWebhooks,
 } from "@dealdock/messaging";
 import { connectGraphAccount, disconnectAccount, getOrganization } from "@dealdock/db";
 import { requireAuth } from "../auth";
+import { isCommentLeadsEnabled, isInsightsEnabled } from "../feature-flags";
 import { AccountRef, requireIgAccount, requirePermission, requireWritable } from "../guards";
 
 function oauthConfig() {
@@ -53,7 +56,10 @@ export async function igRoutes(app: FastifyInstance) {
   app.post("/ig/connect", { preHandler: [requireAuth, requireWritable, requirePermission("manage_settings")] }, async (req, reply) => {
     const cfg = oauthConfig();
     if (!cfg) return reply.code(503).send({ error: "meta_app_not_configured" });
-    const url = buildAuthorizeUrl(cfg, signState(req.auth!.orgId, cfg.appSecret));
+    // Comment leads also need the comments permission (META_COMMENTS_ENABLED, after Meta App Review).
+    // Post results ("Fetch from Instagram") also need the insights permission (META_INSIGHTS_ENABLED, after Meta App Review).
+    const scopes = [...(isCommentLeadsEnabled() ? [IG_COMMENTS_SCOPE] : []), ...(isInsightsEnabled() ? [IG_INSIGHTS_SCOPE] : [])];
+    const url = buildAuthorizeUrl(cfg, signState(req.auth!.orgId, cfg.appSecret), scopes);
     return { authorizeUrl: url };
   });
 
@@ -98,7 +104,7 @@ export async function igRoutes(app: FastifyInstance) {
       });
     }
 
-    await subscribeToInstagramWebhooks({}, accessToken, profile.userId);
+    await subscribeToInstagramWebhooks({}, accessToken, profile.userId, isCommentLeadsEnabled() ? ["comments", "messages"] : ["messages"]);
     const account = await connectGraphAccount(orgId as never, {
       igUserId: profile.userId,
       handle: profile.username,

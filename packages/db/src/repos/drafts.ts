@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../client";
 import type { OrgId } from "../org-id";
-import { DomainError, editRatio, type ClassificationLabel } from "@dealdock/core";
+import { DomainError, editRatio, tagLinks, threadRef, type ClassificationLabel } from "@dealdock/core";
 import { writeAudit } from "../audit-log";
 import { requireSeatInOrg } from "../seat-scope";
 import { advanceThreadClocks, lockThread } from "../thread-writes";
@@ -29,6 +29,8 @@ export async function createDraft(
     alternatives?: string[];
     /** "Why this draft": the DraftContextSummary (+ promptVersion, lintViolations). */
     generationContext?: Record<string, unknown> | null;
+    /** An invoice cover note: the approved send attaches this invoice's PDF. */
+    invoiceId?: string | null;
   }
 ) {
   // Read-discard-create must be atomic (F9): otherwise two concurrent draft
@@ -41,6 +43,9 @@ export async function createDraft(
       select: { id: true, igAccountId: true },
     });
     if (!thread) throw new DomainError("thread not in org", 404);
+    if (input.invoiceId && !(await tx.invoice.findFirst({ where: { id: input.invoiceId, orgId, deal: { threadId: thread.id } }, select: { id: true } }))) {
+      throw new DomainError("invoice not in org", 404);
+    }
     await lockThread(tx, thread.id);
     // Coordinate model generation with explicit consent revocation. A shared
     // lock means revocation either commits first (then this fresh read rejects)
@@ -71,21 +76,25 @@ export async function createDraft(
       orderBy: { version: "desc" },
       select: { version: true },
     });
+    // Links to a connected booking or payment tool carry this conversation back (core tagLinks), in every version the creator sees.
+    const tools = await tx.leadSource.findMany({ where: { orgId }, select: { provider: true }, distinct: ["provider"] });
+    const tag = (text: string) => (tools.length ? tagLinks(text, threadRef(thread.id), tools.map((tool) => tool.provider)) : text);
     return tx.draft.create({
       data: {
         orgId,
         threadId: input.threadId,
         replyToMessageId: input.replyToMessageId,
         kind: input.kind ?? "reply",
-        body: input.body,
+        body: tag(input.body),
         version: (latest?.version ?? 0) + 1,
         modelVersion: input.modelVersion,
         promptVersion: input.promptVersion,
         label: input.label ?? null,
         instruction: input.instruction?.slice(0, 200) || null,
         chips: input.chips ?? [],
-        alternatives: (input.alternatives ?? []).slice(0, 3),
+        alternatives: (input.alternatives ?? []).slice(0, 3).map(tag),
         ...(input.generationContext ? { generationContext: input.generationContext as Prisma.InputJsonValue } : {}),
+        invoiceId: input.invoiceId ?? null,
       },
     });
   });
@@ -404,7 +413,7 @@ export async function persistSendIntent(
     await lockThread(tx, approved.draft.threadId);
     const intent = await tx.sendIntent.findFirstOrThrow({
       where: { id: input.intentId, orgId },
-      include: { draft: { select: { id: true, threadId: true, body: true, status: true } } },
+      include: { draft: { select: { id: true, threadId: true, body: true, status: true, generationContext: true } } },
     });
     // A claimed draft's body and approved text do not change; re-measure only if they somehow did.
     const edit = intent.draft.body === approved.draft.body && intent.finalText === approved.finalText
@@ -467,6 +476,11 @@ export async function persistSendIntent(
       data: { status: "persisted", platformMessageId: input.platformMessageId, platformSentAt: input.sentAt, lastError: null },
     });
     await advanceThreadClocks(tx, intent.draft.threadId, "outbound", input.sentAt);
+    // A renewal pitch that went out answers its prompt: the brand leaves Today's "Pitch again".
+    const job = (intent.draft.generationContext ?? {}) as { purpose?: unknown; dealId?: unknown };
+    if (sent.count && job.purpose === "renewal" && typeof job.dealId === "string") {
+      await tx.deal.updateMany({ where: { id: job.dealId, orgId, threadId: intent.draft.threadId, renewalHandledAt: null }, data: { renewalHandledAt: input.sentAt } });
+    }
     if (sent.count) {
       await writeAudit(tx, {
         orgId,

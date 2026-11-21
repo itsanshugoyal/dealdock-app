@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { LABEL_FOR_DEAL_TYPE, parseMoneyInput, type DealType, type OfferDto, type OfferInput } from "@dealdock/core";
-import { AudioLines, Link2, Plus, Tags } from "lucide-react";
+import { LABEL_FOR_DEAL_TYPE, OFFER_ADD_ONS, parseMoneyInput, type DealType, type OfferAddOnKey, type OfferAddOns, type OfferDto, type OfferInput } from "@dealdock/core";
+import { ChevronDown, Copy, ExternalLink, Link2, LockKeyhole, Pencil, Plus, Tags } from "lucide-react";
 import { dealTypeText } from "../../lib/format";
 import { errorMessage } from "../../lib/snapshot";
-import { appStore, useOffers, useSettings } from "../../lib/use-demo";
-import { LargeTitle, Tag } from "../../components/kit";
-import { Button } from "../../components/ui/button";
+import { appStore, useCan, useMoneyContext, useOffers, useSettings } from "../../lib/use-demo";
+import { LargeTitle } from "../../components/kit";
+import { Disclosure } from "../../components/sheet-parts";
+import { Button, buttonClasses } from "../../components/ui/button";
+import { formatMoney } from "../../components/ui/money-value";
 import { cx } from "../../components/ui/cx";
 import { ErrorState, Skeleton } from "../../components/ui/feedback";
 import { DealTypeSelect, MONEY_INPUT_ERROR, MoneyField, Select, Switch, TextArea, TextField, moneyFieldText } from "../../components/ui/field";
@@ -31,7 +33,7 @@ function hostOf(link: string): string {
   try { return new URL(link).host.replace(/^www\./, ""); } catch { return link; }
 }
 
-/** Offers: the private rate card drafts quote from. Never a public page. */
+/** Offers: the rate card drafts quote from. Private, unless the creator shares its rate-card link. */
 export default function OffersPage() {
   const offers = useOffers();
   const settings = useSettings();
@@ -47,10 +49,12 @@ export default function OffersPage() {
       <LargeTitle
         eyebrow="Your rate card"
         title="Offers"
-        subtitle="What you sell, at what price. Drafts quote these exactly, so nobody gets a made-up number. Only your team sees them."
+        subtitle="Keep prices, availability and links ready for the replies you approve."
         accessory={offers.data && offers.data.length > 0 ? <Button variant="primary" icon={Plus} onClick={() => setEditing({ offer: null })}>Add offer</Button> : undefined}
       />
-      <div className="grid gap-5 px-4 md:px-8 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,1fr)] lg:gap-6">
+      <div className="px-4 md:px-8">
+        {settings.data && accounts.length > 0 && <RateCardLink accounts={accounts} roster={settings.data.tier === "roster"} />}
+        {offers.data && list.length > 0 && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-caption text-ink-3"><p><span className="font-semibold text-ink-2">{list.filter((offer) => offer.active).length} active</span>{list.some((offer) => !offer.active) && <> · {list.filter((offer) => !offer.active).length} paused</>}</p><p className="inline-flex items-center gap-1.5"><LockKeyhole aria-hidden size={13} />Only your team sees these, until you share your rate card link</p></div>}
         <div className="min-w-0">
           {offers.status === "error" && !offers.data ? (
             <ErrorState thing="your offers" reason={offers.error} onRetry={() => void appStore.loadOffers()} />
@@ -59,49 +63,118 @@ export default function OffersPage() {
           ) : list.length === 0 ? (
             <EmptyOffers onStart={(preset) => setEditing({ offer: null, preset })} />
           ) : (
-            <ul className="grid gap-3 sm:grid-cols-2">
+            <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {list.map((offer) => (
                 <li key={offer.id}><OfferCard offer={offer} accountHandle={offer.igAccountId ? accounts.find((account) => account.id === offer.igAccountId)?.handle ?? null : null} onOpen={() => setEditing({ offer })} /></li>
               ))}
             </ul>
           )}
         </div>
-        <aside className="flex flex-col gap-4">
-          <HowDraftsUse offers={list} />
-        </aside>
+        <HowDraftsUse />
       </div>
       <OfferSheet key={editing ? editing.offer?.id ?? `new-${editing.preset?.name ?? ""}` : "closed"} editing={editing} accounts={accounts} accountsReady={Boolean(settings.data)} onClose={() => setEditing(null)} />
     </div>
   );
 }
 
+/**
+ * The private rate-card link: one per creator, a page with their active
+ * offers and add-on prices for brands that ask for rates. Create, copy, open
+ * and turn off; turning off (or making a new one) ends the old link at once.
+ * Creators to pick from show on Roster only.
+ */
+function RateCardLink({ accounts, roster }: { accounts: Array<{ id: string; handle: string; rateCardToken?: string | null }>; roster: boolean }) {
+  const canManage = useCan("manage_settings");
+  const [chosen, setChosen] = useState(accounts[0]!.id);
+  const [busy, setBusy] = useState(false);
+  const [confirmOff, setConfirmOff] = useState(false);
+  const account = accounts.find((item) => item.id === chosen) ?? accounts[0]!;
+  const url = account.rateCardToken && typeof window !== "undefined" ? `${window.location.origin}/rates/${encodeURIComponent(account.rateCardToken)}` : null;
+
+  const change = async (on: boolean) => {
+    setBusy(true);
+    try {
+      await appStore.setRateCardLink(account.id, on);
+      toast(on ? "Rate card link ready. Copy it into any chat." : "Link turned off. Anyone who opens it now sees that it's gone.", on ? { tone: "success" } : {});
+      setConfirmOff(false);
+    } catch (failure) {
+      toast(errorMessage(failure, "That didn't save. Try again."), { tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copy = () => {
+    if (!url) return;
+    if (!navigator.clipboard) { toast("Couldn't copy it. Select the link and copy it yourself.", { tone: "error" }); return; }
+    void navigator.clipboard.writeText(url).then(() => toast("Link copied.", { tone: "success" }), () => toast("Couldn't copy it. Select the link and copy it yourself.", { tone: "error" }));
+  };
+
+  return (
+    <section aria-labelledby="rate-card-title" className="mb-5 rounded-[22px] bg-surface p-4 shadow-card sm:p-5">
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-inset text-ink-2"><Link2 aria-hidden size={20} /></span>
+        <div className="min-w-0 flex-1">
+          <h2 id="rate-card-title" className="text-heading text-ink">Rate card link</h2>
+          <p className="mt-0.5 text-caption text-ink-3">A page with {roster && accounts.length > 1 ? "this creator's" : "your"} active offers and add-on prices, for brands that ask for your rates. Only people with the link can open it.</p>
+        </div>
+      </div>
+      {roster && accounts.length > 1 && (
+        <Select label="Creator" className="mt-3 max-w-[320px]" value={account.id} onChange={(event) => setChosen(event.target.value)}>
+          {accounts.map((item) => <option key={item.id} value={item.id}>@{item.handle}</option>)}
+        </Select>
+      )}
+      {url ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <p className="min-w-0 basis-full truncate rounded-xl bg-inset px-3 py-2 text-[14px] text-ink sm:flex-1 sm:basis-0" title={url}>{url}</p>
+          <Button size="sm" variant="primary" icon={Copy} onClick={copy}>Copy</Button>
+          <a href={url} target="_blank" rel="noopener noreferrer" className={buttonClasses({ variant: "secondary", size: "sm" })}><ExternalLink aria-hidden size={16} className="shrink-0" />Open</a>
+          {canManage !== false && <Button size="sm" variant="danger-ghost" onClick={() => setConfirmOff(true)}>Turn off</Button>}
+        </div>
+      ) : canManage === false ? (
+        <p className="mt-3 text-[14px] text-ink-2">No link yet. The workspace owner can make one here.</p>
+      ) : (
+        <Button className="mt-3" size="sm" variant="secondary" icon={Link2} loading={busy} loadingLabel="Making it…" onClick={() => void change(true)}>Create link</Button>
+      )}
+      <ConfirmDialog open={confirmOff} onClose={() => setConfirmOff(false)} title="Turn off this link?" confirmLabel="Turn off link" cancelLabel="Keep it" destructive busy={busy} busyLabel="Turning off…" onConfirm={() => void change(false)}>
+        Anyone who opens it sees that it&apos;s gone. You can make a new link any time; the old one won&apos;t come back.
+      </ConfirmDialog>
+    </section>
+  );
+}
+
 function OfferCard({ offer, accountHandle, onOpen }: { offer: OfferDto; accountHandle: string | null; onOpen: () => void }) {
   const style = LABEL_META[LABEL_FOR_DEAL_TYPE[offer.dealType]];
   const Icon = style.icon;
-  const toggle = (active: boolean) => toastAction(() => appStore.updateOffer(offer.id, { active }), {
-    success: active ? `Drafts can mention ${offer.name} again.` : `Paused. Drafts won't mention ${offer.name}.`,
-    fallback: "Couldn't change that offer.",
-  });
+  const [updating, setUpdating] = useState(false);
+  const toggle = async (active: boolean) => {
+    if (updating) return;
+    setUpdating(true);
+    try {
+      await toastAction(() => appStore.updateOffer(offer.id, { active }), {
+        success: active ? `Drafts can mention ${offer.name} again.` : `Paused. Drafts won't mention ${offer.name}.`,
+        fallback: "Couldn't change that offer.",
+      });
+    } finally { setUpdating(false); }
+  };
   return (
-    <article className="flex h-full flex-col rounded-[22px] bg-surface p-4 shadow-card md:p-5">
-      <button type="button" onClick={onOpen} className="dd-press -m-2 flex flex-1 flex-col rounded-2xl p-2 text-left hover:bg-inset/60" aria-label={`Edit ${offer.name}`}>
-        <div className="flex items-start gap-3">
-          <span className={cx("flex h-10 w-10 shrink-0 items-center justify-center rounded-xl", style.tint, style.accent)}><Icon aria-hidden size={19} /></span>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-[16px] font-semibold leading-5 text-ink">{offer.name}</h2>
-            <p className="mt-0.5 text-caption text-ink-3">{dealTypeText(offer.dealType)}{offer.igAccountId === null ? " · Shared offer" : accountHandle ? ` · @${accountHandle}` : " · Creator details unavailable"}</p>
-          </div>
-          {!offer.active && <Tag>Paused</Tag>}
+    <article className={cx("flex h-full min-w-0 flex-col overflow-hidden rounded-[22px] transition-shadow", offer.active ? "bg-surface shadow-card hover:shadow-raised focus-within:shadow-raised" : "border border-dashed border-control bg-surface/60")}>
+      <button type="button" onClick={onOpen} className="dd-press group flex min-w-0 flex-1 flex-col p-4 text-left outline-offset-[-4px] sm:p-5" aria-label={`Edit ${offer.name}`}>
+        <div className="flex w-full items-center justify-between gap-3">
+          <span className="inline-flex items-center gap-2 text-caption font-semibold text-ink-2"><span className={cx("flex h-8 w-8 items-center justify-center rounded-[10px]", style.tint)}><Icon aria-hidden size={16} className={style.accent} /></span>{dealTypeText(offer.dealType)}</span>
+          <span className="inline-flex items-center gap-2 text-caption text-ink-3 group-hover:text-ink">{!offer.active && <span className="rounded-full bg-inset px-2 py-0.5 font-semibold text-ink-2">Paused</span>}<Pencil aria-hidden size={13} /><span>Edit</span></span>
         </div>
-        <p className="mt-4 text-[24px] font-semibold leading-7 tracking-[-0.02em] text-ink">
-          {offer.priceMinMinor === null ? <span className="text-[17px] text-ink-2">Price on request</span> : <MoneyValue minor={offer.priceMinMinor} maxMinor={offer.priceMaxMinor ?? undefined} mode={offer.priceMaxMinor ? "range" : "exact"} />}
+        <h2 className="mt-4 break-words text-[17px] font-semibold leading-6 tracking-[-0.015em] text-ink">{offer.name}</h2>
+        <p className="mt-1 text-caption text-ink-3">{offer.igAccountId === null ? "Shared across all creators" : accountHandle ? `For @${accountHandle}` : "Creator details unavailable"}</p>
+        <p className="mt-3 text-[26px] font-semibold leading-8 tracking-[-0.03em] text-ink">
+          <span className="sr-only">Rate: </span>
+          {offer.priceMinMinor === null ? <span className="text-[16px] text-ink-2">Price on request</span> : <MoneyValue minor={offer.priceMinMinor} maxMinor={offer.priceMaxMinor ?? undefined} mode={offer.priceMaxMinor ? "range" : "exact"} />}
         </p>
-        {offer.availability && <p className="mt-1 text-[14px] font-semibold text-recovered">{offer.availability}</p>}
+        {offer.availability && <p className="mt-3 text-[13px] font-medium leading-5 text-ink-2">{offer.availability}</p>}
         {offer.details && <p className="mt-2 line-clamp-2 text-[14px] leading-5 text-ink-2">{offer.details}</p>}
-        {offer.link && <p className="mt-3 inline-flex max-w-full items-center gap-1.5 text-caption font-semibold text-ink-3"><Link2 aria-hidden size={14} className="shrink-0" /><span className="truncate">{hostOf(offer.link)}</span></p>}
+        {offer.link && <p className="mt-3 inline-flex max-w-full items-center gap-1.5 text-caption text-ink-3"><Link2 aria-hidden size={13} className="shrink-0" /><span className="truncate">{hostOf(offer.link)}</span></p>}
       </button>
-      <div className="mt-4 border-t border-hairline pt-3">
-        <Switch checked={offer.active} onChange={(active) => void toggle(active)} label={<span className="text-[14px] font-semibold">Drafts can mention this</span>} className="items-center" />
+      <div className="border-t border-hairline px-4 py-3 sm:px-5">
+        <Switch checked={offer.active} disabled={updating} onChange={(active) => void toggle(active)} label={<span className="text-label font-medium">{updating ? "Updating…" : "Use in drafts"}<span className="sr-only"> for {offer.name}</span></span>} className="items-center" />
       </div>
     </article>
   );
@@ -120,26 +193,17 @@ function EmptyOffers({ onStart }: { onStart: (preset: { name: string; dealType: 
   );
 }
 
-function HowDraftsUse({ offers }: { offers: OfferDto[] }) {
-  const example = offers.find((offer) => offer.active && offer.priceMinMinor !== null);
+function HowDraftsUse() {
   return (
-    <section aria-labelledby="how-offers" className="rounded-[22px] bg-surface p-5 shadow-card">
-      <h2 id="how-offers" className="flex items-center gap-2 text-heading text-ink"><AudioLines aria-hidden size={18} className="text-recovered" />How drafts use this</h2>
-      {example && (
-        <div className="mt-4 flex flex-col gap-2 rounded-2xl bg-inset p-3">
-          <p className="dd-bubble-in max-w-[88%] self-start px-3.5 py-2 text-[14px] leading-5 text-ink">Hi! What do you charge?</p>
-          <p className="dd-bubble-out max-w-[88%] self-end px-3.5 py-2 text-[14px] leading-5">
-            Heyy! {example.name} is <MoneyValue minor={example.priceMinMinor!} maxMinor={example.priceMaxMinor ?? undefined} mode={example.priceMaxMinor ? "range" : "exact"} className="font-semibold" />{example.link ? `. Details: ${hostOf(example.link)}` : "."}
-          </p>
-        </div>
-      )}
-      <ul className="mt-4 flex flex-col gap-2.5 text-[14px] leading-5 text-ink-2">
-        <li>“Add my rate” in a draft uses the price saved here.</li>
-        <li>Links go out exactly as you saved them.</li>
-        <li>Paused offers are never mentioned.</li>
-        <li>Nothing here is public. It&apos;s only used to write your drafts.</li>
+    <details className="group mt-6 border-t border-hairline pt-1">
+      <summary className="dd-summary flex min-h-12 items-center justify-between gap-3 rounded-xl px-1 text-label font-medium text-ink-2 hover:text-ink">
+        How offers shape a draft<ChevronDown aria-hidden size={16} className="transition-transform group-open:rotate-180" />
+      </summary>
+      <ul className="grid gap-3 px-1 pb-2 text-[14px] leading-5 text-ink-2 sm:grid-cols-2">
+        <li><b className="font-semibold text-ink">Saved facts.</b> “Add my rate” uses the matching creator&apos;s active offers, including any shared offers.</li>
+        <li><b className="font-semibold text-ink">Your final say.</b> Review the price, availability and link before approving a reply. Paused offers are left out of new draft context.</li>
       </ul>
-    </section>
+    </details>
   );
 }
 
@@ -155,9 +219,13 @@ function OfferSheet({ editing, accounts, accountsReady, onClose }: { editing: Ed
     details: offer?.details ?? "",
     igAccountId: offer ? offer.igAccountId ?? "shared" : accounts.length === 1 ? accounts[0]!.id : "",
     active: offer?.active ?? true,
+    addOns: Object.fromEntries(OFFER_ADD_ONS.map(({ key }) => [key, moneyFieldText(offer?.addOns?.[key])])) as Record<OfferAddOnKey, string>,
   };
   const [form, setForm] = useState(initial);
   const [errors, setErrors] = useState<Partial<Record<"name" | "priceMin" | "priceMax" | "link" | "igAccountId", string>>>({});
+  const [addOnErrors, setAddOnErrors] = useState<Partial<Record<OfferAddOnKey, string>>>({});
+  // Prices already set open the fold; a new offer keeps it closed.
+  const [addOnsOpen, setAddOnsOpen] = useState(OFFER_ADD_ONS.some(({ key }) => initial.addOns[key]));
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm((current) => ({ ...current, [key]: value }));
@@ -178,8 +246,14 @@ function OfferSheet({ editing, accounts, accountsReady, onClose }: { editing: Ed
     if (max !== null && min === null) next.priceMin = "Add the starting price too.";
     if (min !== null && max !== null && max < min) next.priceMax = "This should be at least the starting price.";
     if (form.link && !/^https?:\/\/\S+\.\S+/.test(form.link.trim())) next.link = "Use a full link, starting with https://";
+    // Add-ons are a brand offer's: blank is "not set", which drafts never quote.
+    const brand = form.dealType === "brand";
+    const addOnPrices = Object.fromEntries(OFFER_ADD_ONS.map(({ key }) => [key, brand && form.addOns[key] ? parseMoneyInput(form.addOns[key]) : null])) as unknown as OfferAddOns;
+    const badAddOns = Object.fromEntries(OFFER_ADD_ONS.filter(({ key }) => brand && form.addOns[key] && addOnPrices[key] === null).map(({ key }) => [key, MONEY_INPUT_ERROR]));
     setErrors(next);
-    if (Object.keys(next).length) return;
+    setAddOnErrors(badAddOns);
+    if (Object.keys(badAddOns).length) setAddOnsOpen(true);
+    if (Object.keys(next).length || Object.keys(badAddOns).length) return;
     const input: OfferInput = {
       igAccountId: scope !== "shared" ? scope : null,
       name: form.name.trim(),
@@ -189,6 +263,7 @@ function OfferSheet({ editing, accounts, accountsReady, onClose }: { editing: Ed
       link: form.link.trim() || null,
       details: form.details.trim() || null,
       availability: form.availability.trim() || null,
+      addOns: OFFER_ADD_ONS.some(({ key }) => addOnPrices[key] !== null) ? addOnPrices : null,
       active: form.active,
       sortOrder: offer?.sortOrder ?? Date.now() % 100_000,
     };
@@ -238,22 +313,37 @@ function OfferSheet({ editing, accounts, accountsReady, onClose }: { editing: Ed
           {!accountsReady ? <p role="status" className="text-label text-ink-2">Loading creator accounts before saving…</p> : !accounts.length ? <p role="alert" className="text-label text-ink-2">Connect Instagram in Settings before adding an offer.</p> : accounts.length === 1 ? <p className="text-caption text-ink-2">For @{accounts[0]!.handle}</p> : null}
           {errors.igAccountId && accounts.length <= 1 && <p role="alert" className="text-caption text-danger">{errors.igAccountId}</p>}
           {accounts.length > 1 && (
-            <Select label="Creator" value={form.igAccountId} onChange={(event) => set("igAccountId", event.target.value)} error={errors.igAccountId} helper="Choose whose drafts may quote this offer. Shared offers can be quoted by every creator.">
+            <Select label="Creator" value={form.igAccountId} onChange={(event) => set("igAccountId", event.target.value)} error={errors.igAccountId} helper={form.igAccountId === "shared" ? "Every creator in this workspace can quote this offer." : form.igAccountId ? "Only this creator's drafts can quote the offer." : "Choose whose drafts can quote this offer."}>
               <option value="" disabled>Choose a creator…</option>
               {accounts.map((account) => <option key={account.id} value={account.id}>@{account.handle}</option>)}
               <option value="shared">Shared across every creator</option>
             </Select>
           )}
-          <TextField label="Name" value={form.name} maxLength={80} onChange={(event) => set("name", event.target.value)} error={errors.name} helper="As you'd say it in a DM, like “Reel + 2 stories”." />
-          <DealTypeSelect label="Type" value={form.dealType} onChange={(type) => set("dealType", type)} />
-          <div className="grid grid-cols-2 gap-3">
-            <MoneyField label="Price from" value={form.priceMin} onChange={(text) => set("priceMin", text)} error={errors.priceMin} />
-            <MoneyField label="Up to" optional value={form.priceMax} onChange={(text) => set("priceMax", text)} error={errors.priceMax} />
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_140px]">
+            <TextField label="Name" value={form.name} maxLength={80} onChange={(event) => set("name", event.target.value)} error={errors.name} />
+            <DealTypeSelect label="Type" value={form.dealType} onChange={(type) => set("dealType", type)} />
           </div>
-          <p className="-mt-2 text-caption text-ink-3">Leave the price empty and drafts say it&apos;s on request.</p>
+          <fieldset className="rounded-2xl border border-separator p-3">
+            <legend className="px-1 text-label font-semibold text-ink">Your price</legend>
+            <div className="grid grid-cols-2 gap-3">
+              <MoneyField label="Price from" value={form.priceMin} onChange={(text) => set("priceMin", text)} error={errors.priceMin} />
+              <MoneyField label="Up to" optional value={form.priceMax} onChange={(text) => set("priceMax", text)} error={errors.priceMax} />
+            </div>
+            <p className="mt-2 text-caption text-ink-3">For one fixed price, leave “Up to” empty. No price means on request.</p>
+          </fieldset>
           <TextField label="Link, optional" type="url" inputMode="url" value={form.link} onChange={(event) => set("link", event.target.value)} error={errors.link} helper="Rate card, booking page or checkout. Drafts share it as is." />
           <TextField label="Availability, optional" value={form.availability} maxLength={120} onChange={(event) => set("availability", event.target.value)} helper="Like “2 slots left in December”." />
-          <TextArea label="Details, optional" value={form.details} maxLength={500} rows={3} onChange={(event) => set("details", event.target.value)} helper="What's included, add-ons, payment options." />
+          <TextArea label="Details, optional" value={form.details} maxLength={500} rows={3} onChange={(event) => set("details", event.target.value)} helper="What's included and payment options." />
+          {form.dealType === "brand" && (
+            <AddOnPrices
+              open={addOnsOpen}
+              onToggle={setAddOnsOpen}
+              values={form.addOns}
+              errors={addOnErrors}
+              feeMinor={form.priceMin ? parseMoneyInput(form.priceMin) : null}
+              onChange={(key, text) => set("addOns", { ...form.addOns, [key]: text })}
+            />
+          )}
           <Switch checked={form.active} onChange={(active) => set("active", active)} label="Drafts can mention this" description="Turn off to pause an offer without deleting it." />
         </form>
       </Sheet>
@@ -261,5 +351,40 @@ function OfferSheet({ editing, accounts, accountsReady, onClose }: { editing: Ed
         Drafts stop quoting it. Sales you already recorded aren&apos;t affected.
       </ConfirmDialog>
     </>
+  );
+}
+
+/**
+ * Add-on prices on a brand offer, folded away: drafts quote one only when a
+ * brand asks and the price is set, and flag it as missing otherwise. Each
+ * hint is the usual range (typical, not advice), worked out on the offer's
+ * starting price when it has one.
+ */
+function AddOnPrices({ open, onToggle, values, errors, feeMinor, onChange }: {
+  open: boolean;
+  onToggle: (open: boolean) => void;
+  values: Record<OfferAddOnKey, string>;
+  errors: Partial<Record<OfferAddOnKey, string>>;
+  feeMinor: number | null;
+  onChange: (key: OfferAddOnKey, text: string) => void;
+}) {
+  const { money } = useMoneyContext();
+  // Rounded to a whole hundred so the worked range stays tidy.
+  const share = (percent: number) => formatMoney(Math.round((feeMinor! * percent) / 100 / 10_000) * 10_000, null, "compact", money);
+  return (
+    <Disclosure summary="Add-on prices (optional)" open={open} onToggle={onToggle}>
+      <p className="text-caption text-ink-3">Drafts quote these only when a brand asks, and only the ones you set. The ranges below are what&apos;s typical, not advice. GST, when you charge it, goes on the invoice, not here.</p>
+      {OFFER_ADD_ONS.map((addOn) => (
+        <MoneyField
+          key={addOn.key}
+          label={`${addOn.label}${addOn.unit ? ` ${addOn.unit}` : ""}`}
+          optional
+          value={values[addOn.key]}
+          error={errors[addOn.key]}
+          onChange={(text) => onChange(addOn.key, text)}
+          helper={feeMinor ? `${addOn.hint} On ${formatMoney(feeMinor, null, "compact", money)}, that's about ${share(addOn.percent[0])}–${share(addOn.percent[1])}.` : addOn.hint}
+        />
+      ))}
+    </Disclosure>
   );
 }

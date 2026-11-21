@@ -42,18 +42,25 @@ test.describe("demo product UI regressions", () => {
     await expect(page).toHaveURL(/step=reveal/, { timeout: 30_000 });
     await expect(page.getByText("Review each conversation before replying. Nothing sends without you.")).toBeVisible();
     await expect(page.getByText("Upper estimate", { exact: true })).toHaveCount(3);
+    await expect(page.getByText("Potential value · lower estimate", { exact: true })).toBeVisible();
     await expect(page.getByText(/draft.*ready|ready.*draft/i)).toHaveCount(0);
     await page.screenshot({ path: `.turbo/ui-audit-${testInfo.project.name === "mobile" ? "mobile" : "desktop"}-onboarding.png`, fullPage: true, animations: "disabled" });
     await page.goto("/voice");
     await expect(page.getByRole("heading", { name: "Teach DealDock how @diya.moves writes" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Turn on voice learning" })).toBeVisible();
+    await page.goto("/thread/t-monsoon");
+    await expect(page.getByText("Writing-style permission is off for @diya.moves.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Review writing permissions" })).toHaveAttribute("href", "/voice?account=ig-demo-diya");
+    await expect(page.getByRole("button", { name: "Generate draft" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Approve & send" })).toHaveCount(0);
   });
 
   test("all creators are identified and a conversation names its creator", async ({ page }) => {
     test.setTimeout(90_000); // Two full axe scans can be slow during local development builds.
     await page.goto("/inbox");
     await expect(page.getByRole("group", { name: "Creator" })).toBeVisible();
-    const rows = page.locator('a[href^="/thread/"]');
+    // Conversation rows only; the reading pane's "Start with …" shortcut also links to a thread.
+    const rows = page.locator("[data-thread-row]");
     await expect(rows.first()).toBeVisible();
     for (const row of await rows.all()) await expect(row).toContainText(/@(diya\.moves|rohan\.cooks|ira\.wanders)/);
     await noHorizontalOverflow(page);
@@ -110,18 +117,18 @@ test.describe("demo product UI regressions", () => {
   });
 
   test("account, view and search survive opening a thread and returning", async ({ page }, testInfo) => {
-    await page.goto("/inbox?account=ig-demo-diya&view=waiting&q=urban");
+    await page.goto("/inbox?account=ig-demo-diya&view=followups&q=urban");
     await page.locator('a[href^="/thread/t-urbanloom"]').click();
     await expect(page).toHaveURL(/\/thread\/t-urbanloom\?/);
     const back = page.getByRole("link", { name: "Back to inbox", includeHidden: true });
     const href = await back.getAttribute("href");
     expect(href).not.toBeNull();
     const url = new URL(href!, "http://localhost");
-    expect(Object.fromEntries(url.searchParams)).toMatchObject({ account: "ig-demo-diya", view: "waiting", q: "urban" });
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({ account: "ig-demo-diya", view: "followups", q: "urban" });
     if (testInfo.project.name === "mobile") {
       await back.click();
       await expect(page.getByLabel("Search conversations")).toHaveValue("urban");
-      await expect(page.getByRole("tab", { name: /Waiting/ })).toHaveAttribute("aria-selected", "true");
+      await expect(page.getByRole("tab", { name: /Follow-ups/ })).toHaveAttribute("aria-selected", "true");
       await expect(page.getByRole("button", { name: "@diya.moves" })).toHaveAttribute("aria-pressed", "true");
     }
   });
@@ -147,7 +154,8 @@ test.describe("demo product UI regressions", () => {
   test("new offers require an explicit creator or shared scope", async ({ page }) => {
     await page.goto("/offers");
     await page.getByRole("button", { name: "Add offer", exact: true }).first().click();
-    const creator = page.getByLabel("Creator", { exact: true });
+    // The offer form's picker; the rate-card link has its own "Creator" picker on this page.
+    const creator = page.getByRole("dialog", { name: "Add an offer" }).getByLabel("Creator", { exact: true });
     await expect(creator).toHaveValue("");
     await expect(creator.locator('option[value="shared"]')).toHaveText("Shared across every creator");
   });
@@ -155,7 +163,7 @@ test.describe("demo product UI regressions", () => {
   test("Today prioritizes an actionable closing window", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByText("Across all creators in this workspace")).toBeVisible();
-    await expect(page.getByText("Estimated value across all creators’ DMs")).toBeVisible();
+    await expect(page.getByText("Money in all creators’ DMs right now")).toBeVisible();
     const recommendation = page.getByRole("link", { name: "Reply before it closes" });
     await expect(recommendation).toHaveAttribute("href", "/thread/t-tiffin");
     await expect(page.getByText(/@tiffintheory\.co.*Review this one first/)).toBeVisible();
@@ -178,7 +186,7 @@ test.describe("demo product UI regressions", () => {
 
   test("revenue filters persist in the URL and CSV matches the displayed creator and month", async ({ page }) => {
     await page.goto("/roster");
-    await page.locator("article").filter({ has: page.getByRole("heading", { name: "@diya.moves" }) }).getByRole("link", { name: "Revenue report" }).click();
+    await page.locator("article").filter({ has: page.getByRole("heading", { name: "@diya.moves" }) }).getByRole("link", { name: "Revenue for @diya.moves" }).click();
     await expect(page).toHaveURL(/account=ig-demo-diya/);
     const creator = page.getByLabel("Revenue for");
     await expect(creator).toHaveValue("ig-demo-diya");
@@ -243,6 +251,7 @@ test.describe("demo product UI regressions", () => {
       if (i < 4) await expect(heading).toBeFocused();
     }
     await expect(page.getByRole("heading", { name: "Left for later." })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Left for later." })).toBeFocused();
     await expect(page.getByText("5 skipped messages still need a decision.", { exact: false })).toBeVisible();
     await expect(page.getByRole("heading", { name: "All sorted." })).toHaveCount(0);
     await page.getByRole("button", { name: "Review skipped" }).click();

@@ -1,5 +1,7 @@
 # Product Requirements Document — DealDock
 
+> Scope note (4 November 2026): the owner considers this PRD out of date. Its non-goals and out-of-scope lists (sections 3.3 and 12) no longer limit planning. Current product direction is in [the workflow review](docs/workflow-and-functionality-review-2026-11-04.md). The never-auto-send rule still applies.
+
 > Implementation amendment (30 October 2026): the organization currency is frozen at creation and cannot be changed in Settings. Nothing auto-sends, including follow-ups; only the authenticated, authorized API send gate may send. The worker has no Graph credentials or messaging capability. These explicit safety requirements supersede any older optional-autonomy or mutable-currency wording below. See [current readiness evidence](docs/private-pilot-readiness.md) for external exit gates; a live public website is not proof of authenticated-product readiness.
 
 **Working name:** DealDock (final name TBD)

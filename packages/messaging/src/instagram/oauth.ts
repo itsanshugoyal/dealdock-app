@@ -11,6 +11,10 @@ const GRAPH_BASE = "https://graph.instagram.com";
 const OAUTH_TIMEOUT_MS = 15_000;
 
 export const IG_SCOPES = ["instagram_business_basic", "instagram_business_manage_messages"];
+/** Comment leads read comments and send private replies (needs Meta App Review; META_COMMENTS_ENABLED). */
+export const IG_COMMENTS_SCOPE = "instagram_business_manage_comments";
+/** Post results ("Fetch from Instagram"); needs Meta App Review, so it is asked for only with META_INSIGHTS_ENABLED. */
+export const IG_INSIGHTS_SCOPE = "instagram_business_manage_insights";
 
 export interface IgOauthConfig {
   appId: string;
@@ -28,12 +32,12 @@ export interface IgProfile {
   accountType: string;
 }
 
-export function buildAuthorizeUrl(cfg: Pick<IgOauthConfig, "appId" | "redirectUri">, state: string): string {
+export function buildAuthorizeUrl(cfg: Pick<IgOauthConfig, "appId" | "redirectUri">, state: string, extraScopes: readonly string[] = []): string {
   const params = new URLSearchParams({
     client_id: cfg.appId,
     redirect_uri: cfg.redirectUri,
     response_type: "code",
-    scope: IG_SCOPES.join(","),
+    scope: [...IG_SCOPES, ...extraScopes].join(","),
     state,
   });
   return `${AUTHORIZE_URL}?${params.toString()}`;
@@ -131,22 +135,24 @@ export async function fetchIgProfile(
 }
 
 /**
- * Subscribe the connected professional account to official message webhooks.
- * This runs in the API OAuth callback only; it never accepts a user-supplied
+ * Subscribe the connected professional account to official webhooks:
+ * messages, plus comments when comment leads are on. Runs in the API only
+ * (OAuth callback, saving comment keywords); it never accepts a user-supplied
  * account id and does not expose a token to the worker.
  */
 export async function subscribeToInstagramWebhooks(
   cfg: Pick<IgOauthConfig, "fetchImpl" | "timeoutMs">,
   accessToken: string,
-  igUserId: string
+  igUserId: string,
+  fields: ReadonlyArray<"comments" | "messages"> = ["messages"]
 ): Promise<void> {
-  if (!accessToken || !igUserId || !/^\d+$/.test(igUserId)) {
+  if (!accessToken || !igUserId || !/^\d+$/.test(igUserId) || fields.length === 0) {
     throw new Error("IG webhook subscription input is invalid");
   }
   const res = await oauthFetch(cfg, `${GRAPH_BASE}/${encodeURIComponent(igUserId)}/subscribed_apps`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ subscribed_fields: "messages" }),
+    body: new URLSearchParams({ subscribed_fields: fields.join(",") }),
   });
   const body = (await res.json().catch(() => null)) as { success?: boolean } | null;
   if (!res.ok || body?.success !== true) throw new Error("IG webhook subscription failed");

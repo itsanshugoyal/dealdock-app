@@ -1,4 +1,7 @@
-export const INBOX_VIEWS = ["needs", "followups", "waiting", "check", "closed"] as const;
+import { isLeadStage } from "@dealdock/core";
+
+/** "comments": keyword comments awaiting a private reply (shown where keywords are set or leads exist). */
+export const INBOX_VIEWS = ["needs", "followups", "waiting", "check", "comments", "closed"] as const;
 export type InboxView = typeof INBOX_VIEWS[number];
 
 /** URL input is untrusted; an old or mistyped view should still open the inbox. */
@@ -12,9 +15,12 @@ export function inboxSearch(params: Pick<URLSearchParams, "get">): string {
   const account = params.get("account");
   const view = inboxView(params.get("view"));
   const query = params.get("q");
+  // The coach pipeline's stage list (Today's pipeline opens it): back returns to the same stage.
+  const stage = params.get("stage");
   if (account) next.set("account", account);
   if (view !== "needs") next.set("view", view);
   if (query) next.set("q", query);
+  if (stage && isLeadStage(stage)) next.set("stage", stage);
   const search = next.toString();
   return search ? `?${search}` : "";
 }

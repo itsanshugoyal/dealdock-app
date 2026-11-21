@@ -59,7 +59,8 @@ export async function ledgerRoutes(app: FastifyInstance) {
     const lines = rows.map((e) =>
       [
         e.closedAt.toISOString().slice(0, 10),
-        `@${e.handle}`,
+        // Only an Instagram handle takes an @; an email address or a typed-in counterparty is shown as is.
+        e.channel === "instagram" ? `@${e.handle}` : e.handle,
         e.dealType,
         e.amountMinor,
         e.currencyCode,

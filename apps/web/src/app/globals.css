@@ -99,7 +99,7 @@
   --dd-fs-money-row: 15px; --dd-lh-money-row: 20px;
   /* Shell metrics */
   --dd-tabbar-h: 58px;
-  --dd-sidebar-w: 248px;
+  --dd-sidebar-w: 240px;
 }
 
 @media (min-width: 768px) {
@@ -466,7 +466,7 @@
   .dd-input {
     width: 100%;
     min-height: 44px;
-    border: 1px solid transparent;
+    border: 1px solid var(--dd-hairline);
     border-radius: var(--radius-md);
     background: var(--dd-inset);
     color: var(--dd-text-1);
@@ -477,7 +477,7 @@
     transition: border-color var(--dd-dur-fade), background-color var(--dd-dur-fade), box-shadow var(--dd-dur-fade);
   }
   .dd-input::placeholder { color: var(--dd-text-3); }
-  .dd-input:hover { background: var(--dd-fill); }
+  .dd-input:hover { border-color: var(--dd-control); }
   .dd-input:focus-visible { outline: none; background: var(--dd-surface); border-color: var(--dd-focus); box-shadow: 0 0 0 4px color-mix(in oklab, var(--dd-focus) 18%, transparent); }
   .dd-input[aria-invalid="true"] { border-color: var(--dd-danger); }
   .dd-input:disabled { opacity: 0.45; }
@@ -570,10 +570,15 @@
   .dd-cv { content-visibility: auto; contain-intrinsic-size: auto 76px; }
 
   /* Scroll containers that hide their bar (chip rails). */
-  .dd-scroll-x { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .dd-scroll-x { overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
   .dd-scroll-x::-webkit-scrollbar { display: none; }
 
-  /* Conversation bubbles */
+  /* <details> disclosures draw their own chevron (group-open), never the browser's triangle. */
+  .dd-summary { list-style: none; cursor: pointer; }
+  .dd-summary::-webkit-details-marker { display: none; }
+
+  /* Conversation bubbles. The draft is the reply about to go out: an outgoing bubble with the
+     emerald "in your voice" ring, so it reads as "this is what they'll get" before approval. */
   .dd-bubble-in { background: var(--dd-surface); box-shadow: var(--dd-shadow-1); border-radius: 20px 20px 20px 6px; }
   .dd-bubble-out { background: var(--dd-ink); color: var(--dd-on-ink); border-radius: 20px 20px 6px 20px; }
   .dd-bubble-draft {

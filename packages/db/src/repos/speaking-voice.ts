@@ -1,4 +1,4 @@
-import { DomainError, type SpeakingVoiceDto } from "@dealdock/core";
+import { voiceDisclosureRequired, DomainError, type SpeakingVoiceDto } from "@dealdock/core";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../client";
 import type { OrgId } from "../org-id";
@@ -41,10 +41,15 @@ export async function getSpeakingVoiceSummary(orgId: OrgId, igAccountId: string)
  * cloned elsewhere); a null provider matches no voice.
  */
 export async function getReadySpeakingVoice(orgId: OrgId, igAccountId: string, provider?: string | null) {
-  const voice = await getSpeakingVoice(orgId, igAccountId);
+  const [voice, org] = await Promise.all([
+    getSpeakingVoice(orgId, igAccountId),
+    prisma.organization.findUnique({ where: { id: orgId }, select: { currencyCode: true } }),
+  ]);
   if (!voice || voice.status !== "ready" || voice.revokedAt || !voice.externalVoiceId) return null;
   if (provider !== undefined && voice.provider !== provider) return null;
-  return { ...voice, externalVoiceId: voice.externalVoiceId };
+  // A setting saved before the rule (or edited directly) never silences a required disclosure.
+  const disclosureEnabled = voice.disclosureEnabled || voiceDisclosureRequired(org?.currencyCode ?? "");
+  return { ...voice, disclosureEnabled, externalVoiceId: voice.externalVoiceId };
 }
 
 /** A voice note may be sent only with a voice getReadySpeakingVoice returns. */
@@ -199,9 +204,13 @@ export async function listSpeakingVoicesToRevoke(orgId: OrgId) {
   });
 }
 
-/** The AI-voice disclosure (on by default) sent after each voice note. */
+/** The AI-voice disclosure (on by default), spoken at the start of each voice note. Required in India. */
 export async function setSpeakingVoiceDisclosure(orgId: OrgId, igAccountId: string, seatId: string, enabled: boolean) {
   await requireSeatInOrg(orgId, seatId);
+  if (!enabled) {
+    const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { currencyCode: true } });
+    if (voiceDisclosureRequired(org?.currencyCode ?? "")) throw new DomainError("disclosure_required", 409);
+  }
   await prisma.$transaction(async (tx) => {
     const voice = await tx.speakingVoice.findFirst({ where: { orgId, igAccountId }, select: { id: true } });
     if (!voice) throw new DomainError("speaking_voice_not_found", 404);

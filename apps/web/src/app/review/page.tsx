@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { ClassificationLabel } from "@dealdock/core";
 import { ArrowLeft, Check, CheckCheck, SkipForward } from "lucide-react";
-import { compactCount, confidenceReason, confidenceWords, displayName, labelText, relativeAge, textLang, toCheck } from "../../lib/format";
+import { atHandle, compactCount, confidenceReason, confidenceWords, displayName, labelText, relativeAge, textLang, toCheck } from "../../lib/format";
 import { useMinuteClock, useShortcut } from "../../lib/keyboard";
 import { runUndoable } from "../../lib/undo";
 import { inboxHref } from "../../lib/inbox-navigation";
@@ -16,6 +16,7 @@ import { Kbd } from "../../components/ui/kbd";
 import { cx } from "../../components/ui/cx";
 import { LABEL_META } from "../../components/ui/label-chip";
 import { Avatar } from "../../components/ui/sender";
+import { ScamWarning } from "../../components/kit";
 import { ErrorState } from "../../components/ui/feedback";
 import { toast } from "../../components/ui/toast";
 
@@ -44,6 +45,8 @@ function Review() {
   const [decided, setDecided] = useState<Set<string>>(new Set());
   const [skipped, setSkipped] = useState<string[]>([]);
   const cardHeading = useRef<HTMLHeadingElement>(null);
+  const doneHeading = useRef<HTMLHeadingElement>(null);
+  const moveFocus = useRef(false);
   const account = params?.get("account");
   const backHref = inboxHref(params ?? new URLSearchParams());
 
@@ -66,25 +69,32 @@ function Review() {
     if (!current || !guess) return;
     const thread = current;
     const outcome = label === guess.label ? "confirmed" : "overridden";
+    moveFocus.current = true;
     setDecided((set) => new Set(set).add(thread.id));
     const action = runUndoable({
       message: `Marked as ${labelText(label).toLowerCase()}.`,
       commit: () => appStore.review(thread.classificationId ?? thread.id, outcome, outcome === "overridden" ? label : undefined),
-      onUndo: () => setDecided((set) => { const next = new Set(set); next.delete(thread.id); return next; }),
+      onUndo: () => { moveFocus.current = true; setDecided((set) => { const next = new Set(set); next.delete(thread.id); return next; }); },
     });
     void action.outcome.then((result) => {
       if (result.status !== "failed") return;
+      moveFocus.current = true;
       setDecided((set) => { const next = new Set(set); next.delete(thread.id); return next; });
       toast(errorMessage(result.error, "That classification wasn't saved. The message is back in your queue."), { tone: "error" });
     });
   };
-  const skip = () => { if (current) setSkipped((list) => [...list.filter((id) => id !== current.id), current.id]); };
+  const skip = () => { if (current) { moveFocus.current = true; setSkipped((list) => [...list.filter((id) => id !== current.id), current.id]); } };
 
   useShortcut("y", () => { if (guess) decide(guess.label); }, { enabled: Boolean(current && guess) });
   useShortcut(CHOICES.map((choice) => choice.key), (event) => { const choice = CHOICES.find((item) => item.key === event.key); if (choice) decide(choice.label); }, { enabled: Boolean(current) });
   useShortcut(["8", "n"], skip, { enabled: Boolean(current) });
   useShortcut("escape", () => router.push(backHref));
-  useEffect(() => { window.scrollTo({ top: 0 }); cardHeading.current?.focus({ preventScroll: true }); }, [current?.id]);
+  useEffect(() => {
+    if (!moveFocus.current) return;
+    moveFocus.current = false;
+    window.scrollTo({ top: 0 });
+    (cardHeading.current ?? doneHeading.current)?.focus({ preventScroll: true });
+  }, [current?.id]);
 
   const firstLoad = loadedAt === null;
   const done = !firstLoad && !current;
@@ -105,45 +115,46 @@ function Review() {
       </header>
 
       {total > 0 && !firstLoad && (
-        <div className="mt-4 h-1 overflow-hidden rounded-full bg-fill" aria-hidden>
-          <span className="block h-full bg-brand" style={{ width: `${decided.size / total * 100}%` }} />
+        <div className="mt-5 h-1 overflow-hidden rounded-full bg-fill" aria-hidden>
+          <span className="block h-full bg-review transition-[width] duration-300 motion-reduce:transition-none" style={{ width: `${decided.size / total * 100}%` }} />
         </div>
       )}
 
       {done ? (
         <div className="dd-rise flex flex-1 flex-col items-center justify-center py-16 text-center">
           <span className={cx("flex h-16 w-16 items-center justify-center rounded-full", deferred ? "bg-inset text-ink-2" : "dd-stamp bg-brand text-on-brand")}>{deferred ? <SkipForward aria-hidden size={30} /> : <CheckCheck aria-hidden size={30} />}</span>
-          <h2 className="mt-5 text-title text-ink">{deferred ? "Left for later." : "All sorted."}</h2>
+          <h2 ref={doneHeading} tabIndex={-1} className="mt-5 rounded text-title text-ink outline-offset-4 focus-visible:outline-2 focus-visible:outline-info">{deferred ? "Left for later." : "All sorted."}</h2>
           <p className="mt-1 max-w-xs text-body text-ink-2">{deferred ? `${deferred} skipped messages still need a decision. They stay in Check these; nothing was classified or sent.` : "Every correction teaches DealDock how to sort your inbox."}</p>
           <div className="mt-6 flex gap-2">
             <Link href={backHref} className={buttonClasses({ variant: "primary" })}>Back to inbox</Link>
-            {deferred ? <button type="button" onClick={() => setSkipped([])} className={buttonClasses({ variant: "secondary" })}>Review skipped</button> : <Link href="/" className={buttonClasses({ variant: "secondary" })}>Today</Link>}
+            {deferred ? <button type="button" onClick={() => { moveFocus.current = true; setSkipped([]); }} className={buttonClasses({ variant: "secondary" })}>Review skipped</button> : <Link href="/" className={buttonClasses({ variant: "secondary" })}>Today</Link>}
           </div>
         </div>
       ) : current ? (
         <div className="flex flex-1 flex-col">
           <article
             key={current.id}
-            className="dd-rise mt-5 rounded-[26px] bg-surface p-5 shadow-raised"
+            className="dd-rise mt-6 rounded-[26px] bg-surface p-5 shadow-card sm:p-6"
           >
             <div className="flex items-center gap-3">
               <Avatar handle={current.handle} name={current.participant.name} src={current.participant.avatarUrl} size={48} verified={Boolean(current.participant.verified)} />
               <div className="min-w-0 flex-1">
                 <h2 ref={cardHeading} tabIndex={-1} className="truncate rounded text-[16px] font-semibold text-ink outline-offset-4 focus-visible:outline-2 focus-visible:outline-info">{displayName(current.participant, current.handle)}</h2>
-                <p className="truncate text-caption text-ink-3">@{current.handle}{current.participant.followerCount !== null ? ` · ${compactCount(current.participant.followerCount, locale)} followers` : ""}{now ? ` · ${relativeAge(current.lastMessageAt, now, locale, timezone)}` : ""}</p>
+                <p className="mt-0.5 truncate text-caption text-ink-3">{[current.participant.name?.trim() ? atHandle(current.handle) : null, current.participant.followerCount !== null ? `${compactCount(current.participant.followerCount, locale)} followers` : null, now ? relativeAge(current.lastMessageAt, now, locale, timezone) : null].filter(Boolean).join(" · ")}</p>
               </div>
             </div>
+            {current.scamReason && <ScamWarning reason={current.scamReason} className="mt-4" />}
             <p lang={textLang(message?.text || current.preview)} className="dd-bubble-in mt-4 bg-inset px-4 py-3 text-message text-ink shadow-none">
               {message?.audio?.transcript ?? (message?.text || current.preview)}
             </p>
             {guess && (
-              <div className="mt-4 rounded-2xl bg-review-tint p-4">
+              <div className="mt-5 border-l-2 border-review bg-review-tint/60 px-4 py-3">
                 <p className="text-[15px] font-semibold text-ink">{confidenceWords(guess.confidence, guess.label)}</p>
                 <p className="mt-0.5 text-[14px] text-ink-2">{confidenceReason(guess.rationale ?? current.rationale)}</p>
               </div>
             )}
             {guess && (
-              <button type="button" onClick={() => decide(guess.label)} className="dd-press mt-4 flex h-[52px] w-full items-center justify-center gap-2 rounded-full bg-primary text-button text-on-primary">
+              <button type="button" onClick={() => decide(guess.label)} className="dd-press mt-5 flex h-[52px] w-full items-center justify-center gap-2 rounded-full bg-primary text-button text-on-primary">
                 <Check aria-hidden size={19} />Yes, {labelText(guess.label).toLowerCase()}
                 <Kbd keys="y" className="ml-1 bg-white/15 text-on-primary" />
               </button>
@@ -155,16 +166,16 @@ function Review() {
             {CHOICES.filter((choice) => choice.label !== guess?.label).map((choice) => {
               const meta = LABEL_META[choice.label];
               return (
-                <button key={choice.label} type="button" onClick={() => decide(choice.label)} className="dd-press flex h-12 items-center gap-2.5 rounded-2xl bg-surface px-3.5 text-[15px] font-semibold text-ink shadow-card hover:bg-inset">
-                  <meta.icon aria-hidden size={18} className="shrink-0 text-ink-3" />
-                  <span className="min-w-0 flex-1 truncate text-left">{meta.text}</span>
+                <button key={choice.label} type="button" onClick={() => decide(choice.label)} className="dd-press flex min-h-12 items-center gap-2.5 rounded-2xl bg-surface px-3 py-2 text-[14px] font-medium text-ink shadow-card hover:bg-inset">
+                  <span aria-hidden className={cx("flex h-7 w-7 shrink-0 items-center justify-center rounded-lg", meta.tint)}><meta.icon size={16} className={meta.accent} /></span>
+                  <span className="min-w-0 flex-1 text-left leading-5">{meta.text}</span>
                   <Kbd keys={choice.key} />
                 </button>
               );
             })}
-            <button type="button" onClick={skip} className="dd-press flex h-12 items-center gap-2.5 rounded-2xl px-3.5 text-[15px] font-semibold text-ink-2 hover:bg-inset">
+            <button type="button" onClick={skip} className="dd-press flex min-h-12 items-center gap-2 rounded-2xl px-3 py-2 text-[14px] font-semibold text-ink-2 hover:bg-inset">
               <SkipForward aria-hidden size={18} className="shrink-0" />
-              <span className="min-w-0 flex-1 truncate text-left">Not sure, skip</span>
+              <span className="min-w-0 flex-1 text-left leading-5">Not sure, skip</span>
               <Kbd keys="8" />
             </button>
           </div>

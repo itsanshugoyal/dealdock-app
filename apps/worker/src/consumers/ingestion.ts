@@ -1,4 +1,5 @@
 import { Worker, type Job } from "bullmq";
+import { z } from "zod";
 import { IngestionJob, QUEUES } from "@dealdock/core";
 import {
   asOrgId,
@@ -18,6 +19,12 @@ import {
 } from "@dealdock/speech";
 import { redisConnection } from "../connection";
 
+/** Email deliveries (the API's Gmail sync) also carry the thread's subject and the sender's display name. */
+const IngestionPayload = IngestionJob.extend({
+  subject: z.string().optional(),
+  participantName: z.string().optional(),
+});
+
 /**
  * Ingestion consumer: webhook/backfill events → Thread + Message rows
  * (idempotent via igMessageId — ARCHITECTURE.md §4.3), then inbound messages
@@ -35,7 +42,7 @@ export function startIngestionWorker() {
       } else if (process.env.NODE_ENV === "production") {
         throw new Error("production_ingestion_requires_a_durable_reference");
       }
-      const data = IngestionJob.parse(payload);
+      const data = IngestionPayload.parse(payload);
       const orgId = asOrgId(data.orgId);
 
       const result = await upsertInboundMessage(orgId, {
@@ -52,6 +59,8 @@ export function startIngestionWorker() {
         source: data.source,
         mediaUrl: data.contentType === "audio" ? data.mediaUrl : undefined,
         threadSource: data.threadSource,
+        subject: data.subject,
+        participantName: data.participantName,
       });
 
       await touchWebhookCheckpoint(orgId, data.igAccountId);

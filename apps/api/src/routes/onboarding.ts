@@ -15,10 +15,26 @@ const TypicalRange = z
   .nullable()
   .optional();
 
+/** One creator's own answers on a Roster plan; anything left out falls back to the workspace profile. */
+const CreatorProfile = z
+  .object({
+    businessSummary: z.string().trim().max(500).optional(),
+    sells: z.array(z.string().trim().min(1).max(80)).max(20).optional(),
+    typicalBrandDealMinor: TypicalRange,
+    typicalCoachingMinor: TypicalRange,
+    typicalCourseMinor: TypicalRange,
+  })
+  .strict();
+
 const OnboardingBody = z.object({
   // Free-form answers, except the price ranges every prompt reads as money.
   businessContext: z
-    .object({ typicalBrandDealMinor: TypicalRange, typicalCoachingMinor: TypicalRange, typicalCourseMinor: TypicalRange })
+    .object({
+      typicalBrandDealMinor: TypicalRange,
+      typicalCoachingMinor: TypicalRange,
+      typicalCourseMinor: TypicalRange,
+      creators: z.record(IgAccountId, CreatorProfile).optional(),
+    })
     .catchall(z.unknown())
     .refine((value) => Object.keys(value).length > 0, "business context is required"),
   currencyCode: z.enum(["INR", "USD", "GBP", "EUR", "AED"]),

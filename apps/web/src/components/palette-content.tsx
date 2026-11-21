@@ -5,10 +5,10 @@ import { usePathname, useRouter } from "next/navigation";
 import { Command } from "cmdk";
 import {
   AudioLines, Banknote, CircleHelp, Command as CommandIcon, Download, HandCoins, Hourglass, Inbox, Keyboard, Monitor, Moon, Pause,
-  Play, RefreshCw, Search, Settings, Stamp, Sun, Tag, Target, Users, type LucideIcon,
+  Handshake, RefreshCw, Search, Settings, Sun, Tag, Target, Users, type LucideIcon,
 } from "lucide-react";
 import { dispatchCommand } from "../lib/commands";
-import { accountBigOneThreshold, byValueDesc, isBigOne, needsYou, toCheck } from "../lib/format";
+import { accountBigOneThreshold, atHandle, byValueDesc, isBigOne, needsYou, toCheck } from "../lib/format";
 import { SETTINGS_SECTIONS, type SettingsSectionId } from "../lib/settings-sections";
 import { setUiPref, useUiPrefs } from "../lib/ui-prefs";
 import { appStore, useApp, useSettings, type DemoThread } from "../lib/use-demo";
@@ -33,6 +33,10 @@ function Item({ icon: Icon, value, keywords, kbd, onSelect, children }: { icon?:
 /** Other words people search for a settings section by. */
 const SECTION_KEYWORDS: Partial<Record<SettingsSectionId, string[]>> = {
   instagram: ["accounts", "connect"],
+  email: ["gmail", "email", "inbox", "connect"],
+  "comment-leads": ["comments", "keywords", "private reply"],
+  business: ["prices", "rates", "profile", "what you sell"],
+  billing: ["billing", "invoice", "invoices", "gst", "gstin", "upi", "bank", "pan", "vat", "tax"],
   team: ["seats", "invite"],
   plan: ["billing", "subscription"],
   appearance: ["theme", "undo"],
@@ -83,12 +87,12 @@ export default function PaletteContent({ onClose }: { onClose: () => void }) {
             {threads.map((thread) => (
               <Command.Item
                 key={`${thread.routedTo}-${thread.id}`}
-                value={`conversation ${thread.id} @${thread.handle}`}
-                keywords={[thread.participant.name ?? "", thread.preview]}
+                value={`conversation ${thread.id} ${atHandle(thread.handle)}`}
+                keywords={[thread.participant.name ?? "", thread.preview, thread.subject ?? ""]}
                 onSelect={() => go(thread.routedTo === "review_queue" ? "/review" : `/thread/${encodeURIComponent(thread.id)}`)}
                 className={ITEM}
               >
-                <span className="min-w-0 flex-1 truncate"><bdi>@{thread.handle}</bdi>{thread.participant.name && <span className="ml-2 text-ink-3">{thread.participant.name}</span>}</span>
+                <span className="min-w-0 flex-1 truncate"><bdi>{atHandle(thread.handle)}</bdi>{thread.participant.name && <span className="ml-2 text-ink-3">{thread.participant.name}</span>}</span>
                 {thread.topLabel && <LabelChip label={thread.topLabel} />}
                 {thread.estValueMaxMinor !== null && <MoneyValue minor={thread.estValueMinMinor ?? thread.estValueMaxMinor} maxMinor={thread.estValueMaxMinor} mode="range" kind="estimate" size="row" />}
               </Command.Item>
@@ -101,18 +105,18 @@ export default function PaletteContent({ onClose }: { onClose: () => void }) {
           {reviewCount > 0 && <Item icon={CircleHelp} value="Check these review" onSelect={() => go("/review")}>Check these ({reviewCount})</Item>}
           {threadId && (
             <>
-              <Item icon={Stamp} value="Record a sale" kbd="c" onSelect={() => run(() => dispatchCommand("record-sale", threadId))}>Record a sale…</Item>
+              <Item icon={Handshake} value="Record a deal" kbd="c" onSelect={() => run(() => dispatchCommand("record-sale", threadId))}>Record a deal…</Item>
               {current?.state === "waiting"
                 ? <Item icon={Hourglass} value="Back to open" kbd="w" onSelect={() => run(() => dispatchCommand("toggle-waiting", threadId))}>Back to open</Item>
                 : current?.state !== "closed" && <Item icon={Hourglass} value="Move to waiting" kbd="w" onSelect={() => run(() => dispatchCommand("toggle-waiting", threadId))}>Move to waiting</Item>}
               <Item icon={RefreshCw} value="Regenerate draft" kbd="r" onSelect={() => run(() => dispatchCommand("regenerate-draft", threadId))}>Regenerate draft</Item>
             </>
           )}
-          <Item icon={Download} value="Export revenue CSV" onSelect={() => run(() => void toastAction(() => appStore.download("/ledger/export.csv", "dealdock-revenue.csv"), { fallback: "Couldn't export your revenue." }))}>Export revenue CSV</Item>
+          <Item icon={Download} value="Export all revenue CSV" onSelect={() => run(() => void toastAction(() => appStore.download("/ledger/export.csv", "dealdock-revenue.csv"), { fallback: "Couldn't export your revenue." }))}>Export all revenue (CSV)</Item>
           <Item icon={Target} value="Set monthly goal" onSelect={() => go("/settings#goal")}>Set monthly goal…</Item>
           <Item icon={Tag} value="Add an offer" onSelect={() => go("/offers#new")}>Add an offer…</Item>
-          <Item icon={Pause} value="Pause learning" onSelect={() => run(() => void toastAction(() => appStore.setLearningPaused(true), { success: "Learning paused. Drafts still use what's already here.", fallback: "Couldn't pause learning." }))}>Pause learning</Item>
-          <Item icon={Play} value="Resume learning" onSelect={() => run(() => void toastAction(() => appStore.setLearningPaused(false), { success: "Learning resumed.", fallback: "Couldn't resume learning." }))}>Resume learning</Item>
+          {/* Learning is per creator, so it is paused or resumed where the creator is explicit. */}
+          <Item icon={Pause} value="Pause or resume learning" keywords={["voice", "learning", "pause", "resume"]} onSelect={() => go("/voice#learning")}>Pause or resume learning…</Item>
           <Item icon={Keyboard} value="Keyboard shortcuts" kbd="?" onSelect={() => run(() => dispatchCommand("open-shortcuts"))}>Keyboard shortcuts</Item>
         </Command.Group>
 
@@ -124,7 +128,7 @@ export default function PaletteContent({ onClose }: { onClose: () => void }) {
           <Item icon={Tag} value="Offers" kbd="g o" onSelect={() => go("/offers")}>Offers</Item>
           <Item icon={Settings} value="Settings" kbd="g s" onSelect={() => go("/settings")}>Settings</Item>
           <Item icon={CommandIcon} value="Activity audit" onSelect={() => go("/activity")}>Activity</Item>
-          {roster && <Item icon={Users} value="Roster" onSelect={() => go("/roster")}>Roster</Item>}
+          {roster && <Item icon={Users} value="All creators roster" onSelect={() => go("/roster")}>All creators</Item>}
           {SETTINGS_SECTIONS.map((section) => (
             <Item key={section.id} icon={Settings} value={`Settings ${section.label}`} keywords={SECTION_KEYWORDS[section.id]} onSelect={() => go(`/settings#${section.id}`)}>Settings › {section.label}</Item>
           ))}

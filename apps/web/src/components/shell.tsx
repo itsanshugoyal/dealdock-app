@@ -43,8 +43,12 @@ const TABS: NavItem[] = [
 
 /** Routes rendered without chrome. */
 const CHROMELESS = ["/onboarding", "/sign-in", "/sign-up"];
+/** Public pages, open without a session: rendered bare (proxy.ts lists the same routes). */
+const PUBLIC = ["/rates/"];
 /** Focused routes hide the phone tab bar (the conversation owns the bottom edge). */
 const NO_TABS = ["/thread", "/review"];
+/** The desk layout's routes: list and conversation panes that fill the window on large screens. */
+const DESK = ["/inbox", "/thread"];
 
 /** The Inbox badge: conversations that need a reply plus messages to check (the inbox's own view filters). */
 function needsYouCount(threads: DemoThread[]): number {
@@ -56,8 +60,18 @@ function needsYouCount(threads: DemoThread[]): number {
  * (Today · Inbox · Revenue · You), the skip link to <main id="main-content">,
  * offline and error banners, the ⌘K palette, keyboard layer and toasts.
  * Screens render inside <main> and never render their own <main>.
+ * A public page (a creator's rate-card link) is no workspace: it renders
+ * bare, with no navigation, palette or workspace data.
  */
 export function Shell({ children }: { children: ReactNode }) {
+  const pathname = usePathname() ?? "/";
+  if (PUBLIC.some((prefix) => pathname.startsWith(prefix))) {
+    return <LucideProvider strokeWidth={1.9} size={20}>{children}<Toaster /></LucideProvider>;
+  }
+  return <AppShell>{children}</AppShell>;
+}
+
+function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname() ?? "/";
   const { threads, state, error, workspaceName } = useApp();
   const chromeless = CHROMELESS.some((prefix) => pathname.startsWith(prefix));
@@ -77,14 +91,17 @@ export function Shell({ children }: { children: ReactNode }) {
       <KeyboardShortcuts />
     </>
   );
-  const demoNotice = IS_DEMO_MODE ? <div data-testid="demo-mode" role="note" className="bg-review-tint px-4 py-1.5 text-center text-caption text-review">Demo · fictional sample data · No messages leave this app</div> : null;
+  const demoNotice = IS_DEMO_MODE ? <div data-testid="demo-mode" role="note" className="border-b border-hairline bg-surface px-4 py-1.5 text-center text-caption text-ink-3">Demo workspace · Fictional data · No messages leave this app</div> : null;
 
   if (chromeless) {
     return (
       <LucideProvider strokeWidth={1.9} size={20}>
         {skip}
-        {demoNotice}
-        <main id="main-content" tabIndex={-1} className="min-h-dvh bg-canvas outline-none">{children}</main>
+        {/* Full-screen flows fill what the demo notice leaves, so they never scroll by its height. */}
+        <div className="flex min-h-dvh flex-col bg-canvas">
+          {demoNotice}
+          <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col outline-none">{children}</main>
+        </div>
         {globals}
       </LucideProvider>
     );
@@ -92,6 +109,8 @@ export function Shell({ children }: { children: ReactNode }) {
 
   const setupNeeded = !IS_DEMO_MODE && state === "error" && Boolean(error?.includes("needs setup"));
   const showTabs = !NO_TABS.some((prefix) => pathname.startsWith(prefix));
+  // The desk (list + conversation) scrolls inside its panes on large screens; everything else scrolls the page.
+  const desk = DESK.some((prefix) => pathname.startsWith(prefix));
   return (
     <LucideProvider strokeWidth={1.9} size={20}>
       {skip}
@@ -99,7 +118,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <Suspense fallback={<div className="hidden w-[76px] shrink-0 md:block lg:w-[var(--dd-sidebar-w)]" />}>
           <Sidebar pathname={pathname} badge={badge} />
         </Suspense>
-        <div className={cx("flex min-w-0 flex-1 flex-col", showTabs && "pb-[calc(var(--dd-tabbar-h)+env(safe-area-inset-bottom))] md:pb-0")}>
+        <div className={cx("flex min-w-0 flex-1 flex-col", desk && "lg:h-dvh", showTabs && "pb-[calc(var(--dd-tabbar-h)+env(safe-area-inset-bottom))] md:pb-0")}>
           {demoNotice}
           <OfflineBanner className="md:px-8" />
           {!IS_DEMO_MODE && state === "error" && !setupNeeded && (
@@ -111,7 +130,7 @@ export function Shell({ children }: { children: ReactNode }) {
                 : <Button size="sm" variant="primary" onClick={() => void appStore.refresh()}>Try again</Button>}
             </div>
           )}
-          <main id="main-content" tabIndex={-1} className="min-w-0 flex-1 outline-none">
+          <main id="main-content" tabIndex={-1} className={cx("min-w-0 flex-1 outline-none", desk && "lg:min-h-0")}>
             {setupNeeded ? (
               <EmptyState
                 as="h1"
@@ -194,24 +213,24 @@ function Sidebar({ pathname, badge }: { pathname: string; badge: number }) {
   };
 
   return (
-    <aside className="sticky top-0 hidden h-dvh w-[76px] shrink-0 flex-col border-r border-hairline bg-canvas px-3 py-4 md:flex lg:w-[var(--dd-sidebar-w)] lg:px-4">
+    <aside className="sticky top-0 hidden h-dvh w-[76px] shrink-0 flex-col border-r border-hairline bg-canvas px-3 py-5 md:flex lg:w-[var(--dd-sidebar-w)] lg:px-4">
       <div className="flex items-center gap-2.5 px-1 max-lg:justify-center">
         <Link href="/" aria-label="DealDock, Today" className="rounded-[10px]"><Logo size={30} /></Link>
         <span className="text-[17px] font-semibold tracking-[-0.02em] text-ink max-lg:hidden">DealDock</span>
-        {IS_DEMO_MODE && <span role="note" className="ml-auto rounded-full bg-review-tint px-2 py-0.5 text-[11px] font-semibold text-review max-lg:hidden">Demo</span>}
+        {IS_DEMO_MODE && <span role="note" className="ml-auto rounded-full bg-inset px-2 py-0.5 text-[11px] font-semibold text-ink-2 max-lg:hidden">Demo</span>}
       </div>
-      <div className="mt-4 flex flex-col gap-2">
+      <div className="mt-5 flex flex-col gap-2">
         <WorkspaceMenu />
         <SearchButton variant="rail" className="max-lg:hidden" />
         <SearchButton variant="rail-compact" className="lg:hidden" />
       </div>
       <nav aria-label="Main" className="mt-4 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
         {PRIMARY.map((item) => link(item, item.href === "/inbox" ? badge : 0))}
-        <p className="mt-5 mb-1 px-3 text-micro uppercase text-ink-3 max-lg:hidden">Studio</p>
+        <p className="mt-6 mb-1.5 px-3 text-micro uppercase text-ink-3 max-lg:hidden">Studio</p>
         <div className="max-lg:mt-4 flex flex-col gap-0.5">{STUDIO.map((item) => link(item))}</div>
         {roster && (
           <>
-            <p className="mt-5 mb-1 px-3 text-micro uppercase text-ink-3 max-lg:hidden">Creators</p>
+            <p className="mt-6 mb-1.5 px-3 text-micro uppercase text-ink-3 max-lg:hidden">Creators</p>
             <div className="max-lg:mt-4 flex flex-col gap-0.5">
               {link(CREATORS)}
               {accounts.map((account) => {

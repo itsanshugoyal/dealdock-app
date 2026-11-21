@@ -1,3 +1,4 @@
+import { threadsOfCreator } from "./deals";
 import { Prisma } from "@prisma/client";
 import { DomainError, HIGH_INTENT_LABELS } from "@dealdock/core";
 import { prisma } from "../client";
@@ -162,8 +163,9 @@ export async function activateInvitedSeat(
 /** Roster overview rollups (PRD §5.6.1): one row per connected account. */
 export async function getRosterOverview(orgId: OrgId) {
   const [accounts, org] = await Promise.all([
+    // Creators only: an email inbox is a channel of the creator who owns it, never a row of its own.
     prisma.igAccount.findMany({
-      where: { orgId },
+      where: { orgId, ownerAccountId: null, NOT: { platform: "email" } },
       select: { id: true, handle: true, status: true },
     }),
     prisma.organization.findUnique({ where: { id: orgId }, select: { timezone: true } }),
@@ -177,18 +179,13 @@ export async function getRosterOverview(orgId: OrgId) {
   for (const account of accounts) {
     const [recovered, highPriority, reviewCount] = await Promise.all([
       prisma.ledgerEntry.aggregate({
-        where: {
-          orgId,
-          deletedAt: null,
-          closedAt: { gte: monthStart },
-          thread: { igAccountId: account.id },
-        },
+        where: { orgId, deletedAt: null, closedAt: { gte: monthStart }, igAccountId: account.id },
         _sum: { amountMinor: true },
       }),
       prisma.thread.count({
         where: {
           orgId,
-          igAccountId: account.id,
+          AND: [threadsOfCreator(account.id)],
           state: "open",
           hasPendingReview: false,
           topLabel: { in: [...HIGH_INTENT_LABELS] },
@@ -205,7 +202,7 @@ export async function getRosterOverview(orgId: OrgId) {
           orgId,
           routedTo: "review_queue",
           reviewOutcome: null,
-          message: { thread: { igAccountId: account.id } },
+          message: { thread: threadsOfCreator(account.id) },
         },
       }),
     ]);

@@ -185,7 +185,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Inbox v2, o
     expect(await db.getOrgSettings(org.orgId)).toEqual({
       currencyCode: "INR", locale: "en-IN", timezone: "Asia/Kolkata", nudgeDelayDays: 3, tier: "solo", deletionRequestedAt: null,
       monthlyGoalMinor: 50_000_00,
-      accounts: [{ id: org.igAccount.id, handle: org.igAccount.handle, status: "active", provider: "mock" }],
+      accounts: [{ id: org.igAccount.id, handle: org.igAccount.handle, status: "active", provider: "mock", rateCardToken: null }],
       voiceConsent: [{ igAccountId: org.igAccount.id, consented: false }],
     });
     expect(await db.getOrgSettings(db.asOrgId(`missing-${org.nonce}`))).toBeNull();

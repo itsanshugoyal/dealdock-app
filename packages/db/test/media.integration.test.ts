@@ -194,8 +194,10 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice notes
     expect(await db.completeSpeakingVoice(orgId, { voiceId: first.voiceId, seatId: seat.id, assetIds: first.assetIds, externalVoiceId: "stale" })).toEqual({ applied: false });
     await db.completeSpeakingVoice(orgId, { voiceId: second.voiceId, seatId: seat.id, assetIds: second.assetIds, externalVoiceId: "mock-voice-2" });
 
-    await db.setSpeakingVoiceDisclosure(orgId, igAccount.id, seat.id, false);
-    expect(await db.getSpeakingVoiceSummary(orgId, igAccount.id)).toMatchObject({ status: "ready", disclosureEnabled: false });
+    // This org is INR: India's IT Rules require the spoken AI disclosure, so it can't be switched off.
+    await expect(db.setSpeakingVoiceDisclosure(orgId, igAccount.id, seat.id, false)).rejects.toMatchObject({ message: "disclosure_required" });
+    await db.setSpeakingVoiceDisclosure(orgId, igAccount.id, seat.id, true);
+    expect(await db.getSpeakingVoiceSummary(orgId, igAccount.id)).toMatchObject({ status: "ready", disclosureEnabled: true });
 
     const revoked = await db.revokeSpeakingVoice(orgId, igAccount.id, seat.id);
     expect(revoked).toMatchObject({ provider: "mock", externalVoiceId: "mock-voice-2" });
@@ -206,7 +208,8 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Voice notes
     await db.settleVendorVoiceDeletion(orgId, revoked!.voiceId, "mock-voice-2", true);
     expect(await db.listSpeakingVoicesToRevoke(orgId)).toHaveLength(0);
     const actions = (await prisma.auditLog.findMany({ where: { orgId, entityType: "speaking_voice" } })).map((row) => row.action);
-    expect(actions).toEqual(expect.arrayContaining(["voice.clone_created", "voice.disclosure_disabled", "voice.clone_revoked"]));
+    expect(actions).toEqual(expect.arrayContaining(["voice.clone_created", "voice.disclosure_enabled", "voice.clone_revoked"]));
+    expect(actions).not.toContain("voice.disclosure_disabled");
 
     // Team seats can never record a creator's voice.
     const user = await prisma.user.create({ data: { clerkUserId: `assistant-${orgId}`, email: `assistant-${orgId}@example.test` } });

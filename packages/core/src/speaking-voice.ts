@@ -17,6 +17,23 @@ export const VOICE_CLIP_LIMITS = {
 } as const;
 
 /** Take 1, read aloud: the creator's own consent and 18+ attestation (vendor use policy). */
+/**
+ * Spoken at the start of a disclosed voice note, inside the clip. India's IT Rules
+ * (in force 20 Feb 2026) require synthetic audio to carry a prominently prefixed
+ * audio disclosure; a separate text label is not part of the audio.
+ */
+export const SPOKEN_AI_DISCLOSURE = "This is an AI-generated voice note.";
+
+/** Indian workspaces can't switch the disclosure off. Currency stands in for the workspace's country (one per org). */
+export function voiceDisclosureRequired(currencyCode: string): boolean {
+  return currencyCode === "INR";
+}
+
+/** The text a disclosed voice note is synthesized from: the disclosure first, then the approved reply. */
+export function withSpokenDisclosure(text: string): string {
+  return `${SPOKEN_AI_DISCLOSURE} ${text}`;
+}
+
 export function consentStatement(handle: string): string {
   return `This is my own voice and I'm 18 or older. I consent to DealDock creating a copy of my voice for @${handle}, to send voice notes that I approve. I can delete it at any time.`;
 }

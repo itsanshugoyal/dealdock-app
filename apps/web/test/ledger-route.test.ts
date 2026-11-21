@@ -5,7 +5,8 @@ vi.mock("@dealdock/db", () => ({ getLedger, getDashboard: vi.fn(), updateLedgerE
 vi.mock("../../api/src/auth", () => ({ requireAuth: async (req: { auth: unknown }) => { req.auth = { orgId: "org-a", seatId: "seat-a", role: "creator" }; } }));
 import { ledgerRoutes } from "../../api/src/routes/ledger";
 
-describe("ledger route scope", () => {
+// Loading the API route module compiles the whole Fastify app on a cold run, which can pass 5s under load.
+describe("ledger route scope", { timeout: 30_000 }, () => {
   it("exports only the requested account and month, preserving CSV escaping", async () => {
     getLedger.mockReset();
     getLedger.mockResolvedValue({ months: [{ month: "2026-01" }, { month: "2026-02" }], entries: [{ closedAt: new Date("2026-01-15T00:00:00Z"), handle: "buyer", dealType: "brand", amountMinor: 12345, currencyCode: "USD", note: "=unsafe" }] });

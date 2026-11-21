@@ -1,24 +1,49 @@
 "use client";
 
 import {
+  checkScam,
   DEAL_TYPES,
+  EMPTY_DEAL_TERMS,
   isDealType,
   type AudioPreviewResponse,
   type AuditRow,
+  type BillingProfileDto,
+  type BillingProfileInput,
+  type BillingProfileResponse,
   type ChooseAlternativeRequest,
   type ClassificationLabel,
+  type CommentLeadDto,
+  type CommentLeadsResponse,
   type CreateSpeakingVoiceRequest,
   type CurrencyCode,
+  type DealCreateRequest,
+  type DealDto,
+  type DealPaidRequest,
+  type DealSuggestion,
   type DealType,
+  type DealUpdateRequest,
   type DraftDto,
   type DraftRequest,
   type InboxResponse,
   type InboxRow,
   type Insights,
+  type InvoiceCreateRequest,
+  type InvoiceDto,
+  type InvoicePaidRequest,
+  type InvoicePaidResponse,
+  type LeadEventDto,
+  type LeadSourceCreated,
+  type LeadSourceCreateRequest,
+  type LeadSourceDto,
+  type LeadSourcesResponse,
+  type LeadStage,
+  type RenewalDto,
   type LeakScanSummary,
   type MoneyContext,
   type OfferDto,
   type OfferInput,
+  type PublicRateCard,
+  type RateCardLinkResponse,
   type ReplyWindow,
   type ReviewQueueResponse,
   type ReviewQueueRow,
@@ -40,11 +65,14 @@ import type {
   AppSnapshot,
   AppStoreApi,
   BillingView,
+  CommentLeadsView,
   DashboardView,
   DataSummary,
   DemoLedgerEntry,
   DemoMessage,
   DemoThread,
+  EmailAccountView,
+  EmailInboxes,
   LedgerView,
   MeView,
   NotificationPrefs,
@@ -96,6 +124,11 @@ const EXPORT_FAILURES = {
   offline: "You are offline. Reconnect before exporting data.",
   cancelled: "Account changed while loading this export.",
   changed: "Account changed while loading this export.",
+};
+const ATTACHMENT_FAILURES = {
+  offline: "You are offline. Reconnect to download this file.",
+  cancelled: "Account changed while downloading this file.",
+  changed: "Account changed while downloading this file.",
 };
 
 /**
@@ -270,12 +303,14 @@ export class ApiStore implements AppStoreApi {
       if (!response.ok) {
         let detail = "";
         let code = "";
+        let fields: unknown;
         try {
-          const body = (await response.json()) as { error?: string; hint?: string; message?: string };
+          const body = (await response.json()) as { error?: string; hint?: string; message?: string; detail?: unknown };
           code = body.error ?? "";
           detail = body.hint ?? body.message ?? body.error ?? "";
+          fields = body.detail;
         } catch { /* response is not JSON */ }
-        throw httpError(response.status, code, detail);
+        throw httpError(response.status, code, detail, fields);
       }
       return (await response.json()) as T;
     }, REQUEST_FAILURES);
@@ -442,8 +477,10 @@ export class ApiStore implements AppStoreApi {
    * A slice a failed refresh cleared back to idle is flagged too when a
    * screen had loaded it, so the screen still showing it loads it again.
    */
-  private markStale(...keys: SliceKey[]) {
+  private markStale(...changed: SliceKey[]) {
     const next: Partial<Record<SliceKey, Slice<unknown>>> = {};
+    // Whatever changes deals can change which brands are due a renewal pitch.
+    const keys = changed.includes("deals") && !changed.includes("renewals") ? [...changed, "renewals" as const] : changed;
     for (const key of keys) {
       this.staleAt.set(key, this.seq);
       this.forget(key);
@@ -616,7 +653,7 @@ export class ApiStore implements AppStoreApi {
   }
   async generateDraft(threadId: string, request: DraftRequest = {}) {
     const steered = Boolean(request.chips?.length || request.instruction);
-    const hasBody = steered || Boolean(request.variants);
+    const hasBody = steered || Boolean(request.variants) || Boolean(request.purpose);
     const draft = await this.write<DraftDto>(`/threads/${enc(threadId)}/draft`, hasBody ? jsonInit("POST", request) : { method: "POST" });
     if (!draft?.id) throw new Error("DealDock could not prepare a draft for this conversation.");
     this.patchDetail(threadId, (thread) => ({ ...thread, draft, draftReady: true }));
@@ -652,8 +689,8 @@ export class ApiStore implements AppStoreApi {
       if (this.epoch !== epoch) throw new Error(REQUEST_FAILURES.changed);
       return { status: "unknown", pending: false, ambiguous: true, learned: [], hint: "The send result is unconfirmed. Check Instagram before taking any further action; DealDock won't retry it automatically." };
     }
-    // The sent message, the cleared draft and the row's new preview come back with the conversation.
-    await this.settle({ thread: threadId, stale: ["insights", "roster", "voice"] });
+    // The sent message, the cleared draft and the row's new preview come back with the conversation; a sent pitch leaves Today's renewals.
+    await this.settle({ thread: threadId, stale: ["insights", "roster", "voice", "renewals"] });
     return { ...result, learned: result.learned ?? [], pending: result.status === "pending" || result.status === "remote_accepted", ambiguous: result.status === "unknown" };
   }
   async setState(threadId: string, state: ThreadState) {
@@ -720,14 +757,16 @@ export class ApiStore implements AppStoreApi {
     const result = await this.write<{ deleted: boolean }>(`/ledger/${enc(entryId)}`, { method: "DELETE" });
     this.patchLedger((entries) => entries.filter((entry) => entry.id !== entryId));
     this.patchSlice("ledgerView", (view) => ({ ...view, entries: view.entries.filter((entry) => entry.id !== entryId) }));
-    await this.settle({ parts: thisMonth ? ["dashboard"] : [], stale: ["ledgerView", "insights", "roster"] });
+    // A deal's payment entry going reopens that deal, so it is owed again.
+    await this.settle({ parts: thisMonth ? ["dashboard"] : [], stale: ["ledgerView", "insights", "roster", "deals"] });
     return result;
   }
   async download(path: string, fallbackName: string) {
+    const attachment = path.startsWith("/email/") || path.startsWith("/invoices/");
     const blob = await this.authorizedFetch(path, { method: path === "/settings/export" ? "POST" : "GET" }, async (response) => {
-      if (!response.ok) throw new Error("DealDock could not prepare that export.");
+      if (!response.ok) throw new Error(attachment ? "This file couldn't be downloaded. Try again." : "DealDock could not prepare that export.");
       return response.blob();
-    }, EXPORT_FAILURES);
+    }, attachment ? ATTACHMENT_FAILURES : EXPORT_FAILURES);
     const objectUrl = URL.createObjectURL(blob);
     try {
       const link = document.createElement("a");
@@ -751,6 +790,158 @@ export class ApiStore implements AppStoreApi {
     return this.loadSlice("audit", `/audit?limit=${limit}`, (raw) => rows(raw) as AuditRow[]);
   }
 
+  // ── Deals ──────────────────────────────────────────────────────────────
+
+  loadDeals(options: { status?: "open" | "all"; igAccountId?: string } = {}) {
+    const params = new URLSearchParams({ status: options.status ?? "open" });
+    if (options.igAccountId) params.set("igAccountId", options.igAccountId);
+    return this.loadSlice("deals", `/deals?${params}`, (raw) => arr(obj(raw).deals) as DealDto[]);
+  }
+  /** The deal wherever this store already holds it: the deals slice or an open conversation. */
+  private knownDeal(dealId: string): DealDto | undefined {
+    return this.snapshot.deals.data?.find((deal) => deal.id === dealId)
+      ?? Object.values(this.snapshot.details).flatMap((slice) => slice.data?.deals ?? []).find((deal) => deal.id === dealId);
+  }
+  /** A write's answer, applied where the deal shows: its conversation and the deals slice. */
+  private applyDeal(deal: DealDto) {
+    const replace = (deals: DealDto[]) => deals.some((item) => item.id === deal.id) ? deals.map((item) => (item.id === deal.id ? deal : item)) : [deal, ...deals];
+    if (deal.threadId) this.patchDetail(deal.threadId, (thread) => ({ ...thread, deals: replace(thread.deals) }));
+    this.patchSlice("deals", (deals) => deals.map((item) => (item.id === deal.id ? deal : item)));
+  }
+  async createDeal(request: DealCreateRequest) {
+    const deal = await this.write<DealDto>("/deals", jsonInit("POST", request));
+    if (!deal?.id) throw new Error("DealDock couldn't save this deal. Try again.");
+    // Recording a deal closes the conversation, as recording a sale does.
+    if (request.threadId) this.patchRow(request.threadId, (row) => ({ ...row, state: "closed", waitingSince: null, nudgeDue: false, hasDealSignal: false }));
+    this.applyDeal(deal);
+    const paid = deal.stage === "paid";
+    await this.settle({ parts: paid ? ["ledger", "dashboard"] : [], thread: request.threadId, stale: ["deals", "closed", "insights", "roster", ...(paid ? (["ledgerView"] as const) : [])] });
+    return deal;
+  }
+  async updateDeal(dealId: string, patch: DealUpdateRequest) {
+    const deal = await this.write<DealDto>(`/deals/${enc(dealId)}`, jsonInit("PATCH", patch));
+    this.applyDeal(deal);
+    await this.settle({ thread: deal.threadId ?? undefined, stale: ["deals"] });
+    return deal;
+  }
+  async markDealPaid(dealId: string, request: DealPaidRequest) {
+    const deal = await this.write<DealDto>(`/deals/${enc(dealId)}/paid`, jsonInit("POST", request));
+    this.applyDeal(deal);
+    // Paying a deal is a Revenue entry: the month's ledger and dashboard come back, the rest reloads.
+    await this.settle({ parts: ["ledger", "dashboard"], thread: deal.threadId ?? undefined, stale: ["deals", "insights", "ledgerView", "roster"] });
+    return deal;
+  }
+  async deleteDeal(dealId: string) {
+    const deal = this.knownDeal(dealId);
+    await this.write(`/deals/${enc(dealId)}`, { method: "DELETE" }, () => {
+      this.patchSlice("deals", (deals) => deals.filter((item) => item.id !== dealId));
+      if (deal?.threadId) this.patchDetail(deal.threadId, (thread) => ({ ...thread, deals: thread.deals.filter((item) => item.id !== dealId) }));
+    });
+    // Its Revenue entries (a paid deal's, or a paid advance's) are deleted with it.
+    const paid = deal?.stage === "paid" || (deal?.paidMinor ?? 0) > 0;
+    await this.settle({ parts: paid ? ["ledger", "dashboard"] : [], thread: deal?.threadId ?? undefined, stale: ["deals", ...(paid ? (["insights", "ledgerView", "roster"] as const) : [])] });
+  }
+  // ── Renewals ───────────────────────────────────────────────────────────
+
+  loadRenewals() {
+    return this.loadSlice("renewals", "/renewals", (raw) => arr(obj(raw).renewals) as RenewalDto[]);
+  }
+  async handleRenewal(dealId: string, how: "not_now" | "copied") {
+    await this.write<DealDto>(`/deals/${enc(dealId)}/renewal-handled`, jsonInit("POST", { how }), (deal) => {
+      this.patchSlice("renewals", (renewals) => renewals.filter((item) => item.deal.id !== dealId));
+      this.applyDeal(deal);
+    });
+  }
+  async draftForDeal(dealId: string) {
+    // Text to copy: nothing is stored, so nothing else changes.
+    const result = await this.request<{ body?: unknown }>(`/deals/${enc(dealId)}/draft`, jsonInit("POST", { purpose: "renewal" }));
+    if (typeof result?.body !== "string" || !result.body.trim()) throw new Error("DealDock couldn't write a pitch right now. Try again.");
+    return result.body;
+  }
+
+  // ── Coach pipeline ─────────────────────────────────────────────────────
+
+  async setLeadStage(threadId: string, stage: LeadStage) {
+    await this.write<{ leadStage: LeadStage }>(`/threads/${enc(threadId)}/lead-stage`, jsonInit("PUT", { stage }));
+    this.patchRow(threadId, (row) => ({ ...row, leadStage: stage }));
+    this.patchDetail(threadId, (thread) => ({ ...thread, leadStage: stage }));
+    this.patchSlice("closed", (rows) => rows.map((row) => (row.id === threadId ? { ...row, leadStage: stage } : row)));
+  }
+  loadLeadSources() {
+    return this.loadSlice("leadSources", "/lead-sources", (raw) => ({ sources: arr(obj(raw).sources), unmatched: arr(obj(raw).unmatched) }) as LeadSourcesResponse);
+  }
+  connectLeadSource(request: LeadSourceCreateRequest) {
+    return this.write<LeadSourceCreated>("/lead-sources", jsonInit("POST", request), (created) =>
+      this.patchSlice("leadSources", (view) => ({ ...view, sources: [...view.sources, created.source] })));
+  }
+  async saveLeadSourceSecret(sourceId: string, secret: string) {
+    await this.write<LeadSourceDto>(`/lead-sources/${enc(sourceId)}/secret`, jsonInit("PUT", { secret }), (saved) =>
+      this.patchSlice("leadSources", (view) => ({ ...view, sources: view.sources.map((source) => (source.id === saved.id ? saved : source)) })));
+  }
+  async removeLeadSource(sourceId: string) {
+    await this.write(`/lead-sources/${enc(sourceId)}`, { method: "DELETE" }, () =>
+      this.patchSlice("leadSources", (view) => ({ sources: view.sources.filter((source) => source.id !== sourceId), unmatched: view.unmatched.filter((event) => event.sourceId !== sourceId) })));
+  }
+  async matchLeadEvent(eventId: string, threadId: string) {
+    await this.write<LeadEventDto>(`/lead-events/${enc(eventId)}/match`, jsonInit("POST", { threadId }), () =>
+      this.patchSlice("leadSources", (view) => ({ ...view, unmatched: view.unmatched.filter((event) => event.id !== eventId) })));
+    // The conversation's stage moved forward, and a payment now waits to be recorded there.
+    await this.settle({ parts: ["inbox", "waiting"], thread: threadId, stale: ["closed"] });
+  }
+  async dismissLeadEvent(eventId: string) {
+    const threadId = Object.values(this.snapshot.details).find((slice) => slice.data?.leadPayments?.some((event) => event.id === eventId))?.data?.id;
+    await this.write(`/lead-events/${enc(eventId)}/dismiss`, { method: "POST" }, () => {
+      this.patchSlice("leadSources", (view) => ({ ...view, unmatched: view.unmatched.filter((event) => event.id !== eventId) }));
+      if (threadId) this.patchDetail(threadId, (thread) => ({ ...thread, leadPayments: (thread.leadPayments ?? []).filter((event) => event.id !== eventId) }));
+    });
+  }
+
+  async suggestDeal(threadId: string): Promise<DealSuggestion> {
+    const raw = await this.request<Partial<DealSuggestion>>(`/threads/${enc(threadId)}/deal-suggestion`, { method: "POST" });
+    return {
+      title: raw.title ?? null, dealType: raw.dealType ?? null, amountMinor: raw.amountMinor ?? null, dueAt: raw.dueAt ?? null,
+      terms: { ...EMPTY_DEAL_TERMS, ...raw.terms }, missing: raw.missing ?? [], modelVersion: raw.modelVersion ?? "",
+    };
+  }
+
+  // ── Invoices and billing details ───────────────────────────────────────
+
+  loadBillingProfile(igAccountId?: string) {
+    return this.loadSlice("billingProfile", `/settings/billing-profile${igAccountId ? `?igAccountId=${enc(igAccountId)}` : ""}`, (raw) => ({ profile: (obj(raw).profile ?? null) as BillingProfileDto | null, inherited: obj(raw).inherited === true }));
+  }
+  saveBillingProfile(input: BillingProfileInput, igAccountId?: string) {
+    // Saved from the screen showing this profile, so the answer is what that screen shows now.
+    return this.write<BillingProfileDto>(`/settings/billing-profile${igAccountId ? `?igAccountId=${enc(igAccountId)}` : ""}`, jsonInit("PUT", input), (profile) => this.replaceSlice("billingProfile", { profile, inherited: false }));
+  }
+  /** Shows an invoice on its deal at once; returns the deal it belongs to, when this store holds it. */
+  private applyInvoice(invoice: InvoiceDto): DealDto | undefined {
+    const deal = this.knownDeal(invoice.dealId);
+    if (!deal) return undefined;
+    const invoices = deal.invoices ?? [];
+    this.applyDeal({ ...deal, invoices: invoices.some((item) => item.id === invoice.id) ? invoices.map((item) => (item.id === invoice.id ? invoice : item)) : [...invoices, invoice] });
+    return deal;
+  }
+  async createInvoice(dealId: string, request: InvoiceCreateRequest) {
+    const invoice = await this.write<InvoiceDto>(`/deals/${enc(dealId)}/invoices`, jsonInit("POST", request));
+    // Issuing moves an agreed deal on and may date it: the server's deal comes back with its conversation and the deals list.
+    const deal = this.applyInvoice(invoice);
+    await this.settle({ thread: deal?.threadId ?? undefined, stale: ["deals"] });
+    return invoice;
+  }
+  async voidInvoice(invoiceId: string) {
+    const invoice = await this.write<InvoiceDto>(`/invoices/${enc(invoiceId)}/void`, { method: "POST" });
+    const deal = this.applyInvoice(invoice);
+    await this.settle({ thread: deal?.threadId ?? undefined, stale: ["deals"] });
+    return invoice;
+  }
+  async markInvoicePaid(invoiceId: string, request: InvoicePaidRequest) {
+    const result = await this.write<InvoicePaidResponse>(`/invoices/${enc(invoiceId)}/paid`, jsonInit("POST", request));
+    this.applyDeal(result.deal);
+    // Each paid invoice is a Revenue entry, as paying a deal is.
+    await this.settle({ parts: ["ledger", "dashboard"], thread: result.deal.threadId ?? undefined, stale: ["deals", "insights", "ledgerView", "roster"] });
+    return result;
+  }
+
   // ── Offers ─────────────────────────────────────────────────────────────
 
   loadOffers() {
@@ -764,6 +955,35 @@ export class ApiStore implements AppStoreApi {
   }
   async deleteOffer(offerId: string) {
     await this.write(`/offers/${enc(offerId)}`, { method: "DELETE" }, () => this.patchSlice("offers", (offers) => offers.filter((item) => item.id !== offerId)));
+  }
+  async setRateCardLink(igAccountId: string, on: boolean) {
+    const link = await this.write<RateCardLinkResponse>(on ? "/offers/rate-card" : `/offers/rate-card/${enc(igAccountId)}`, on ? jsonInit("POST", { igAccountId }) : { method: "DELETE" }, (result) =>
+      this.patchSlice("settings", (settings) => ({ ...settings, accounts: settings.accounts.map((account) => (account.id === result.igAccountId ? { ...account, rateCardToken: result.token } : account)) })));
+    return link.token;
+  }
+  /** The public rate card: no session and no account, so it never goes through authorizedFetch. */
+  async loadPublicRateCard(token: string): Promise<PublicRateCard | null> {
+    const base = this.localDevelopment ? "/api/dev" : process.env.NEXT_PUBLIC_API_URL;
+    if (!base) throw new Error("DealDock is not configured for this environment.");
+    const response = await fetch(`${base.replace(/\/$/, "")}/public/rate-cards/${enc(token)}`, { cache: "no-store", credentials: "omit" });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error("This rate card didn't load. Try again in a moment.");
+    return (await response.json()) as PublicRateCard;
+  }
+
+  // ── Usage rights and proof of results ──────────────────────────────────
+
+  async setUsageHandled(dealId: string, handled: boolean) {
+    const deal = await this.write<DealDto>(`/deals/${enc(dealId)}/usage-handled`, jsonInit("POST", { handled }));
+    this.applyDeal(deal);
+    await this.settle({ stale: ["deals"] });
+    return deal;
+  }
+  async fetchInsights(dealId: string, deliverableId: string) {
+    const deal = await this.write<DealDto>(`/deals/${enc(dealId)}/deliverables/${enc(deliverableId)}/insights`, { method: "POST" });
+    this.applyDeal(deal);
+    await this.settle({ stale: ["deals"] });
+    return deal;
   }
 
   // ── Your voice ─────────────────────────────────────────────────────────
@@ -875,7 +1095,7 @@ export class ApiStore implements AppStoreApi {
     await this.write(`/seats/${enc(seatId)}`, { method: "DELETE" }, () => this.patchSlice("seats", (seats) => seats.filter((seat) => seat.id !== seatId)));
   }
   loadRoster() { return this.loadSlice("roster", "/roster", (raw) => rows(raw) as RosterRow[]); }
-  loadDataSummary() { return this.loadSlice("dataSummary", "/settings/data", (raw) => raw as DataSummary); }
+  loadDataSummary() { return this.loadSlice("dataSummary", "/settings/data", (raw) => ({ ...(raw as DataSummary), emailInboxes: arr(obj(raw).emailInboxes) as DataSummary["emailInboxes"] })); }
   async scheduleDeletion() {
     const result = await this.write("/account", { method: "DELETE" });
     this.markStale("settings");
@@ -884,6 +1104,60 @@ export class ApiStore implements AppStoreApi {
   async cancelDeletion() {
     await this.write("/account/cancel-deletion", { method: "POST" });
     this.markStale("settings");
+  }
+
+  // ── Email (Gmail) ──────────────────────────────────────────────────────
+
+  loadEmailAccounts() {
+    return this.loadSlice("emailAccounts", "/email/accounts", (raw): EmailInboxes => ({ accounts: arr(obj(raw).accounts).map(toEmailAccount), available: obj(raw).configured !== false }));
+  }
+  async connectEmail(igAccountId?: string) {
+    try {
+      return await this.request<{ authorizeUrl: string }>(`/email/connect${igAccountId ? `?igAccountId=${enc(igAccountId)}` : ""}`);
+    } catch (error) {
+      // Not set up on this deployment: Settings hides the Email section from now on.
+      if ((error as { code?: unknown }).code === "email_not_configured") this.patchSlice("emailAccounts", (inboxes) => ({ ...inboxes, available: false }));
+      throw error;
+    }
+  }
+  async disconnectEmail(accountId: string) {
+    await this.write(`/email/accounts/${enc(accountId)}/disconnect`, { method: "POST" }, () =>
+      this.patchSlice("emailAccounts", (inboxes) => ({ ...inboxes, accounts: inboxes.accounts.filter((account) => account.id !== accountId) })));
+  }
+
+  // ── Comment leads ──────────────────────────────────────────────────────
+
+  loadCommentLeads() {
+    return this.loadSlice("commentLeads", "/comment-leads", toCommentLeads);
+  }
+  async setCommentKeywords(keywords: string[], igAccountId?: string) {
+    const saved = await this.write<{ igAccountId: string; keywords: string[] }>("/comment-leads/keywords", jsonInit("PUT", { keywords, ...(igAccountId ? { igAccountId } : {}) }), (result) =>
+      this.patchSlice("commentLeads", (view) => ({ ...view, keywords: { ...view.keywords, [result.igAccountId]: result.keywords } })));
+    return saved.keywords;
+  }
+  async sendCommentLead(leadId: string, text: string) {
+    try {
+      await this.write<{ lead: CommentLeadDto }>(`/comment-leads/${enc(leadId)}/send`, jsonInit("POST", { text }), ({ lead }) => this.patchCommentLead(lead));
+    } catch (error) {
+      // Whatever happened (sent before, too late, refused), show the lead as the server has it now.
+      this.markStale("commentLeads");
+      throw error;
+    }
+  }
+  async skipCommentLead(leadId: string) {
+    await this.write(`/comment-leads/${enc(leadId)}/skip`, { method: "POST" }, () =>
+      this.patchSlice("commentLeads", (view) => ({ ...view, leads: view.leads.filter((lead) => lead.id !== leadId) })));
+  }
+  async redraftCommentLead(leadId: string) {
+    await this.write<{ lead: CommentLeadDto }>(`/comment-leads/${enc(leadId)}/draft`, { method: "POST" }, ({ lead }) => this.patchCommentLead(lead));
+  }
+  async clearExpiredCommentLeads(igAccountId?: string) {
+    const { cleared } = await this.write<{ cleared: number }>("/comment-leads/clear", jsonInit("POST", igAccountId ? { igAccountId } : {}));
+    this.markStale("commentLeads");
+    return cleared;
+  }
+  private patchCommentLead(lead: CommentLeadDto) {
+    this.patchSlice("commentLeads", (view) => ({ ...view, leads: view.leads.map((item) => (item.id === lead.id ? lead : item)) }));
   }
 
   // ── Instagram + onboarding ─────────────────────────────────────────────
@@ -925,19 +1199,67 @@ const FRIENDLY_CODES: Record<string, string> = {
   currency_immutable_for_organization: "Currency is set once for this workspace and can't change.",
   no_connected_account: "Connect an Instagram account first.",
   seat_limit_reached: "Your plan has no free seats left.",
-  account_not_active: "Instagram is disconnected for this account. Reconnect it in Settings.",
+  account_not_active: "This account is disconnected. Reconnect it in Settings.",
+  deal_already_paid: "This deal is already marked paid.",
+  deal_not_open: "This deal is paid or cancelled, so that can't change.",
+  deal_stage_change_not_allowed: "This deal can't move to that stage from where it is.",
+  handle_ignored: "This sender is on your People to skip list, so DealDock doesn't read their chat.",
+  email_not_configured: "Email isn't available for this workspace yet.",
+  offer_add_ons_are_for_brand_offers: "Add-on prices are for brand offers.",
+  post_link_required: "Add the post link first.",
+  post_not_found: "Instagram didn't find this post on the creator's account. Check the link, or type the results in.",
+  story_results_not_available: "Instagram keeps story results for a day only. Type them in from the story's insights.",
+  insights_unavailable: "Instagram didn't share this post's results. Type them in from its insights.",
+  instagram_reconnect_required: "Reconnect Instagram in Settings, then try again.",
+  instagram_busy: "Instagram is busy right now. Try again in a minute.",
+  billing_profile_required: "Add your billing details in Settings before making an invoice.",
+  deal_has_no_advance: "This deal has no advance. Make a full invoice instead.",
+  advance_must_be_first_invoice: "An advance invoice has to come first. Invoice the balance instead.",
+  nothing_left_to_invoice: "Everything on this deal is already invoiced.",
+  invoice_exceeds_deal_amount: "That's more than what's left to invoice on this deal.",
+  invoice_number_too_long: "Invoice numbers have to fit GST's 16 characters. Use a shorter prefix in Billing details.",
+  invoice_number_conflict: "That invoice number is already used. Change the prefix in Billing details, then try again.",
+  invoice_already_paid: "This invoice is already paid.",
+  invoice_void: "This invoice was voided, so it can't be paid.",
+  invoice_not_open: "This invoice was paid or voided. Draft a new note to send.",
+  invoice_prefix_in_use: "Another billing profile uses this prefix. Pick a different one.",
+  deal_has_open_invoices: "This deal has an unpaid invoice. Mark that invoice paid instead.",
+  deal_has_invoices: "This deal has invoices. Void them before changing the amount.",
+  void_invoices_first: "This deal has an unpaid invoice. Void it before cancelling the deal.",
+  deal_has_no_conversation: "This deal wasn't agreed in DealDock, so there's no conversation to send it from.",
+  voice_not_supported: "An invoice goes as text with its PDF, not as a voice note.",
+  public_media_url_unconfigured: "Nothing was sent: Instagram can't fetch the PDF from this server. Download it and share it in the chat yourself.",
+  roster_plan_required: "Separate billing details for each creator need the Roster plan.",
+  ig_account_required: "Choose which creator this inbox belongs to.",
+  disclosure_required: "In India, every voice note has to start by saying it's AI-generated.",
+  deal_not_paid: "Only a paid deal can be pitched again.",
+  deal_has_conversation: "This deal has a conversation. Open it to draft the pitch there.",
+  calendly_key_refused: "Calendly didn't accept that key. Copy a new one from Calendly and try again.",
+  calendly_unavailable: "Calendly didn't answer. Nothing was connected; try again in a minute.",
+  public_api_url_unconfigured: "DealDock's public address isn't set up on this server yet, so no tool can reach it.",
+  lead_event_handled: "That payment was already recorded or dismissed.",
+  lead_event_already_matched: "That payment is already matched to another conversation.",
+  comment_leads_not_configured: "Comment replies aren't available for this workspace yet.",
+  comment_lead_too_late: "Too late to reply privately: Instagram allows it for 7 days after the comment.",
+  comment_lead_already_sent: "This comment already has its private reply.",
+  comment_lead_send_in_flight: "This reply is already being sent. DealDock won't send it twice.",
+  comment_lead_not_open: "This comment was already answered or skipped.",
+  too_many_keywords: "Keep it to 10 keywords.",
+  keyword_too_long: "Keep each keyword to 30 characters.",
+  keyword_needs_a_word: "A keyword needs a letter, number or emoji.",
 };
 
-function httpError(status: number, code: string, detail: string): Error {
+/** `fields` is the API's field-level detail on a 400 (zod's flatten()), kept so a form can mark its fields. */
+function httpError(status: number, code: string, detail: string, fields?: unknown): Error {
   const plain = detail && !/^[a-z0-9_:]+$/.test(detail) ? detail : "";
   let message: string;
   if (status === 401) message = "Your session expired. Sign in again to continue.";
-  else if (status === 403) message = code === "no_seat_in_org" || detail === "no_seat_in_org" ? "Your workspace needs setup. Open onboarding to continue." : "This account is read-only or your seat does not have permission for that action.";
+  else if (status === 403) message = code === "no_seat_in_org" || detail === "no_seat_in_org" ? "Your workspace needs setup. Open onboarding to continue." : FRIENDLY_CODES[code] ?? "This account is read-only or your seat does not have permission for that action.";
   else if (status === 404) message = "This isn't available. It may belong to another account or have been removed.";
   else if (status === 409) message = FRIENDLY_CODES[code] ?? (plain || "This action is no longer available. Refresh and try again.");
   else if (status === 429) message = "DealDock is temporarily rate limited. Wait a moment, then try again.";
   else message = FRIENDLY_CODES[code] ?? (plain || `DealDock could not complete that request (${status}).`);
-  return Object.assign(new Error(message), { status, code: code || detail });
+  return Object.assign(new Error(message), { status, code: code || detail, ...(fields === undefined ? {} : { detail: fields }) });
 }
 function jsonInit(method: string, body: unknown): RequestInit {
   return { method, body: JSON.stringify(body) };
@@ -995,8 +1317,14 @@ export function fromInboxRow(row: InboxRow): DemoThread {
     replyWindow: row.replyWindow,
     sendInFlight: false,
     closedDeals: [],
+    deals: [],
     canSendVoice: false,
     detail: false,
+    // An API from before email sends none of these.
+    channel: row.channel ?? "instagram",
+    subject: row.subject ?? null,
+    scamReason: row.scamReason ?? null,
+    leadStage: row.leadStage ?? null,
     messages: row.preview ? [{
       id: row.threadId, direction: row.previewOutbound ? "outbound" : "inbound", text: row.preview, sentAt: lastMessageAt,
       contentType: "text", origin: null, audio: null,
@@ -1038,8 +1366,14 @@ export function fromReviewRow(row: ReviewQueueRow): DemoThread {
     replyWindow: NO_REPLY_WINDOW,
     sendInFlight: false,
     closedDeals: [],
+    deals: [],
     canSendVoice: false,
     detail: false,
+    // Review items don't say their channel: an Instagram handle never contains "@", an email address always does.
+    channel: row.handle.includes("@") ? "email" : "instagram",
+    subject: null,
+    // The API's own rule (checkScam in @dealdock/core), on the one message the item carries.
+    scamReason: checkScam(row.text).reason,
     messages: row.text ? [{
       id: row.classificationId, direction: "inbound", text: row.text, sentAt, contentType: "text", origin: null, audio: null,
       classification: { id: row.classificationId, label: row.bestGuess, confidence: row.confidence, rationale: row.rationale, valueMinMinor: null, valueMaxMinor: null, reviewedAt: null },
@@ -1079,6 +1413,10 @@ export function inboxRowFromDetail(detail: ThreadDetail): InboxRow {
     dealSignal: detail.dealSignal !== null && detail.dealSignal.messageId === lastInbound?.id,
     source: detail.source,
     replyWindow: detail.replyWindow,
+    channel: detail.channel,
+    subject: detail.subject,
+    scamReason: detail.scamReason,
+    leadStage: detail.leadStage ?? null,
   };
 }
 
@@ -1091,6 +1429,7 @@ function fromMessage(message: ThreadMessage): DemoMessage {
     contentType: message.contentType,
     origin: message.origin,
     audio: message.audio,
+    ...(message.attachments?.length ? { attachments: message.attachments } : {}),
     ...(message.classification ? { classification: message.classification } : {}),
   };
 }
@@ -1104,10 +1443,24 @@ export function fromThreadDetail(detail: ThreadDetail): DemoThread {
     dealSignal: detail.dealSignal,
     sendInFlight: detail.sendInFlight,
     closedDeals: detail.closedDeals,
+    // An API from before deals sends none.
+    deals: detail.deals ?? [],
+    leadPayments: detail.leadPayments ?? [],
+    exclusivities: detail.exclusivities ?? [],
     canSendVoice: detail.canSendVoice,
     detail: true,
     messages: detail.messages.map(fromMessage),
     draft: detail.currentDraft,
+  };
+}
+
+/** GET /comment-leads → keywords by account; `configured` false (or an older API without it) hides the feature. */
+function toCommentLeads(raw: unknown): CommentLeadsView {
+  const body = obj(raw) as Partial<CommentLeadsResponse>;
+  return {
+    available: body.configured === true,
+    keywords: Object.fromEntries(arr(body.keywords).map((row) => [str(obj(row).igAccountId), arr(obj(row).keywords).map((keyword) => str(keyword))])),
+    leads: arr(body.leads) as CommentLeadDto[],
   };
 }
 
@@ -1126,7 +1479,7 @@ function dealType(value: unknown): DealType { return isDealType(value) ? value :
 function toLedgerEntry(raw: unknown): DemoLedgerEntry {
   const item = obj(raw);
   return {
-    id: str(item.id), threadId: str(item.threadId), handle: str(item.handle) || "unknown",
+    id: str(item.id), threadId: str(item.threadId) || null, channel: item.channel === "instagram" || item.channel === "email" ? item.channel : null, handle: str(item.handle) || "unknown",
     dealType: dealType(item.dealType),
     amountMinor: num(item.amountMinor) ?? 0, closedAt: dateMs(item.closedAt) ?? Date.now(), note: typeof item.note === "string" ? item.note : undefined,
   };
@@ -1181,17 +1534,26 @@ function toSettings(raw: unknown): SettingsView {
     locale: str(row.locale) || "en-IN",
     timezone: str(row.timezone) || "Asia/Kolkata",
     nudgeDelayDays: num(row.nudgeDelayDays) ?? 3,
-    accounts: arr(row.accounts).map((item) => {
+    // Gmail inboxes come back here too; every screen reading `accounts` means Instagram creators (Email has its own list).
+    accounts: arr(row.accounts).filter((item) => obj(item).provider !== "gmail").map((item) => {
       const account = obj(item);
       const status = account.status === "disconnected" || account.status === "token_expired" ? account.status : "active";
-      return { id: str(account.id), handle: str(account.handle), status, provider: str(account.provider) || "instagram_graph" };
+      return { id: str(account.id), handle: str(account.handle), status, provider: str(account.provider) || "instagram_graph", rateCardToken: str(account.rateCardToken) || null };
     }),
     voiceConsent: arr(row.voiceConsent).map((item) => { const consent = obj(item); return { igAccountId: str(consent.igAccountId), consented: Boolean(consent.consented) }; }),
     deletionRequestedAt: iso(row.deletionRequestedAt),
     monthlyGoalMinor: num(row.monthlyGoalMinor),
     humanAgentEnabled: Boolean(row.humanAgentEnabled),
     speechAvailable: Boolean(row.speechAvailable),
+    insightsAvailable: row.insightsAvailable === true,
     tier,
+  };
+}
+function toEmailAccount(raw: unknown): EmailAccountView {
+  const row = obj(raw);
+  return {
+    id: str(row.id), address: str(row.address), status: row.status === "token_expired" ? "token_expired" : "active",
+    connectedAt: iso(row.connectedAt) ?? new Date().toISOString(), lastSyncedAt: iso(row.lastSyncedAt), ownerAccountId: str(row.ownerAccountId) || null,
   };
 }
 function toMe(raw: unknown): MeView {

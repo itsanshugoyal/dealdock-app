@@ -31,6 +31,13 @@ export function computeReplyWindow(
   };
 }
 
+/** Channels without a reply window (email): a send is never blocked by time. */
+export function noReplyWindow(lastInboundAt: Date | string | null): ReplyWindow {
+  const inbound = lastInboundAt === null ? null : new Date(lastInboundAt);
+  const valid = inbound !== null && Number.isFinite(inbound.getTime());
+  return { status: "none", lastInboundAt: valid ? inbound.toISOString() : null, standardClosesAt: null, extendedClosesAt: null, humanAgentEnabled: false };
+}
+
 /** A send needs the HUMAN_AGENT tag exactly when it falls in the extended part of the window. */
 export function needsHumanAgentTag(window: ReplyWindow): boolean {
   return window.status === "extended";

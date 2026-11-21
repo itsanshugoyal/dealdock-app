@@ -6,6 +6,7 @@ import { writeAudit } from "../audit-log";
 import { requireIgAccountInOrg, requireSeatInOrg } from "../seat-scope";
 import { minorUnitsToNumber, requireMinorUnits } from "../money";
 import { zonedMonthKey } from "../zoned-time";
+import { channelOf, creatorAccountId } from "./deals";
 
 /** One-tap "Mark closed for [amount]" (PRD §5.4) — entry + thread close + audit. */
 export async function closeDeal(
@@ -23,7 +24,10 @@ export async function closeDeal(
   await requireSeatInOrg(orgId, input.seatId);
   return prisma.$transaction(async (tx) => {
     const [thread, org] = await Promise.all([
-      tx.thread.findFirst({ where: { id: input.threadId, orgId }, select: { id: true } }),
+      tx.thread.findFirst({
+        where: { id: input.threadId, orgId },
+        select: { id: true, igAccountId: true, participantHandle: true, igAccount: { select: { ownerAccountId: true } } },
+      }),
       tx.organization.findUnique({ where: { id: orgId }, select: { currencyCode: true } }),
     ]);
     if (!thread || !org) throw new DomainError("thread not in org", 404);
@@ -36,6 +40,8 @@ export async function closeDeal(
       data: [{
         orgId,
         threadId: thread.id,
+        igAccountId: creatorAccountId(thread),
+        counterpartyHandle: thread.participantHandle,
         dealType: input.dealType,
         amountMinor,
         currencyCode: org.currencyCode, // frozen at write time (ADR-9)
@@ -109,24 +115,47 @@ export async function updateLedgerEntry(
   return { ...updated, amountMinor: minorUnitsToNumber(updated.amountMinor) };
 }
 
-/** Soft delete (refunds — PRD §6.7). */
+/**
+ * Soft delete (refunds — PRD §6.7). A deal's payment entry reopens that deal,
+ * and an invoice's reopens the invoice too: the money no longer stands.
+ */
 export async function deleteLedgerEntry(orgId: OrgId, entryId: string, seatId: string) {
   await requireSeatInOrg(orgId, seatId);
-  const entry = await prisma.ledgerEntry.findFirst({
-    where: { id: entryId, orgId, deletedAt: null },
-  });
-  if (!entry) throw new DomainError("ledger entry not in org", 404);
+  await prisma.$transaction(async (tx) => {
+    const entry = await tx.ledgerEntry.findFirst({
+      where: { id: entryId, orgId, deletedAt: null },
+      select: { id: true, dealId: true, invoiceId: true },
+    });
+    if (!entry) throw new DomainError("ledger entry not in org", 404);
 
-  await prisma.ledgerEntry.update({
-    where: { id: entry.id },
-    data: { deletedAt: new Date() },
-  });
-  await writeAudit(prisma, {
-    orgId,
-    seatId,
-    action: "ledger.deleted",
-    entityType: "ledger_entry",
-    entityId: entry.id,
+    // Unlinked so the reopened invoice can be paid again (invoiceId is unique, deleted rows included).
+    await tx.ledgerEntry.update({
+      where: { id: entry.id },
+      data: { deletedAt: new Date(), dealId: null, invoiceId: null },
+    });
+    if (entry.invoiceId) {
+      await tx.invoice.updateMany({
+        where: { id: entry.invoiceId, orgId, status: "paid" },
+        data: { status: "issued", paidAt: null, receivedMinor: null, tdsMinor: null },
+      });
+    }
+    const deal = entry.dealId
+      ? await tx.deal.findFirst({ where: { id: entry.dealId, orgId, stage: "paid", deletedAt: null }, select: { id: true, invoicedAt: true } })
+      : null;
+    if (deal) {
+      await tx.deal.update({
+        where: { id: deal.id },
+        data: { stage: deal.invoicedAt ? "invoiced" : "agreed", paidAt: null, receivedMinor: null, tdsMinor: null },
+      });
+    }
+    await writeAudit(tx, {
+      orgId,
+      seatId,
+      action: "ledger.deleted",
+      entityType: "ledger_entry",
+      entityId: entry.id,
+      ...(entry.dealId ? { detail: { dealId: entry.dealId, ...(entry.invoiceId ? { invoiceId: entry.invoiceId } : {}) } } : {}),
+    });
   });
 }
 
@@ -145,9 +174,9 @@ export async function getLedger(orgId: OrgId, month?: string, igAccountId?: stri
   });
   if (!org) throw new DomainError("org_not_found", 404);
   const entries = await prisma.ledgerEntry.findMany({
-    where: { orgId, deletedAt: null, ...(igAccountId !== undefined ? { thread: { igAccountId, orgId } } : {}) },
+    where: { orgId, deletedAt: null, ...(igAccountId !== undefined ? { igAccountId } : {}) },
     orderBy: { closedAt: "desc" },
-    include: { thread: { select: { id: true, participantHandle: true } } },
+    include: { thread: { select: { participantHandle: true, igAccount: { select: { platform: true } } } } },
   });
 
   // Each close-out's org-local month, computed once (zoned-time caches the formatter).
@@ -206,7 +235,9 @@ export async function getLedger(orgId: OrgId, month?: string, igAccountId?: stri
 function toEntry(e: {
   id: string;
   closedAt: Date;
-  thread: { id: string; participantHandle: string };
+  threadId: string | null;
+  counterpartyHandle: string;
+  thread: { participantHandle: string; igAccount: { platform: string } } | null;
   dealType: DealType;
   amountMinor: bigint;
   currencyCode: string;
@@ -215,8 +246,10 @@ function toEntry(e: {
   return {
     id: e.id,
     closedAt: e.closedAt,
-    handle: e.thread.participantHandle,
-    threadId: e.thread.id,
+    // Money from a deal agreed outside DealDock has no conversation; its stored counterparty names it.
+    handle: e.thread?.participantHandle ?? e.counterpartyHandle,
+    threadId: e.threadId,
+    channel: e.thread ? channelOf(e.thread.igAccount.platform) : null,
     dealType: e.dealType,
     amountMinor: minorUnitsToNumber(e.amountMinor),
     currencyCode: e.currencyCode,

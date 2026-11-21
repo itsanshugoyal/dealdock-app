@@ -27,7 +27,7 @@ describe.runIf(enabled)("creator-scoped ledger", () => {
     const org = db.asOrgId(a.org.id);
     for (const [account, amount, key] of [[a.igAccount.id, 12345, "a"], [b.id, 67890, "b"]] as const) {
       const message = await db.upsertInboundMessage(org, { igAccountId: account, igThreadId: `${nonce}-${key}`, participantHandle: key, participantIgId: key, igMessageId: `${nonce}-${key}`, direction: "inbound", text: "buy", sentAt: new Date() });
-      if (!("threadId" in message)) throw new Error("message not written");
+      if (!message.threadId) throw new Error("message not written");
       const entry = await db.closeDeal(org, { threadId: message.threadId, seatId: a.seat.id, amountMinor: amount, dealType: "brand", idempotencyKey: `${nonce}-${key}` });
       await prisma.ledgerEntry.update({ where: { id: entry.id }, data: { closedAt: new Date("2026-01-15T00:00:00Z") } });
     }

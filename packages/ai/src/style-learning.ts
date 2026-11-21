@@ -1,10 +1,11 @@
-import { editRatio as draftEditRatio } from "@dealdock/core";
+import { CURRENCY_CODES, editRatio as draftEditRatio, formatMoneyExact } from "@dealdock/core";
 import type {
   ClassificationLabel,
   DraftChip,
   LearnedSignal,
   MeasuredStyle,
   MessageOrigin,
+  MoneyContext,
   SeatRole,
   VoiceRuleScope,
   VoiceRuleSource,
@@ -22,6 +23,7 @@ import {
   hindiShare,
   isContentSpan,
   isStopwordsOnly,
+  moneyAmounts,
   normalizeForSim,
   signoffOf,
   wordCount,
@@ -1107,6 +1109,10 @@ export interface LintOptions {
   avoidPhrases: readonly string[];
   /** Target length; a draft over 1.6× is too long. */
   targetWords: number | null;
+  /** Recaps and payment reminders: the only amounts the draft may state (the deal amount, and its advance). */
+  amounts?: { money: MoneyContext; allowedMinor: readonly number[] };
+  /** Email drafts: no subject line in the body, no emoji spam. */
+  email?: boolean;
 }
 
 export function lintDraft(text: string, options: LintOptions): string[] {
@@ -1119,6 +1125,19 @@ export function lintDraft(text: string, options: LintOptions): string[] {
   if (options.targetWords && wordCount(text) > Math.ceil(options.targetWords * 1.6)) {
     violations.push(`Too long: keep it to about ${options.targetWords} words`);
   }
+  if (options.amounts) {
+    const { money, allowedMinor } = options.amounts;
+    const stated = moneyAmounts(text, money.currency);
+    // A figure in another currency reads as an amount only under that currency.
+    const foreign = CURRENCY_CODES.some((code) => code !== money.currency && moneyAmounts(text, code).some((minor) => !stated.includes(minor)));
+    if (foreign || stated.some((minor) => !allowedMinor.includes(minor))) {
+      violations.push(allowedMinor.length
+        ? `State money exactly as the deal has it: ${allowedMinor.map((minor) => formatMoneyExact(minor, money)).join(" or ")}, and no other amount`
+        : "Don't state any amount of money");
+    }
+  }
+  if (options.email && /^[ \t]*subject[ \t]*:/im.test(text)) violations.push("Don't write a subject line; the email already has one");
+  if (options.email && emojiCount(text) > 1) violations.push("Keep emoji out of the email (one at most)");
   return violations;
 }
 

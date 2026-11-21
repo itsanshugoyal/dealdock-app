@@ -10,6 +10,10 @@ on:
         description: Run the real Claude quality gate (requires repository secret and model variables)
         type: boolean
         default: false
+      run_groq_quality:
+        description: Run the real Groq quality gate (requires GROQ_API_KEY)
+        type: boolean
+        default: false
 
 jobs:
   verify:
@@ -31,12 +35,22 @@ jobs:
       - name: Production authentication and worker credential boundaries
         run: node --test scripts/runtime-boundaries.test.mjs scripts/production-auth.test.mjs
       - run: npm run typecheck
+      - name: Typecheck AI quality-evaluation tools
+        run: npm run typecheck:evals -w @dealdock/ai
       - run: npm test
       - name: Heuristic eval harness and routing health (quality is not gated)
         run: npm run eval -w @dealdock/ai
         env:
           NODE_ENV: test
           DEALDOCK_AI_MODE: heuristic
+      - name: Draft-review generator smoke check (synthetic, not model quality)
+        run: |
+          npm run draft-sample -w @dealdock/ai
+          node -e 'const fs=require("node:fs"); const crypto=require("node:crypto"); const p=process.env.DEALDOCK_DRAFT_SAMPLE_OUT; const text=fs.readFileSync(p,"utf8"); const m=JSON.parse(fs.readFileSync(p+".metadata.json","utf8")); const hash=crypto.createHash("sha256").update(text).digest("hex"); if(m.modelVersion!=="heuristic-fallback-1" || m.cases!==50 || m.fictionalCreators!==3 || (text.match(/^## \d+ · Creator [ABC]$/gm)||[]).length!==50 || text.includes(m.modelVersion) || hash!==m.unscoredSampleSha256) process.exit(1);'
+        env:
+          NODE_ENV: test
+          DEALDOCK_AI_MODE: heuristic
+          DEALDOCK_DRAFT_SAMPLE_OUT: ${{ runner.temp }}/dealdock-review-smoke.md
 
   integration:
     runs-on: ubuntu-latest
@@ -96,6 +110,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.run_claude_quality
     runs-on: ubuntu-latest
     env:
+      AI_PROVIDER: anthropic
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLASSIFY_MODEL: ${{ vars.CLASSIFY_MODEL }}
       DRAFT_MODEL: ${{ vars.DRAFT_MODEL }}
@@ -111,4 +126,26 @@ jobs:
         run: test -n "$ANTHROPIC_API_KEY" && test -n "$CLASSIFY_MODEL" && test -n "$DRAFT_MODEL"
       - run: npm run build
       - name: Real Claude quality gate
+        run: npm run eval -w @dealdock/ai
+
+  groq-quality:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_groq_quality
+    runs-on: ubuntu-latest
+    env:
+      AI_PROVIDER: groq
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      GROQ_CLASSIFY_MODEL: ${{ vars.GROQ_CLASSIFY_MODEL }}
+      GROQ_DRAFT_MODEL: ${{ vars.GROQ_DRAFT_MODEL }}
+      NODE_ENV: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Require Groq key
+        run: test -n "$GROQ_API_KEY"
+      - run: npm run build
+      - name: Real Groq quality gate
         run: npm run eval -w @dealdock/ai

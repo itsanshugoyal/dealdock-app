@@ -24,9 +24,11 @@ export async function resolveVoiceAccount(orgId: OrgId, igAccountId?: string | n
     if (!account) throw new DomainError("ig_account_not_in_org", 404);
     return account;
   }
+  // The default is a creator's own account, never a channel inbox (Gmail) it owns.
+  const creators = { orgId, ownerAccountId: null, NOT: { platform: "email" as const } };
   return (
-    (await prisma.igAccount.findFirst({ where: { orgId, status: "active" }, orderBy, select })) ??
-    (await prisma.igAccount.findFirst({ where: { orgId }, orderBy, select }))
+    (await prisma.igAccount.findFirst({ where: { ...creators, status: "active" }, orderBy, select })) ??
+    (await prisma.igAccount.findFirst({ where: creators, orderBy, select }))
   );
 }
 

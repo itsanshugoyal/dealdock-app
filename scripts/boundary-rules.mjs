@@ -15,7 +15,7 @@ export function inspectSource(path, content) {
       if (node.arguments[0] && ts.isStringLiteral(node.arguments[0])) checkModule(node.arguments[0].text);
       else if (worker) report('worker dynamic module loading must use a static literal');
     }
-    if (worker && ts.isIdentifier(node) && ['sendMessage','getConnectedAccount','decryptToken','getGraphAdapter','InstagramGraphAdapter'].includes(node.text)) report(`worker may not reference ${node.text}`);
+    if (worker && ts.isIdentifier(node) && ['sendMessage','sendPrivateReply','getConnectedAccount','decryptToken','getGraphAdapter','InstagramGraphAdapter'].includes(node.text)) report(`worker may not reference ${node.text}`);
     if (worker && ts.isStringLiteral(node) && /(?:graph\.instagram\.com|graph\.facebook\.com)/i.test(node.text)) report('worker may not call Graph endpoints');
     ts.forEachChild(node, visit);
   }

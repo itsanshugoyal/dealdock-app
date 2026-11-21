@@ -6,9 +6,11 @@ import { prisma } from "../client";
  *  - account deletion: 7-day grace after deletionRequestedAt → hard delete
  *  - post-cancellation: ledger read-only 30 days after currentPeriodEnd → hard delete
  * Hard delete = the Organization row cascades through every child table
- * (seats, accounts, threads, messages, classifications, drafts, ledger,
- * voice profiles, voice rules, draft feedback, offers, speaking voices,
- * audio assets, audit logs, subscriptions, push subscriptions).
+ * (seats, accounts incl. email inboxes, threads, messages, classifications,
+ * drafts, ledger, deals and their invoices, billing profiles, voice profiles,
+ * voice rules, draft feedback, offers, speaking voices, audio assets, audit
+ * logs, subscriptions, push subscriptions). Deals and ledger entries without
+ * a thread go with their creator account, and so do comment leads.
  *  - audio clips with an expiry: purged by the daily tick once expiresAt passes.
  */
 
@@ -115,11 +117,15 @@ export async function backdateDeletionRequest(orgId: string, daysAgo: number) {
 
 /**
  * DRILL-ONLY: put one row in every redesign table (voice rule, draft +
- * feedback, offer, speaking voice, audio clips incl. one already expired) so
- * the deletion drill proves they are exported without bytes, purged on
- * expiry and removed by the org cascade. Needs an org with a message.
+ * feedback, offer, speaking voice, audio clips incl. one already expired) and
+ * in the money tables (billing profile, a deal agreed outside DealDock with
+ * its invoice and payment, an email inbox) so the deletion drill proves they
+ * are exported (without audio bytes or inbox tokens), purged on expiry and
+ * removed by the org cascade. Needs an org with a message. Returns the inbox
+ * token, which must never appear in the export.
  */
 export async function seedDrillCoverageRows(orgId: string, igAccountId: string, seatId: string) {
+  const inboxToken = `drill-token-${orgId}`;
   await prisma.$transaction(async (tx) => {
     const message = await tx.message.findFirst({ where: { orgId }, orderBy: { sentAt: "asc" } });
     if (!message) throw new Error("drill_needs_a_message");
@@ -155,7 +161,51 @@ export async function seedDrillCoverageRows(orgId: string, igAccountId: string, 
         consentedAt: new Date(), consentSeatId: seatId, sampleSeconds: 1, sampleAssetIds: [voiceNote.id],
       },
     });
+    await tx.igAccount.create({
+      data: {
+        orgId, platform: "email", provider: "gmail", igUserId: `drill-${orgId}@dealdock.local`, handle: `drill-${orgId}@dealdock.local`,
+        accountType: "creator", ownerAccountId: igAccountId, accessTokenEnc: inboxToken, refreshTokenEnc: inboxToken,
+      },
+    });
+    const tax = { kind: "none", number: null, ratePercent: null, lutArn: null };
+    const payment = { upiId: "drill@upi", bankName: null, accountName: null, accountNumber: null, ifsc: null, swift: null, iban: null, paymentLink: null };
+    await tx.billingProfile.create({ data: { orgId, legalName: "Drill Creator", country: "IN", tax, payment } });
+    const deal = await tx.deal.create({
+      data: {
+        orgId, igAccountId, counterpartyHandle: "drill.brand", counterpartyName: "Drill Brand", title: "drill deal", dealType: "brand",
+        amountMinor: 100n, currencyCode: org.currencyCode, terms: {}, stage: "paid", paidAt: new Date(),
+        idempotencyKey: `drill-deal-${orgId}`, createdBySeatId: seatId,
+      },
+    });
+    const invoice = await tx.invoice.create({
+      data: {
+        orgId, dealId: deal.id, kind: "full", number: "DRILL-1", dueAt: new Date(), currencyCode: org.currencyCode,
+        supplier: { legalName: "Drill Creator", addressLines: [], city: null, state: null, country: "IN", email: null, phone: null, tax, pan: null, udyamNumber: null, sacCode: null, payment, timezone: "Asia/Kolkata", locale: "en-IN" },
+        billTo: { name: "Drill Brand", addressLines: [], city: null, state: null, country: "IN", taxNumber: null },
+        lines: [{ description: "drill deal", sacCode: null, quantity: 1, amountMinor: 100 }], taxes: [],
+        subtotalMinor: 100n, taxMinor: 0n, totalMinor: 100n, supplyType: "untaxed", status: "paid", paidAt: new Date(), createdBySeatId: seatId,
+      },
+    });
+    await tx.ledgerEntry.create({
+      data: {
+        orgId, igAccountId, counterpartyHandle: "drill.brand", dealType: "brand", amountMinor: 100n, currencyCode: org.currencyCode,
+        idempotencyKey: `drill-ledger-${orgId}`, dealId: deal.id, invoiceId: invoice.id, createdBySeatId: seatId,
+      },
+    });
   });
+  // A keyword comment and its sent private reply: exported, then removed with the account.
+  await prisma.commentLead.create({
+    data: {
+      orgId, igAccountId, commentId: `drill-comment-${orgId}`, mediaId: "drill-media", commenterIgId: "drill-commenter", commenterHandle: "drill.fan",
+      text: "drill PRICE", keyword: "PRICE", commentedAt: new Date(), status: "sent", draftBody: "drill reply", sentAt: new Date(), sentBySeatId: seatId,
+    },
+  });
+  // A payment tool and the payment it reported: exported (without its secrets), then removed with the account.
+  const source = await prisma.leadSource.create({ data: { orgId, provider: "razorpay", tokenHash: `drill-${orgId}`, secretEnc: null } });
+  await prisma.leadEvent.create({
+    data: { orgId, sourceId: source.id, externalId: "drill-payment", kind: "paid", amountMinor: 100n, currencyCode: "INR", payerName: "Drill Payer", occurredAt: new Date() },
+  });
+  return { inboxToken };
 }
 
 /** Drill support: prove-it's-gone check after a hard delete. */
@@ -164,6 +214,7 @@ export async function countOrgResidue(orgId: string) {
     org, accounts, threads, messages, classifications, drafts, sendIntents, ledger, audit, subs, ignores, outbox,
     webhookScopes, voice, checkpoints, pushes, billingEvents,
     voiceRules, draftFeedback, offers, speakingVoices, audioAssets,
+    deals, invoices, billingProfiles,
   ] =
     await Promise.all([
       prisma.organization.count({ where: { id: orgId } }),
@@ -188,10 +239,17 @@ export async function countOrgResidue(orgId: string) {
       prisma.offer.count({ where: { orgId } }),
       prisma.speakingVoice.count({ where: { orgId } }),
       prisma.audioAsset.count({ where: { orgId } }),
+      prisma.deal.count({ where: { orgId } }),
+      prisma.invoice.count({ where: { orgId } }),
+      prisma.billingProfile.count({ where: { orgId } }),
     ]);
   return {
     org, accounts, threads, messages, classifications, drafts, sendIntents, ledger, audit, subs, ignores, outbox,
     webhookScopes, voice, checkpoints, pushes, billingEvents,
     voiceRules, draftFeedback, offers, speakingVoices, audioAssets,
+    deals, invoices, billingProfiles,
+    commentLeads: await prisma.commentLead.count({ where: { orgId } }),
+    leadSources: await prisma.leadSource.count({ where: { orgId } }),
+    leadEvents: await prisma.leadEvent.count({ where: { orgId } }),
   };
 }

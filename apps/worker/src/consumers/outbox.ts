@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { QUEUES } from "@dealdock/core";
 import {
   claimOutboxEvent,
+  COMMENT_LEAD_OUTBOX_KIND,
   completeOutboxEvent,
   listRecoverableOutboxEvents,
   purgeProcessedOutbox,
@@ -12,7 +13,7 @@ import {
 } from "@dealdock/db";
 import { PIPELINE_JOB_OPTIONS, redisConnection } from "../connection";
 
-const OUTBOX_KINDS = ["ingestion", "classification", VOICE_LEARN_OUTBOX_KIND, VOICE_REFRESH_OUTBOX_KIND] as const;
+const OUTBOX_KINDS = ["ingestion", "classification", VOICE_LEARN_OUTBOX_KIND, VOICE_REFRESH_OUTBOX_KIND, COMMENT_LEAD_OUTBOX_KIND] as const;
 
 /** Events listed per pass, oldest first across every kind. */
 const BATCH_SIZE = 100;
@@ -37,6 +38,7 @@ export function startOutboxDispatcher() {
   const ingestion = new Queue(QUEUES.ingestion, { connection: redisConnection() });
   const classification = new Queue(QUEUES.classification, { connection: redisConnection() });
   const voiceLearning = new Queue(QUEUES.voiceLearning, { connection: redisConnection() });
+  const commentLeads = new Queue(QUEUES.commentLeads, { connection: redisConnection() });
   let closing = false;
   let pass: Promise<void> | undefined;
   let purging: Promise<void> | undefined;
@@ -48,18 +50,19 @@ export function startOutboxDispatcher() {
     const leased = await claimOutboxEvent(row.id);
     if (!leased) return false;
     try {
-      const queue = leased.kind === "ingestion" ? ingestion : leased.kind === "classification" ? classification : voiceLearning;
+      const queue = leased.kind === "ingestion" ? ingestion : leased.kind === "classification" ? classification : leased.kind === COMMENT_LEAD_OUTBOX_KIND ? commentLeads : voiceLearning;
       // The row's tenant is authoritative. BullMQ forbids ':' in custom
       // ids, so hash the durable key rather than dropping deduplication.
-      const payload = leased.kind === "ingestion"
+      // A DM or a comment travels as a reference: its words stay in the tenant's row.
+      const payload = leased.kind === "ingestion" || leased.kind === COMMENT_LEAD_OUTBOX_KIND
         ? {orgId:leased.orgId,ingressEventId:leased.id}
         : {...(leased.payload as object),orgId:leased.orgId};
       await queue.add(leased.kind, payload, {
         jobId: createHash("sha256").update(leased.dedupeKey).digest("hex"),
         removeOnComplete: true,
         removeOnFail: { age: 3600 },
-        // Learning is a side effect of a send that already happened: retry transient failures.
-        ...(queue === voiceLearning ? { attempts: PIPELINE_JOB_OPTIONS.attempts, backoff: PIPELINE_JOB_OPTIONS.backoff } : {}),
+        // Learning is a side effect of a send that already happened, and a comment lead's job is idempotent: retry transient failures.
+        ...(queue === voiceLearning || queue === commentLeads ? { attempts: PIPELINE_JOB_OPTIONS.attempts, backoff: PIPELINE_JOB_OPTIONS.backoff } : {}),
       });
       await completeOutboxEvent(leased.id);
       return true;
@@ -123,7 +126,7 @@ export function startOutboxDispatcher() {
       clearTimeout(timer);
       clearInterval(purgeTimer);
       await Promise.allSettled([pass, purging]);
-      await Promise.all([ingestion.close(), classification.close(), voiceLearning.close()]);
+      await Promise.all([ingestion.close(), classification.close(), voiceLearning.close(), commentLeads.close()]);
     },
   };
 }

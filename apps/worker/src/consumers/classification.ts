@@ -1,6 +1,6 @@
 import { Worker, type Job } from "bullmq";
 import { z } from "zod";
-import { HIGH_INTENT_LABELS, QUEUES, REVIEW_CONFIDENCE_THRESHOLD } from "@dealdock/core";
+import { HIGH_INTENT_LABELS, QUEUES } from "@dealdock/core";
 import { createPipeline } from "@dealdock/ai";
 import {
   asOrgId,
@@ -11,6 +11,7 @@ import {
 } from "@dealdock/db";
 import { pipelineQueue, redisConnection } from "../connection";
 import { replyDraftJobOptions } from "./drafting";
+import { routeClassification } from "./routing";
 
 export const ClassificationJob = z.object({
   orgId: z.string(),
@@ -91,6 +92,8 @@ export function startClassificationWorker() {
           messageText: transcript || message.text,
           senderHandle: message.participantHandle,
           creator,
+          channel: message.channel,
+          subject: message.subject,
         });
       } catch (err) {
         await saveClassification(orgId, {
@@ -112,8 +115,9 @@ export function startClassificationWorker() {
         throw err instanceof Error ? err : new Error("classify failed");
       }
 
-      const routedTo =
-        result.label !== "uncertain" && result.confidence >= REVIEW_CONFIDENCE_THRESHOLD ? "inbox" : "review_queue";
+      const routed = routeClassification(result, transcript || message.text);
+      result = routed.result;
+      const routedTo = routed.routedTo;
 
       await saveClassification(orgId, {
         messageId: message.id,

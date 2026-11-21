@@ -7,9 +7,12 @@ import { webhookRoutes } from "./routes/webhooks";
 import { threadRoutes } from "./routes/threads";
 import { reviewRoutes } from "./routes/review";
 import { ledgerRoutes } from "./routes/ledger";
+import { dealRoutes } from "./routes/deals";
+import { invoiceRoutes } from "./routes/invoices";
 import { onboardingRoutes } from "./routes/onboarding";
 import { settingsRoutes } from "./routes/settings";
 import { igRoutes } from "./routes/ig";
+import { emailRoutes } from "./routes/email";
 import { billingRoutes } from "./routes/billing";
 import { seatRoutes } from "./routes/seats";
 import { rosterRoutes } from "./routes/roster";
@@ -22,11 +25,15 @@ import { speakingRoutes } from "./routes/speaking";
 import { mediaRoutes } from "./routes/media";
 import { voiceRoutes } from "./routes/voice";
 import { draftingRoutes } from "./routes/drafting";
+import { pipelineRoutes } from "./routes/pipeline";
+import { commentLeadRoutes } from "./routes/comment-leads";
 import { startGraphMaintenance } from "./graph-maintenance";
+import { startEmailSync } from "./email-sync";
 import { isDomainError } from "@dealdock/core";
 import { checkDatabaseReadiness } from "@dealdock/db";
 import { getIngestionQueue } from "./queues";
 import { bootstrapRoutes } from "./routes/bootstrap";
+import { loggedPath } from "./log-path";
 
 /**
  * apps/api — REST API, webhook receivers, and THE SEND GATE (M1).
@@ -38,7 +45,8 @@ export function buildServer() {
     logger: {
       // DM content never enters logs (ARCHITECTURE.md §8).
       redact: { paths: ["req.body", "req.headers.authorization"], remove: true },
-      serializers: { req: (request: {method:string;url:string}) => ({method:request.method,url:request.url.split("?")[0]}) },
+      // No query strings, and never a booking or payment tool's secret address token (log-path.ts).
+      serializers: { req: (request: {method:string;url:string}) => ({method:request.method,url:loggedPath(request.url)}) },
     },
     bodyLimit: 512 * 1024, // webhooks and drafts are small; refuse anything bigger
     trustProxy: (_address, hop) => hop === 0, // trust one PaaS ingress hop only
@@ -95,9 +103,12 @@ export function buildServer() {
   app.register(threadRoutes);
   app.register(reviewRoutes);
   app.register(ledgerRoutes);
+  app.register(dealRoutes);
+  app.register(invoiceRoutes);
   app.register(onboardingRoutes);
   app.register(settingsRoutes);
   app.register(igRoutes);
+  app.register(emailRoutes);
   app.register(billingRoutes);
   app.register(seatRoutes);
   app.register(rosterRoutes);
@@ -110,6 +121,8 @@ export function buildServer() {
   app.register(mediaRoutes);
   app.register(voiceRoutes);
   app.register(draftingRoutes);
+  app.register(pipelineRoutes);
+  app.register(commentLeadRoutes);
 
   return app;
 }
@@ -118,6 +131,8 @@ async function main() {
   const app = buildServer();
   const graphMaintenance = startGraphMaintenance();
   app.addHook("onClose", async () => graphMaintenance.close());
+  const emailSync = startEmailSync();
+  app.addHook("onClose", async () => emailSync.close());
   const port = Number(process.env.PORT ?? 4000);
   await app.listen({ port, host: "0.0.0.0" });
 }

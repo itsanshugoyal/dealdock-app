@@ -3,20 +3,36 @@ import {
   DomainError,
   highValueThresholdMinor,
   MinorUnits,
+  type Channel,
   type ClassificationLabel,
   type CurrencyCode,
+  type ExclusivityNote,
   type MeasuredStyle,
+  type OfferAddOns,
   type StyleCard,
   type VoiceRuleScope,
 } from "@dealdock/core";
 import { prisma } from "../client";
 import { minorUnitsToNumber } from "../money";
 import type { OrgId } from "../org-id";
-import { requireIgAccountInOrg } from "../seat-scope";
+import { creatorAccountOf } from "../seat-scope";
+import { channelOf, listActiveExclusivities } from "./deals";
 import { hasVoiceConsent } from "../voice-consent";
 import { listRecentOverrides } from "./classifications";
 import { inboundTexts } from "./drafts";
+import { storedAddOns } from "./offers";
 import { loadVoiceCorpus, type VoiceCorpusRow } from "./voice";
+
+/** The public address of a rate-card link: the web app's /rates/<token>. Null when off, or when WEB_APP_URL isn't a valid http(s) address. */
+export function rateCardUrlOf(token: string | null, webAppUrl = process.env.WEB_APP_URL): string | null {
+  if (!token || !webAppUrl) return null;
+  try {
+    const url = new URL(`/rates/${encodeURIComponent(token)}`, webAppUrl);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
 
 export interface OfferContextRow {
   id: string;
@@ -27,6 +43,8 @@ export interface OfferContextRow {
   link: string | null;
   details: string | null;
   availability: string | null;
+  /** Brand offers' add-on prices; null when none is set. */
+  addOns: OfferAddOns | null;
 }
 
 export interface VoiceRuleContextRow {
@@ -61,6 +79,8 @@ export interface CreatorContextRow extends BusinessContextFields {
   excludedMessageIds: string[];
   /** Active offers in the org currency: this account's and workspace-wide ones. */
   offers: OfferContextRow[];
+  /** This creator's private rate-card link (WEB_APP_URL/rates/<token>); null when it is off or the web address isn't configured. */
+  rateCardUrl: string | null;
   /** Active + pinned rules for this account (consent-gated; candidates and muted never). */
   voiceRules: VoiceRuleContextRow[];
   measured: MeasuredStyleRow[];
@@ -82,8 +102,20 @@ export interface ClassifyContextRow extends BusinessContextFields {
   highValueThresholdMinor: number;
 }
 
-function businessContextOf(org: { currencyCode: string; locale: string; businessContext: Prisma.JsonValue }): BusinessContextFields {
-  const ctx = (org.businessContext ?? {}) as Record<string, unknown>;
+/**
+ * The business profile one creator account's prompts read: the workspace profile, with that
+ * creator's own answers (businessContext.creators[id], set on Roster plans) taking precedence
+ * key by key. A null in the creator's profile means "doesn't sell this", not "inherit".
+ */
+export function creatorBusinessContext(raw: Prisma.JsonValue | undefined, igAccountId: string): Record<string, unknown> {
+  const ctx = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const creators = ctx["creators"];
+  const own = creators && typeof creators === "object" && !Array.isArray(creators) ? (creators as Record<string, unknown>)[igAccountId] : undefined;
+  return own && typeof own === "object" && !Array.isArray(own) ? { ...ctx, ...(own as Record<string, unknown>) } : ctx;
+}
+
+function businessContextOf(org: { currencyCode: string; locale: string; businessContext: Prisma.JsonValue }, igAccountId: string): BusinessContextFields {
+  const ctx = creatorBusinessContext(org.businessContext, igAccountId);
   // Rows saved before PUT /onboarding validated ranges may hold anything: only
   // whole, non-negative minor units with min <= max reach a prompt.
   const range = (key: string) => {
@@ -121,14 +153,15 @@ function measuredOf(card: Record<string, unknown> | null): MeasuredStyleRow[] {
  */
 export async function getCreatorContext(
   orgId: OrgId,
-  igAccountId: string
+  accountId: string
 ): Promise<CreatorContextRow> {
-  const [org, , voice, corrections] = await Promise.all([
+  // An email inbox writes as its creator: consent, corrections, rules and offers live on the creator account.
+  const igAccountId = await creatorAccountOf(orgId, accountId);
+  const [org, voice, corrections] = await Promise.all([
     prisma.organization.findUnique({
       where: { id: orgId },
       select: { currencyCode: true, locale: true, businessContext: true },
     }),
-    requireIgAccountInOrg(orgId, igAccountId),
     prisma.voiceProfile.findFirst({
       where: { orgId, igAccountId },
       select: { enabled: true, consentedAt: true, revokedAt: true, styleCard: true, styleOverrides: true, learningPaused: true, excludedMessageIds: true, version: true },
@@ -140,7 +173,7 @@ export async function getCreatorContext(
   if (!org) throw new DomainError("org not found", 404);
 
   const consented = hasVoiceConsent(voice);
-  const [offers, rules] = await Promise.all([
+  const [offers, rules, account] = await Promise.all([
     prisma.offer.findMany({
       where: { orgId, active: true, currencyCode: org.currencyCode, OR: [{ igAccountId }, { igAccountId: null }] },
       orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -154,12 +187,13 @@ export async function getCreatorContext(
           select: { id: true, key: true, text: true, scope: true, status: true, source: true, evidence: true },
         })
       : Promise.resolve([]),
+    prisma.igAccount.findFirst({ where: { id: igAccountId, orgId }, select: { rateCardToken: true } }),
   ]);
 
   const styleCard = consented ? (voice?.styleCard as Record<string, unknown> | null) : null;
 
   return {
-    ...businessContextOf(org),
+    ...businessContextOf(org, igAccountId),
     styleCard,
     correctionExamples: corrections,
     voiceEnabled: consented,
@@ -174,7 +208,9 @@ export async function getCreatorContext(
       link: o.link,
       details: o.details,
       availability: o.availability,
+      addOns: o.dealType === "brand" ? storedAddOns(o.addOns) : null,
     })),
+    rateCardUrl: rateCardUrlOf(account?.rateCardToken ?? null),
     voiceRules: rules.map((r) => ({ ...r, scope: r.scope as VoiceRuleScope, status: r.status as "active" | "pinned" })),
     measured: measuredOf(styleCard),
     styleOverrides: consented ? ((voice?.styleOverrides as Partial<StyleCard> | null) ?? null) : null,
@@ -187,13 +223,13 @@ export async function getCreatorContext(
  * corrections for the prompt, voice consent for pre-drafting, and the
  * account's high-value push bar. Never reads the style card, rules or samples.
  */
-export async function getClassifyContext(orgId: OrgId, igAccountId: string): Promise<ClassifyContextRow> {
-  const [org, , voice, corrections, brandOffers] = await Promise.all([
+export async function getClassifyContext(orgId: OrgId, accountId: string): Promise<ClassifyContextRow> {
+  const igAccountId = await creatorAccountOf(orgId, accountId);
+  const [org, voice, corrections, brandOffers] = await Promise.all([
     prisma.organization.findUnique({
       where: { id: orgId },
       select: { currencyCode: true, locale: true, businessContext: true },
     }),
-    requireIgAccountInOrg(orgId, igAccountId),
     prisma.voiceProfile.findFirst({
       where: { orgId, igAccountId },
       select: { enabled: true, consentedAt: true, revokedAt: true },
@@ -215,7 +251,7 @@ export async function getClassifyContext(orgId: OrgId, igAccountId: string): Pro
       priceMinMinor: offer.priceMinMinor === null ? null : minorUnitsToNumber(offer.priceMinMinor, "priceMinMinor"),
     }));
   return {
-    ...businessContextOf(org),
+    ...businessContextOf(org, igAccountId),
     styleCard: null,
     correctionExamples: corrections,
     voiceEnabled: hasVoiceConsent(voice),
@@ -243,10 +279,11 @@ export interface LessonPoolRow {
  */
 export async function getDraftVoiceContext(
   orgId: OrgId,
-  igAccountId: string,
+  accountId: string,
   now = new Date(),
   voice?: Pick<CreatorContextRow, "voiceEnabled" | "excludedMessageIds">,
 ): Promise<{ exemplarPool: VoiceCorpusRow[]; lessonPool: LessonPoolRow[] }> {
+  const igAccountId = await creatorAccountOf(orgId, accountId);
   const state = voice ?? (await draftVoiceState(orgId, igAccountId));
   if (!state.voiceEnabled) return { exemplarPool: [], lessonPool: [] };
   const excluded = new Set(state.excludedMessageIds);
@@ -299,18 +336,25 @@ export interface DraftThreadContext {
   igAccountId: string;
   participantHandle: string;
   topLabel: ClassificationLabel | null;
+  /** Email threads draft as emails (greeting, sign-off) and show their subject to the model. */
+  channel: Channel;
+  subject: string | null;
   /** Last 12 messages, oldest first, with voice-note transcripts. */
-  messages: Array<{ id: string; direction: "inbound" | "outbound"; contentType: "text" | "audio" | "attachment"; text: string; transcript: string | null }>;
+  messages: Array<{ id: string; direction: "inbound" | "outbound"; contentType: "text" | "audio" | "attachment"; text: string; transcript: string | null; sentAt: Date }>;
   latestInbound: { id: string; text: string; label: ClassificationLabel | null } | null;
   /** The live (or in-flight) draft, if any. */
   liveDraft: { id: string; status: string; body: string; kind: "reply" | "nudge"; label: ClassificationLabel | null } | null;
+  /** Exclusivities this creator agreed with someone else that are still running; drafts must not accept a competing deal. */
+  exclusivities: ExclusivityNote[];
+  /** Org IANA time zone, so drafts name dates on the org's calendar. */
+  timezone: string;
 }
 
 /** What drafting needs from a thread (org-scoped; null when the thread isn't in this org). */
 export async function getDraftThreadContext(orgId: OrgId, threadId: string): Promise<DraftThreadContext | null> {
   const thread = await prisma.thread.findFirst({
     where: { id: threadId, orgId },
-    select: { id: true, igAccountId: true, participantHandle: true, topLabel: true },
+    select: { id: true, igAccountId: true, participantHandle: true, topLabel: true, subject: true, igAccount: { select: { platform: true, org: { select: { timezone: true } } } } },
   });
   if (!thread) return null;
   const select = {
@@ -319,9 +363,10 @@ export async function getDraftThreadContext(orgId: OrgId, threadId: string): Pro
     contentType: true,
     text: true,
     transcript: true,
+    sentAt: true,
     classification: { select: { label: true, overrideLabel: true } },
   } as const;
-  const [recent, latestInbound, liveDraft] = await Promise.all([
+  const [recent, latestInbound, liveDraft, exclusivities] = await Promise.all([
     prisma.message.findMany({ where: { orgId, threadId }, orderBy: [{ sentAt: "desc" }, { id: "desc" }], take: 12, select }),
     prisma.message.findFirst({ where: { orgId, threadId, direction: "inbound" }, orderBy: [{ sentAt: "desc" }, { id: "desc" }], select }),
     prisma.draft.findFirst({
@@ -329,10 +374,16 @@ export async function getDraftThreadContext(orgId: OrgId, threadId: string): Pro
       orderBy: { version: "desc" },
       select: { id: true, status: true, body: true, kind: true, label: true },
     }),
+    // Only a brand conversation can compete with an exclusivity.
+    thread.topLabel === "brand_deal" ? listActiveExclusivities(orgId, thread.igAccountId, thread.participantHandle) : Promise.resolve([]),
   ]);
+  const { igAccount, ...row } = thread;
   return {
-    ...thread,
-    messages: recent.reverse().map((m) => ({ id: m.id, direction: m.direction, contentType: m.contentType, text: m.text, transcript: m.transcript })),
+    ...row,
+    exclusivities,
+    timezone: igAccount.org.timezone,
+    channel: channelOf(igAccount.platform),
+    messages: recent.reverse().map((m) => ({ id: m.id, direction: m.direction, contentType: m.contentType, text: m.text, transcript: m.transcript, sentAt: m.sentAt })),
     latestInbound: latestInbound
       ? {
           id: latestInbound.id,

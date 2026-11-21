@@ -1,3 +1,4 @@
+import { channelOf } from "./deals";
 import { prisma } from "../client";
 import type { OrgId } from "../org-id";
 import { advanceThreadClocks } from "../thread-writes";
@@ -18,6 +19,9 @@ export interface InboundMessageInput {
   mediaUrl?: string;
   /** Where the conversation started, when Instagram says so. The first known value is kept. */
   threadSource?: "dm" | "story" | "reel" | "ad" | "link";
+  /** Email only: the thread's subject line and the other party's display name, set when the thread is created. */
+  subject?: string;
+  participantName?: string;
 }
 
 /**
@@ -83,6 +87,8 @@ export async function upsertInboundMessage(orgId: OrgId, input: InboundMessageIn
         participantIgId: input.participantIgId,
         lastMessageAt: input.sentAt,
         lastInboundAt: input.direction === "inbound" ? input.sentAt : null,
+        subject: input.subject?.slice(0, 500) || null,
+        participantName: input.participantName?.slice(0, 120) || null,
       },
       update: {},
     });
@@ -217,7 +223,7 @@ export async function enqueueClassificationOutbox(
 export async function getMessageForClassification(orgId: OrgId, messageId: string) {
   const m = await prisma.message.findFirst({
     where: { id: messageId, orgId, direction: "inbound" },
-    include: { thread: { select: { id: true, participantHandle: true, igAccountId: true } } },
+    include: { thread: { select: { id: true, participantHandle: true, igAccountId: true, subject: true, igAccount: { select: { platform: true } } } } },
   });
   if (!m) return null;
   return {
@@ -225,11 +231,23 @@ export async function getMessageForClassification(orgId: OrgId, messageId: strin
     threadId: m.thread.id,
     igAccountId: m.thread.igAccountId,
     participantHandle: m.thread.participantHandle,
+    /** Email is classified as email, with its subject line. */
+    channel: channelOf(m.thread.igAccount.platform),
+    subject: m.thread.subject,
     contentType: m.contentType,
     text: m.text,
     /** Voice notes: what the sender said, when a speech provider transcribed it (F8). */
     transcript: m.transcript,
   };
+}
+
+/** The Gmail ids behind one of this org's email messages, for the attachment download proxy. */
+export async function getEmailMessageRef(orgId: OrgId, messageId: string) {
+  const message = await prisma.message.findFirst({
+    where: { id: messageId, orgId, thread: { igAccount: { provider: "gmail" } } },
+    select: { igMessageId: true, thread: { select: { igAccountId: true } } },
+  });
+  return message ? { gmailMessageId: message.igMessageId, igAccountId: message.thread.igAccountId } : null;
 }
 
 export async function recordWebhookEvent(provider: string, payload: unknown) {
@@ -250,6 +268,8 @@ export interface IngestionOutboxInput {
   orgId: OrgId;
   dedupeKey: string;
   payload: unknown;
+  /** Defaults to "ingestion" (a DM); a keyword comment is COMMENT_LEAD_OUTBOX_KIND. */
+  kind?: string;
 }
 
 /**
@@ -301,7 +321,7 @@ export async function recordWebhookIngress(
         create: {
           orgId: event.orgId,
           webhookEventId: webhook.id,
-          kind: "ingestion",
+          kind: event.kind ?? "ingestion",
           dedupeKey: event.dedupeKey,
           payload: event.payload as never,
         },

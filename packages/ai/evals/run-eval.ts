@@ -3,8 +3,13 @@ import {
   REVIEW_CONFIDENCE_THRESHOLD,
   type ClassificationLabel,
 } from "@dealdock/core";
-import { createPipeline, HEURISTIC_MODEL_VERSION } from "../src/index";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { configuredModelProvider, createPipeline, GroqRateLimitError, HEURISTIC_MODEL_VERSION, PROMPT_VERSION } from "../src/index";
+import { groqModel } from "../src/provider";
+import { buildClassifySystem, CLASSIFY_TOOL } from "../src/prompts";
 import type { CreatorContext } from "../src/types";
+import { checkpointFingerprint, EvalCheckpoint } from "./checkpoint";
 import { GOLDEN_SET, type EvalCase } from "./golden-set";
 import { exactLabelAccuracy } from "./scoring";
 
@@ -51,25 +56,58 @@ function pct(n: number): string {
 }
 
 async function main() {
-  const isRealModel = Boolean(
-    process.env.ANTHROPIC_API_KEY && process.env.CLASSIFY_MODEL && process.env.DRAFT_MODEL
-  );
+  const provider = configuredModelProvider();
+  const isRealModel = provider !== null;
   const pipeline = createPipeline({ allowHeuristic: !isRealModel });
-  const concurrency = isRealModel ? 8 : 64;
+  const concurrency = provider === "groq" ? 1 : isRealModel ? 8 : 64;
+  const checkpointPath = process.env.DEALDOCK_EVAL_CHECKPOINT?.trim();
+  if (checkpointPath && (provider !== "groq" || process.env.CI)) {
+    throw new Error("Evaluation checkpoints are only available for local Groq diagnostics, not CI gates.");
+  }
+  const model = provider === "groq" ? groqModel("classify") : "";
+  const checkpoint = checkpointPath ? new EvalCheckpoint(
+    resolve(checkpointPath),
+    checkpointFingerprint({
+      model, creator: EVAL_CREATOR, cases: GOLDEN_SET, schema: CLASSIFY_TOOL, prompt: buildClassifySystem(EVAL_CREATOR), promptVersion: PROMPT_VERSION,
+      source: [
+        ...["groq-pipeline.ts", "groq-client.ts", "prompts.ts", "provider.ts"].map((file) => join(__dirname, "..", "src", file)),
+        ...["index.ts", "money.ts"].map((file) => join(__dirname, "..", "..", "core", "src", file)),
+      ].map((file) => readFileSync(file, "utf8")),
+    }),
+    GOLDEN_SET.length, `groq:${model}`, `${PROMPT_VERSION}-groq1`,
+  ) : null;
+  if (checkpoint) console.log("Local checkpoint enabled; CI must run without a checkpoint.");
 
   console.log(
-    `\nDealDock eval · ${GOLDEN_SET.length} cases · pipeline: ${isRealModel ? "Claude" : HEURISTIC_MODEL_VERSION}\n`
+    `\nDealDock eval · ${GOLDEN_SET.length} cases · pipeline: ${provider ?? HEURISTIC_MODEL_VERSION}\n`
   );
 
   const results: CaseResult[] = [];
   let inFlight: Promise<void>[] = [];
-  for (const c of GOLDEN_SET) {
+  for (const [caseIndex, c] of GOLDEN_SET.entries()) {
     const p = (async () => {
-      const r = await pipeline.classify({
-        messageText: c.text,
-        senderHandle: c.handle,
-        creator: EVAL_CREATOR,
-      });
+      let r = checkpoint?.get(caseIndex);
+      let retries = 0;
+      while (!r) {
+        try {
+          r = await pipeline.classify({ messageText: c.text, senderHandle: c.handle, creator: EVAL_CREATOR });
+          checkpoint?.save(caseIndex, r);
+          break;
+        } catch (error) {
+          // A dropped connection ("fetch failed") is retried like a short rate limit, so one blip doesn't void a 258-call run.
+          if (error instanceof TypeError && error.message === "fetch failed" && retries < 3) {
+            retries++;
+            console.log(`Network error: retrying this case in 3s (${retries}/3).`);
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            continue;
+          }
+          if (!(error instanceof GroqRateLimitError) || error.retryAfterMs === null || error.retryAfterMs > 60_000 || retries >= 3) throw error;
+          retries++;
+          console.log(`Groq rate limit: retrying this case in ${Math.ceil(error.retryAfterMs / 1000)}s (${retries}/3).`);
+          const delayMs = Math.max(error.retryAfterMs, 1000);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
       const anchor =
         c.valueAnchor === "brand"
           ? EVAL_CREATOR.typicalBrandDealMinor
@@ -92,6 +130,9 @@ async function main() {
         routedTo: r.label !== "uncertain" && r.confidence >= REVIEW_CONFIDENCE_THRESHOLD ? "inbox" : "review_queue",
         valueOk,
       });
+      if (provider === "groq" && results.length % 25 === 0) {
+        console.log(`Completed ${results.length}/${GOLDEN_SET.length} classification cases.`);
+      }
     })();
     inFlight.push(p);
     if (inFlight.length >= concurrency) {
@@ -195,7 +236,7 @@ async function main() {
     console.error(`\nEVAL FAILED:\n${failures.map((f) => `  ✗ ${f}`).join("\n")}`);
     process.exit(1);
   }
-  console.log(isRealModel ? "\nREAL MODEL QUALITY GATE PASSED" : "\nHEURISTIC HARNESS PASSED — real-model quality gate NOT RUN");
+  console.log(checkpoint ? "\nLOCAL CHECKPOINT EVALUATION PASSED — CI must rerun without a checkpoint" : isRealModel ? "\nREAL MODEL QUALITY GATE PASSED" : "\nHEURISTIC HARNESS PASSED — real-model quality gate NOT RUN");
 }
 
 main().catch((err) => {

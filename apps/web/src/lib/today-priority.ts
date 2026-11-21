@@ -11,8 +11,7 @@ export function nextReply(
   const actionable = threads.filter((thread) => {
     const account = accounts.find((item) => item.id === thread.igAccountId);
     const window = replyWindowInfo(thread.replyWindow, now, "header");
-    return needsYou(thread) && !thread.sendInFlight && account?.status === "active" &&
-      window.visible && !window.closed;
+    return needsYou(thread) && !thread.sendInFlight && account?.status === "active" && window.canSend;
   });
   const closing = actionable.filter((thread) => isClosingSoon(thread.replyWindow, now))
     .sort((a, b) => Date.parse(a.replyWindow.standardClosesAt!) - Date.parse(b.replyWindow.standardClosesAt!) || byValueDesc(a, b));

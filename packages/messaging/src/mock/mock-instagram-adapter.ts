@@ -1,6 +1,8 @@
+import { postShortcode } from "../provider";
 import type {
   ConnectedAccount,
   InboundEvent,
+  MediaInsights,
   MessagingProvider,
   RemoteMessage,
   RemoteThread,
@@ -12,6 +14,9 @@ import type {
 } from "../provider";
 import { CORPUS } from "./corpus";
 import { MOCK_VOICE_NOTE, mockProfileForPlatformUser } from "./senders";
+
+/** What the mock reports for every post (views, reach, likes, comments, shares, saves). */
+export const MOCK_INSIGHTS = { views: 12_400, reach: 9_800, likes: 1_130, comments: 84, shares: 40, saves: 210 } as const;
 
 /**
  * Deterministic mock of the Instagram Graph adapter (ADR-3).
@@ -26,6 +31,7 @@ export class MockInstagramAdapter implements MessagingProvider {
   private sendCounter = 0;
   /** Keeps receipt ids unique across API restarts (they are message idempotency keys). */
   private readonly runId = Date.now().toString(36);
+  private readonly repliedComments = new Set<string>();
 
   constructor(now: () => Date = () => new Date()) {
     this.now = now;
@@ -106,11 +112,33 @@ export class MockInstagramAdapter implements MessagingProvider {
     return this.receipt("audio", target);
   }
 
+  async sendFile(
+    _account: ConnectedAccount,
+    target: SendTarget,
+    _fileUrl: string,
+    _opts?: SendOptions
+  ): Promise<SendReceipt> {
+    return this.receipt("file", target);
+  }
+
+  /** Like Instagram, one private reply per comment: a second is refused. */
+  async sendPrivateReply(_account: ConnectedAccount, commentId: string, _text: string): Promise<SendReceipt> {
+    if (this.repliedComments.has(commentId)) throw new Error("This comment already has its private reply");
+    this.repliedComments.add(commentId);
+    return this.receipt("private", { platformThreadId: commentId, recipientPlatformId: commentId });
+  }
+
   async getUserProfile(_account: ConnectedAccount, platformUserId: string): Promise<UserProfile | null> {
     return mockProfileForPlatformUser(platformUserId);
   }
 
-  private receipt(kind: "sent" | "audio", target: SendTarget): SendReceipt {
+  /** Fixed results for any Instagram post link, so "Fetch from Instagram" runs without Meta. */
+  async getMediaInsights(_account: ConnectedAccount, postUrl: string): Promise<MediaInsights | null> {
+    const shortcode = postShortcode(postUrl);
+    return shortcode ? { mediaId: `mock-media-${shortcode}`, permalink: postUrl, mediaType: "VIDEO", postedAt: null, metrics: { ...MOCK_INSIGHTS } } : null;
+  }
+
+  private receipt(kind: "sent" | "audio" | "file" | "private", target: SendTarget): SendReceipt {
     this.sendCounter += 1;
     return {
       platformMessageId: `mock-${kind}-${target.platformThreadId}-${this.runId}-${this.sendCounter}`,

@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
-import { VOICE_CLIP_LIMITS, type ClassificationLabel, type DraftChip, type MeasuredStyle, type StyleCard, type VoicePreviewResponse, type VoiceRuleDto, type VoiceRuleScope, type VoiceSampleDto, type VoiceStudio } from "@dealdock/core";
+import { VOICE_CLIP_LIMITS, voiceDisclosureRequired, type ClassificationLabel, type DraftChip, type MeasuredStyle, type StyleCard, type VoicePreviewResponse, type VoiceRuleDto, type VoiceRuleScope, type VoiceSampleDto, type VoiceStudio } from "@dealdock/core";
 import { AudioLines, Check, ChevronDown, Ellipsis, Mic, MessageSquareQuote, Pause, Pencil, Pin, PinOff, Plus, RefreshCw, Trash2, VolumeX, X } from "lucide-react";
 import { agoText, chipText, formatDate, labelText, pluralize, scopeText } from "../../lib/format";
 import { useMinuteClock } from "../../lib/keyboard";
@@ -41,6 +41,12 @@ function Voice() {
   const account = params?.get("account") ?? undefined;
   const voice = useVoice(account);
   const studio = voice.data;
+  // Links like /voice#learning land once the sections exist; the browser's own jump happens before data loads.
+  const ready = Boolean(studio);
+  useEffect(() => {
+    const id = window.location.hash.slice(1);
+    if (ready && id) document.getElementById(id)?.scrollIntoView({ block: "start" });
+  }, [ready]);
 
   if (voice.status === "error" && !studio) {
     return <ErrorState as="h1" thing="your voice" reason={voice.error} onRetry={() => void appStore.loadVoice(account)} className="min-h-[60dvh] justify-center" />;
@@ -52,7 +58,7 @@ function Voice() {
       align="end"
       items={studio.accounts.map((item) => ({ label: `@${item.handle}`, checked: item.id === studio.igAccountId, onSelect: () => router.replace(`/voice?account=${encodeURIComponent(item.id)}`) }))}
       trigger={(props) => (
-        <button {...props} type="button" className="dd-press inline-flex h-10 items-center gap-2 rounded-full bg-surface pl-1 pr-3 text-label font-semibold text-ink shadow-card">
+        <button {...props} type="button" className="dd-press inline-flex h-11 items-center gap-2 rounded-full bg-surface pl-1 pr-3 text-label font-semibold text-ink shadow-card">
           <Avatar handle={studio.handle} size={32} />
           <span className="max-w-[140px] truncate">@{studio.handle}</span>
           <ChevronDown aria-hidden size={16} className="text-ink-3" />
@@ -66,7 +72,7 @@ function Voice() {
       <LargeTitle
         eyebrow={studio ? (studio.accounts.length > 1 ? "Writing and speaking" : `@${studio.handle}`) : " "}
         title="Your voice"
-        subtitle="Drafts are written the way you write. Every edit you make teaches it something."
+        subtitle="Your writing examples, learned rules and reply previews, in one place."
         accessory={switcher}
       />
       <div className="px-4 md:px-8">
@@ -81,13 +87,20 @@ function Voice() {
               <Rules studio={studio} />
             </div>
             <div className="flex min-w-0 flex-col gap-5">
-              <details className="overflow-hidden rounded-[20px] bg-surface shadow-card">
-                <summary className="cursor-pointer px-4 py-4 text-heading font-semibold text-ink hover:bg-inset focus-visible:outline-2 focus-visible:outline-info">Fine-tune writing style</summary>
-                <HowYouWrite studio={studio} />
-              </details>
               <SpeakingVoice studio={studio} />
               <Samples studio={studio} />
               <Learning studio={studio} />
+              {/* Advanced: the measured style and manual adjustments, behind one disclosure. */}
+              <details className="group overflow-hidden rounded-[22px] bg-surface shadow-card">
+                <summary className="dd-summary flex items-center gap-3 px-4 py-4 hover:bg-inset md:px-5">
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-heading text-ink">Fine-tune writing style</span>
+                    <span className="mt-0.5 block text-caption text-ink-3">What DealDock measured, and manual adjustments</span>
+                  </span>
+                  <ChevronDown aria-hidden size={18} className="shrink-0 text-ink-3 transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="border-t border-hairline px-4 pb-4 pt-3 md:px-5"><HowYouWrite studio={studio} /></div>
+              </details>
             </div>
           </div>
         )}
@@ -126,7 +139,7 @@ function ConsentGate({ studio }: { studio: VoiceStudio }) {
       <HeroCard as="div" flat className="px-6 pb-6 pt-7">
         <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-on-hero/10 text-hero-money"><AudioLines aria-hidden size={24} /></span>
         <h2 id="consent-title" className="mt-4 text-title">Teach DealDock how @{studio.handle} writes</h2>
-        <p className="mt-2 max-w-md text-body text-on-hero/70">It reads the replies already sent from this account to learn the greeting, tone, length and sign-off. Drafts then sound like you, and get closer every time you edit one.</p>
+        <p className="mt-2 max-w-md text-body text-on-hero/70">Use this account&apos;s sent replies to learn its greeting, tone, length and sign-off. Review the examples and rules, then test a draft before sending.</p>
       </HeroCard>
       <ul className="flex flex-col gap-3 px-6 py-5 text-[15px] leading-6 text-ink">
         <li className="flex gap-3"><Check aria-hidden size={18} className="mt-0.5 shrink-0 text-recovered" />Only replies you sent are used, never your followers&apos; messages.</li>
@@ -152,58 +165,65 @@ function MatchHero({ studio }: { studio: VoiceStudio }) {
   const delta = match !== null && first !== null && weeks.length > 1 ? match - first : null;
   const learnedAt = studio.lastDistilledAt ? Date.parse(studio.lastDistilledAt) : null;
   const summary = weeks.map((week) => `${formatDate(week.weekStart, locale, timezone, { day: "numeric", month: "short" })} ${week.voiceMatchPct}%`).join(", ");
+  // Bars share one scale that starts below the lowest week, so a real change in the habit is visible.
+  const values = weeks.map((week) => week.voiceMatchPct ?? 0);
+  const floor = Math.max(0, Math.min(...values) - 15);
+  const scale = (value: number) => Math.max(8, ((value - floor) / Math.max(1, 100 - floor)) * 100);
 
   return (
-    <HeroCard aria-labelledby="match-title" className="p-5 md:p-7">
-      <p id="match-title" className="flex items-center gap-2 text-label font-semibold text-on-hero/60"><AudioLines aria-hidden size={16} className="text-hero-money" />Drafts sent with light edits</p>
-      {match === null ? (
-        <>
-          <p className="mt-2 text-[28px] font-semibold leading-9 tracking-[-0.02em]">No drafts sent yet</p>
-          <p className="mt-1 text-body text-on-hero/65">This appears after your first few replies. It&apos;s the share of drafts you send with light edits or none.</p>
-        </>
-      ) : (
-        <>
-          <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <p className="text-[56px] font-semibold leading-[60px] tracking-[-0.04em] tabular-nums">{match}<span className="text-[32px] text-on-hero/55">%</span></p>
-            {delta !== null && delta !== 0 && (
-              <span className={cx("rounded-full px-2.5 py-1 text-label font-semibold", delta > 0 ? "bg-hero-accent/15 text-hero-money" : "bg-on-hero/10 text-on-hero/70")}>
-                {delta > 0 ? "+" : "−"}{Math.abs(delta)} pts in {weeks.length} weeks
-              </span>
-            )}
-          </div>
-          <p className="mt-1 max-w-md text-body text-on-hero/70">of drafts this week went out with light edits or none. Based on your sent replies, rather than an automatic quality score.</p>
-        </>
-      )}
-
-      {weeks.length > 1 && (
-        <div className="mt-6">
-          <div role="img" aria-label={`Drafts sent with light edits by week: ${summary}`} className="flex h-28 items-end gap-1.5 sm:gap-2">
-            {weeks.map((week, index) => {
-              const last = index === weeks.length - 1;
-              return (
-                <div key={week.weekStart} className="flex h-full flex-1 flex-col justify-end">
-                  {(index === 0 || last) && <span aria-hidden className={cx("mb-1 text-center text-caption font-semibold tabular-nums", last ? "text-hero-money" : "text-on-hero/45")}>{week.voiceMatchPct}%</span>}
-                  <span
-                    className={cx("block w-full rounded-t-[6px] rounded-b-[3px] transition-[height] duration-500", last ? "bg-hero-accent shadow-[0_0_24px_-4px_color-mix(in_oklab,var(--dd-hero-accent)_70%,transparent)]" : "bg-hero-accent/30")}
-                    style={{ height: `${Math.max(6, week.voiceMatchPct ?? 0)}%` }}
-                  />
-                </div>
-              );
-            })}
-          </div>
-          <div aria-hidden className="mt-2 flex justify-between text-caption text-on-hero/45">
-            <span>{formatDate(weeks[0]!.weekStart, locale, timezone, { day: "numeric", month: "short" })}</span>
-            <span>This week</span>
-          </div>
+    <HeroCard aria-labelledby="match-title" className="p-5 md:p-6">
+      <div className="flex items-start justify-between gap-3">
+        <p id="match-title" className="flex items-center gap-2 text-label font-semibold text-on-hero/60"><AudioLines aria-hidden size={16} className="text-hero-money" />Drafts sent with light edits</p>
+        {studio.learningPaused && <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-on-hero/10 px-2.5 py-1 text-caption font-semibold text-on-hero/80"><Pause aria-hidden size={13} />Learning paused</span>}
+      </div>
+      <div className="mt-1 grid gap-5 sm:grid-cols-[minmax(0,1fr)_minmax(180px,0.9fr)] sm:items-end">
+        <div className="min-w-0">
+          {match === null ? (
+            <>
+              <p className="mt-1 text-[26px] font-semibold leading-8 tracking-[-0.02em]">No drafts sent yet</p>
+              <p className="mt-1 text-body text-on-hero/65">This appears after your first few replies: the share of drafts you send with light edits or none.</p>
+            </>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <p className="text-[48px] font-semibold leading-[52px] tracking-[-0.04em] tabular-nums">{match}<span className="text-[28px] text-on-hero/55">%</span></p>
+                {delta !== null && delta !== 0 && (
+                  <span className={cx("rounded-full px-2.5 py-1 text-caption font-semibold", delta > 0 ? "bg-hero-accent/15 text-hero-money" : "bg-on-hero/10 text-on-hero/70")}>
+                    {delta > 0 ? "+" : "−"}{Math.abs(delta)} pts in {weeks.length} weeks
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 max-w-sm text-[14px] leading-5 text-on-hero/65">This week, from your sent replies. A habit measure, not a quality score for any one draft.</p>
+            </>
+          )}
         </div>
-      )}
-
-      <dl className="mt-6 grid grid-cols-3 gap-3 border-t border-on-hero/10 pt-4">
-        <div><dt className="text-caption text-on-hero/50">Sent with DealDock</dt><dd className="mt-0.5 text-[20px] font-semibold tabular-nums">{studio.metrics.sentCount}</dd></div>
-        <div><dt className="text-caption text-on-hero/50">Sent as written</dt><dd className="mt-0.5 text-[20px] font-semibold tabular-nums">{studio.metrics.sentAsIsPct === null ? "—" : `${studio.metrics.sentAsIsPct}%`}</dd></div>
-        <div><dt className="text-caption text-on-hero/50">Last learned</dt><dd className="mt-0.5 truncate text-[20px] font-semibold">{learnedAt && now ? agoText(learnedAt, now, locale, timezone) : "—"}</dd></div>
+        {weeks.length > 1 && (
+          <div>
+            <div role="img" aria-label={`Drafts sent with light edits by week: ${summary}`} className="flex h-20 items-end gap-1.5">
+              {weeks.map((week, index) => {
+                const last = index === weeks.length - 1;
+                return (
+                  <span
+                    key={week.weekStart}
+                    className={cx("block flex-1 rounded-t-[5px] rounded-b-[2px]", last ? "bg-hero-accent shadow-[0_0_20px_-4px_color-mix(in_oklab,var(--dd-hero-accent)_70%,transparent)]" : "bg-hero-accent/25")}
+                    style={{ height: `${scale(week.voiceMatchPct ?? 0)}%` }}
+                  />
+                );
+              })}
+            </div>
+            <div aria-hidden className="mt-2 flex justify-between text-caption text-on-hero/45">
+              <span>{formatDate(weeks[0]!.weekStart, locale, timezone, { day: "numeric", month: "short" })} · {first}%</span>
+              <span className="text-hero-money">This week · {weeks[weeks.length - 1]!.voiceMatchPct}%</span>
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Figures sit on one baseline even when a label wraps on a phone. */}
+      <dl className="mt-5 grid grid-cols-3 gap-3 border-t border-on-hero/10 pt-4 [&>div]:flex [&>div]:flex-col [&>div]:justify-between">
+        <div><dt className="text-caption text-on-hero/55">Sent with DealDock</dt><dd className="mt-0.5 text-[18px] font-semibold tabular-nums">{studio.metrics.sentCount}</dd></div>
+        <div><dt className="text-caption text-on-hero/55">Sent as written</dt><dd className="mt-0.5 text-[18px] font-semibold tabular-nums">{studio.metrics.sentAsIsPct === null ? "—" : `${studio.metrics.sentAsIsPct}%`}</dd></div>
+        <div><dt className="text-caption text-on-hero/55">Last learned</dt><dd className="mt-0.5 truncate text-[18px] font-semibold">{learnedAt && now ? agoText(learnedAt, now, locale, timezone) : "—"}</dd></div>
       </dl>
-      {studio.learningPaused && <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-on-hero/10 px-3 py-1.5 text-label font-semibold text-on-hero/80"><Pause aria-hidden size={14} />Learning is paused</p>}
     </HeroCard>
   );
 }
@@ -239,7 +259,7 @@ function CandidateCard({ rule }: { rule: VoiceRuleDto }) {
     }
   };
   return (
-    <li className="dd-rise rounded-[22px] bg-surface p-4 shadow-card md:p-5">
+    <li className="dd-rise rounded-[22px] bg-surface shadow-card p-4 md:p-5">
       <div className="flex items-start gap-3">
         <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-tint text-recovered"><MessageSquareQuote aria-hidden size={18} /></span>
         <div className="min-w-0 flex-1">
@@ -415,7 +435,7 @@ function TryIt({ studio }: { studio: VoiceStudio }) {
 
   return (
     <Group id="try" title="Try it" action={<span className="text-caption text-ink-3">Nothing here is saved or sent</span>} padded>
-      <div className="dd-scroll-x -mx-1 flex gap-2 px-1 pb-1">
+      <div className="-mx-1 flex flex-wrap gap-2 px-1 pb-1">
         {EXAMPLES.map((item) => <Chip key={item.id} pressed={example === item.id} onClick={() => pick(item.id)}>{item.title}</Chip>)}
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
@@ -460,11 +480,11 @@ function HowYouWrite({ studio }: { studio: VoiceStudio }) {
   const overridden = (key: keyof StyleCard) => studio.overrides[key] !== undefined;
 
   return (
-    <Group id="how" title="How you write" action={style ? <Button variant="ghost" size="sm" icon={Pencil} onClick={() => setEditing(true)}>Adjust</Button> : undefined}>
+    <Group id="how" title="How you write" action={style ? <Button variant="ghost" size="sm" icon={Pencil} onClick={() => setEditing(true)}>Adjust</Button> : undefined} bare>
       {current ? (
         <div className="p-4 md:p-5">
           {measured.length > 1 && (
-            <div className="dd-scroll-x -mx-1 mb-4 flex gap-2 px-1 pb-1" role="group" aria-label="Measured for">
+            <div className="-mx-1 mb-4 flex flex-wrap gap-2 px-1 pb-1" role="group" aria-label="Measured for">
               {measured.map((item) => <Chip key={item.scope} pressed={item.scope === current.scope} onClick={() => setScope(item.scope)}>{scopeText(item.scope)}</Chip>)}
             </div>
           )}
@@ -620,7 +640,10 @@ const TRAINING_POLL = { delays: [4_000, 8_000, 16_000], maxMs: 180_000 } as cons
 
 function SpeakingVoice({ studio }: { studio: VoiceStudio }) {
   const speaking = studio.speaking;
-  // Recording, deleting and the AI label are the creator's own (creator-only "manage_voice"); hidden until /me answers.
+  const { money } = useApp();
+  // Indian rules: synthetic audio must open with a spoken disclosure, so it can't be switched off there.
+  const disclosureRequired = voiceDisclosureRequired(money.currency);
+  // Recording, deleting and the AI disclosure are the creator's own (creator-only "manage_voice"); hidden until /me answers.
   const canManage = useCan("manage_voice");
   const [recording, setRecording] = useState(false);
   const [phrase, setPhrase] = useState(TEST_PHRASE);
@@ -660,11 +683,11 @@ function SpeakingVoice({ studio }: { studio: VoiceStudio }) {
             <TextArea label="Hear it say" value={phrase} rows={2} maxLength={VOICE_CLIP_LIMITS.previewMaxChars} className="[&_textarea]:min-h-[72px]" onChange={(event) => setPhrase(event.target.value)} />
             <ListenButton text={phrase} igAccountId={studio.igAccountId} label="Play in my voice" />
             <Switch
-              checked={speaking.disclosureEnabled}
+              checked={disclosureRequired || speaking.disclosureEnabled}
               onChange={(value) => void setDisclosure(value)}
-              disabled={canManage !== true}
-              label="Label voice notes as AI"
-              description="Sends “AI voice note in my voice” after each one. Recommended, and expected in some countries."
+              disabled={disclosureRequired || canManage !== true}
+              label="AI disclosure"
+              description={disclosureRequired ? "Required in India: each voice note starts by saying it's AI-generated." : "Start each voice note by saying it's AI-generated."}
             />
           </div>
         ) : status === "pending" ? (

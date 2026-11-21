@@ -1,13 +1,14 @@
-import type { MessageDirection, MessageSource } from "@dealdock/core";
+import type { DeliverableMetrics, MessageDirection, MessageSource } from "@dealdock/core";
 
 /**
  * MessagingProvider — the single seam between DealDock and any DM platform.
  * Two pilot implementations: MockInstagramAdapter (dev/demo/tests) and
- * InstagramGraphAdapter (M3, official Meta Graph API only — PRD §7.2).
+ * InstagramGraphAdapter (M3, official Meta Graph API only — PRD §7.2), plus
+ * GmailProvider for the email channel (polling + Pub/Sub push, no webhooks here).
  * WhatsApp Business (V2) becomes "write one more adapter". See ADR-3.
  */
 
-export type Platform = "instagram" | "whatsapp";
+export type Platform = "instagram" | "whatsapp" | "email";
 
 export interface ConnectedAccount {
   /** DealDock IgAccount id (db). */
@@ -26,6 +27,10 @@ export interface RemoteThread {
   lastMessageAt: Date;
   /** The platform's own conversation id, when the listing returns one; fetchMessages then skips looking it up. */
   conversationId?: string;
+  /** The other party's display name, when the platform gives one (email From header). */
+  participantName?: string;
+  /** Email subject line; DMs have none. */
+  subject?: string;
 }
 
 export interface RemoteMessage {
@@ -97,6 +102,14 @@ export interface SendOptions {
    * (META_HUMAN_AGENT_ENABLED) and the send falls in the extended window.
    */
   humanAgentTag?: boolean;
+  /** Files sent with the text (email); platforms without file sends ignore them. */
+  attachments?: OutgoingAttachment[];
+}
+
+export interface OutgoingAttachment {
+  filename: string;
+  contentType: string;
+  bytes: Uint8Array;
 }
 
 /** Read-only sender context from the platform's user profile API (F5); never a contact record. */
@@ -154,9 +167,60 @@ export interface MessagingProvider {
   ): Promise<SendReceipt>;
 
   /**
+   * Sends a file (an invoice PDF) the platform fetches from `fileUrl`
+   * (public https, short-lived signed link), as its own message. Same caller
+   * rule and errors as sendMessage. Email attaches files to sendMessage instead.
+   */
+  sendFile(
+    account: ConnectedAccount,
+    target: SendTarget,
+    fileUrl: string,
+    opts?: SendOptions
+  ): Promise<SendReceipt>;
+
+  /**
+   * Instagram's private reply to a comment (comment leads): one DM to the
+   * commenter, addressed by the comment id. The platform takes one per
+   * comment, within 7 days of it, and it opens no messaging window. Same
+   * caller rule as sendMessage: the API send gate, after a person approves.
+   * @throws TokenExpiredError / RateBudgetExceededError like sendMessage.
+   */
+  sendPrivateReply(account: ConnectedAccount, commentId: string, text: string): Promise<SendReceipt>;
+
+  /**
    * The sender's public profile, or null when the platform withholds it.
    * Token-bearing read: API process only, within the account's rate budget.
    * @throws TokenExpiredError / RateBudgetExceededError like other reads.
    */
   getUserProfile(account: ConnectedAccount, platformUserId: string): Promise<UserProfile | null>;
+
+  /**
+   * A post's lifetime results, found by its link among the account's recent
+   * media (reels and feed posts: stories can't be listed). Null when the post
+   * isn't found. Token-bearing read: API process only, within the account's
+   * budget. Platforms without posts (email) don't implement it.
+   * @throws TokenExpiredError / RateBudgetExceededError like other reads.
+   */
+  getMediaInsights?(account: ConnectedAccount, postUrl: string): Promise<MediaInsights | null>;
+}
+
+/** A post's results as the platform reports them (lifetime totals); null where it returned no number. */
+export interface MediaInsights {
+  mediaId: string;
+  permalink: string;
+  /** "VIDEO", "IMAGE", "CAROUSEL_ALBUM": a hint only. */
+  mediaType: string | null;
+  postedAt: string | null;
+  metrics: DeliverableMetrics;
+}
+
+/** The shortcode in an Instagram post link (/p/, /reel/, /reels/, /tv/, with or without the handle first), or null. */
+export function postShortcode(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || !/(?:^|\.)instagram\.com$/i.test(parsed.hostname)) return null;
+    return /^\/(?:[A-Za-z0-9._]+\/)?(?:p|reels?|tv)\/([A-Za-z0-9_-]{5,40})(?:\/|$)/.exec(parsed.pathname)?.[1] ?? null;
+  } catch {
+    return null;
+  }
 }

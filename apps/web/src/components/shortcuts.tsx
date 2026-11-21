@@ -14,7 +14,7 @@ const GO: Record<string, string> = { t: "/", i: "/inbox", r: "/ledger", v: "/voi
 export const SHORTCUT_GROUPS: Array<{ title: string; keys: Array<[string, string]> }> = [
   { title: "Anywhere", keys: [["mod+k", "Search or jump to"], ["?", "Keyboard shortcuts"], ["g t", "Go to Today"], ["g i", "Go to Inbox"], ["g r", "Go to Revenue"], ["g v", "Go to Your voice"], ["g o", "Go to Offers"], ["g s", "Go to Settings"], ["escape", "Close a sheet or menu"], ["z", "Undo (while Undo shows)"]] },
   { title: "Lists (Today, Inbox)", keys: [["j", "Next conversation"], ["k", "Previous conversation"], ["enter", "Open the conversation"], ["/", "Search"], ["w", "Move to waiting"], ["x", "Not a deal"]] },
-  { title: "Conversation", keys: [["e", "Edit the draft"], ["r", "Regenerate draft"], ["w", "Move to waiting / back to open"], ["c", "Record a sale"], ["mod+enter", "Approve & send (with time to undo)"]] },
+  { title: "Conversation", keys: [["e", "Edit the draft"], ["r", "Regenerate draft"], ["w", "Move to waiting / back to open"], ["c", "Record a deal"], ["mod+enter", "Approve & send (with time to undo)"]] },
   { title: "Check these", keys: [["y", "Confirm the best guess"], ["n", "Change label"], ["1", "Brand deal"], ["2", "Coaching"], ["3", "Course"], ["4", "Other sale"], ["5", "Fan"], ["6", "Personal"], ["7", "Spam"], ["8", "Not sure either — skip"], ["u", "Undo the last decision"]] },
 ];
 

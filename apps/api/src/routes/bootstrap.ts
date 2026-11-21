@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { createClerkClient, verifyToken } from "@clerk/backend";
 import { asOrgId, provisionOrganization } from "@dealdock/db";
 import { z } from "zod";
-import { bearerToken, organizationAdminClaim, organizationClaim, verifiedPrimaryEmail } from "../clerk-claims";
+import { bearerToken, clerkVerifyOptions, organizationAdminClaim, organizationClaim, verifiedPrimaryEmail } from "../clerk-claims";
 
 const Body = z.object({currencyCode:z.enum(["INR","USD","GBP","EUR","AED"]),locale:z.string().min(2).max(20),timezone:z.string().min(3).max(80)});
 export async function bootstrapRoutes(app:FastifyInstance) {
@@ -14,7 +14,7 @@ export async function bootstrapRoutes(app:FastifyInstance) {
     const body=Body.safeParse(req.body);
     if(!body.success) return reply.code(400).send({error:"invalid_body"});
     let claims;
-    try { claims=await verifyToken(token,{secretKey}); } catch { return reply.code(401).send({error:"invalid_token"}); }
+    try { claims=await verifyToken(token,clerkVerifyOptions(secretKey)); } catch { return reply.code(401).send({error:"invalid_token"}); }
     const orgId=organizationClaim(claims as Record<string,unknown>);
     if(!orgId||!organizationAdminClaim(claims as Record<string,unknown>)) return reply.code(403).send({error:"organization_admin_required"});
     try { new Intl.DateTimeFormat(body.data.locale,{timeZone:body.data.timezone}).format(); } catch { return reply.code(400).send({error:"invalid_region"}); }

@@ -6,6 +6,7 @@ import { writeAudit } from "../audit-log";
 import { requireSeatInOrg } from "../seat-scope";
 import { pickTopClassification } from "../sender-context";
 import { lockThread } from "../thread-writes";
+import { creatorAccountId, threadsOfCreator } from "./deals";
 
 /** Rebuild the inbox denormalization under the thread lock from persisted rows. */
 async function refreshThreadClassificationState(
@@ -156,7 +157,7 @@ export async function listReviewQueuePage(orgId: OrgId, limit = 50, cursor?: str
           id: true,
           text: true,
           sentAt: true,
-          thread: { select: { id: true, participantHandle: true, igAccountId: true } },
+          thread: { select: { id: true, participantHandle: true, igAccountId: true, igAccount: { select: { ownerAccountId: true } } } },
         },
       },
     },
@@ -167,7 +168,7 @@ export async function listReviewQueuePage(orgId: OrgId, limit = 50, cursor?: str
   return { nextCursor, rows: page.map((c) => ({
     classificationId: c.id,
     threadId: c.message.thread.id,
-    igAccountId: c.message.thread.igAccountId,
+    igAccountId: creatorAccountId(c.message.thread),
     handle: c.message.thread.participantHandle,
     text: c.message.text,
     sentAt: c.message.sentAt,
@@ -253,7 +254,8 @@ export async function listRecentOverrides(orgId: OrgId, igAccountId: string, lim
     where: {
       orgId,
       reviewOutcome: "overridden",
-      message: { thread: { igAccountId } },
+      // A creator's corrections include those made on threads of the email inboxes they own.
+      message: { thread: threadsOfCreator(igAccountId) },
     },
     orderBy: { reviewedAt: "desc" },
     take: limit,

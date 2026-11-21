@@ -135,6 +135,7 @@ describe("conversation groups", () => {
     expect(isWaiting(row({ state: "waiting" }))).toBe(true);
     expect(isWaiting(row({ state: "waiting", routedTo: "review_queue" }))).toBe(false);
     expect(isWaiting(row())).toBe(false);
+    expect(isWaiting(row({ state: "waiting", nudgeDue: true }))).toBe(false);
     expect(followUpDue(row({ state: "waiting", nudgeDue: true }))).toBe(true);
     expect(followUpDue(row({ state: "waiting" }))).toBe(false);
   });

@@ -99,9 +99,9 @@ export function needsYou(thread: Pick<DemoThread, "routedTo" | "state" | "unrepl
 export function toCheck(thread: Pick<DemoThread, "routedTo" | "reviewed">): boolean {
   return thread.routedTo === "review_queue" && !thread.reviewed;
 }
-/** The inbox's Waiting group: conversations waiting on the other person. */
-export function isWaiting(thread: Pick<DemoThread, "routedTo" | "state">): boolean {
-  return thread.routedTo === "inbox" && thread.state === "waiting";
+/** The inbox's Waiting group: waiting on the other person with no follow-up due yet. Due ones are listed only under Follow-ups, so the views never double-count. */
+export function isWaiting(thread: Pick<DemoThread, "routedTo" | "state" | "nudgeDue">): boolean {
+  return thread.routedTo === "inbox" && thread.state === "waiting" && !thread.nudgeDue;
 }
 /** "Follow-up due": the server's nudge clock (nudgeDueAt in @dealdock/core) says it is time. */
 export function followUpDue(thread: Pick<DemoThread, "nudgeDue">): boolean {
@@ -119,9 +119,19 @@ export function byValueDesc(a: Pick<DemoThread, "estValueMaxMinor" | "lastMessag
 export function waitingLowMinor(threads: ReadonlyArray<Pick<DemoThread, "estValueMinMinor" | "estValueMaxMinor">>): number {
   return threads.reduce((sum, thread) => sum + (thread.estValueMinMinor ?? thread.estValueMaxMinor ?? 0), 0);
 }
-/** A sender as people read them: their name when Instagram gave one, else "@handle". */
+/** A sender as people read them: their name when we have one, else "@handle" (or the email address). */
 export function displayName(participant: Pick<ParticipantProfile, "name"> | null | undefined, handle: string): string {
-  return participant?.name?.trim() || `@${handle}`;
+  return participant?.name?.trim() || atHandle(handle);
+}
+/** "@handle" for Instagram; an email address stays as it is (handles never contain "@"). */
+export function atHandle(handle: string): string {
+  return handle.includes("@") ? handle : `@${handle}`;
+}
+/** Attachment sizes: "820 B", "248 KB", "1.2 MB". */
+export function fileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, Math.round(bytes || 0))} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`;
 }
 
 /* ── Words for enums (never shown raw) ────────────────────────────────────── */
@@ -301,6 +311,8 @@ export interface ReplyWindowInfo {
   /** Hidden cases render nothing. */
   visible: boolean;
   closed: boolean;
+  /** DealDock may send now: the window is open or extended, or the channel has none (email). */
+  canSend: boolean;
   text: string;
   tone: ReplyWindowTone;
   /** Header variant only: the 7-day Human Agent window explainer applies. */
@@ -312,8 +324,10 @@ export interface ReplyWindowInfo {
  * cluster; "header" is the thread header line.
  */
 export function replyWindowInfo(window: ReplyWindow, now: number, variant: "row" | "header"): ReplyWindowInfo {
-  const hidden: ReplyWindowInfo = { visible: false, closed: false, text: "", tone: "muted", extended: false };
+  const hidden: ReplyWindowInfo = { visible: false, closed: false, canSend: false, text: "", tone: "muted", extended: false };
   let status = window.status;
+  // Email has no reply window: no countdown, and a send is never blocked by time.
+  if (status === "none") return { ...hidden, canSend: true };
   if (status === "unknown") return hidden;
   const standardClose = Date.parse(window.standardClosesAt ?? "");
   const extendedClose = Date.parse(window.extendedClosesAt ?? "");
@@ -323,19 +337,21 @@ export function replyWindowInfo(window: ReplyWindow, now: number, variant: "row"
   }
   if (status === "extended" && (!window.humanAgentEnabled || (Number.isFinite(extendedClose) && now > extendedClose))) status = "closed";
   if (status === "closed") {
-    return { visible: true, closed: true, text: variant === "row" ? "Reply in Instagram" : "Reply window closed", tone: "muted", extended: false };
+    return { visible: true, closed: true, canSend: false, text: variant === "row" ? "Reply in Instagram" : "Reply window closed", tone: "muted", extended: false };
   }
+  // Rows leave out a window with plenty of time left, but it is still open.
+  const quiet: ReplyWindowInfo = { ...hidden, canSend: true };
   if (status === "extended") {
     const left = Date.parse(window.extendedClosesAt ?? "") - now;
     if (!Number.isFinite(left)) return hidden;
-    if (variant === "row") return left < DAY ? { visible: true, closed: false, text: `${shortDuration(left)} left`, tone: "soft", extended: true } : hidden;
-    return { visible: true, closed: false, text: `Extended window · ${shortDuration(left)} left`, tone: "soft", extended: true };
+    if (variant === "row") return left < DAY ? { visible: true, closed: false, canSend: true, text: `${shortDuration(left)} left`, tone: "soft", extended: true } : quiet;
+    return { visible: true, closed: false, canSend: true, text: `Extended window · ${shortDuration(left)} left`, tone: "soft", extended: true };
   }
   const left = Date.parse(window.standardClosesAt ?? "") - now;
   if (!Number.isFinite(left)) return hidden;
   const tone: ReplyWindowTone = left < HOUR ? "danger" : left <= 6 * HOUR ? "strong" : "muted";
-  if (variant === "row") return left > 6 * HOUR ? hidden : { visible: true, closed: false, text: `${shortDuration(left)} left`, tone, extended: false };
-  return { visible: true, closed: false, text: `Reply window · ${shortDuration(left)} left`, tone, extended: false };
+  if (variant === "row") return left > 6 * HOUR ? quiet : { visible: true, closed: false, canSend: true, text: `${shortDuration(left)} left`, tone, extended: false };
+  return { visible: true, closed: false, canSend: true, text: `Reply window · ${shortDuration(left)} left`, tone, extended: false };
 }
 
 export function pluralize(count: number, one: string, many = `${one}s`): string {

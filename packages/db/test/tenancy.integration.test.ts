@@ -39,8 +39,8 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
       text: "Paid enquiry",
       sentAt: new Date(),
     });
-    if (!("messageId" in result) || !("threadId" in result)) throw new Error("inbound fixture failed");
-    return result;
+    if (!("messageId" in result) || !result.messageId || !result.threadId) throw new Error("inbound fixture failed");
+    return { ...result, messageId: result.messageId, threadId: result.threadId };
   }
 
   beforeAll(async () => {
@@ -206,6 +206,7 @@ describe.runIf(shouldRun && Boolean(process.env.TEST_DATABASE_URL))("Postgres te
       org: 0, accounts: 0, threads: 0, messages: 0, classifications: 0, drafts: 0, sendIntents: 0,
       ledger: 0, audit: 0, subs: 0, billingEvents: 0, ignores: 0, outbox: 0, webhookScopes: 0, voice: 0, checkpoints: 0, pushes: 0,
       voiceRules: 0, draftFeedback: 0, offers: 0, speakingVoices: 0, audioAssets: 0,
+      deals: 0, invoices: 0, billingProfiles: 0, commentLeads: 0, leadSources: 0, leadEvents: 0,
     });
     expect(await prisma.user.findUnique({ where: { id: userId } })).toBeNull();
     expect(await prisma.webhookEvent.findUnique({ where: { id: ingress.webhookEventId! } })).toBeNull();

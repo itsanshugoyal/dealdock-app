@@ -1,12 +1,23 @@
 import {
+  daysOverdue,
   dealTypeForLabel,
+  EMPTY_DEAL_TERMS,
   encodePcm16Wav,
   formatMoneyExact,
+  isFestivePitchSeason,
+  reminderTone,
+  type BillingProfileInput,
   type ClassificationLabel,
+  type DealDto,
+  type DealSuggestion,
   type DealType,
   type DraftChip,
+  type DraftPurpose,
+  type InvoiceDto,
+  type InvoiceParty,
   type LearnedSignal,
   type MeasuredStyle,
+  type MessageAttachment,
   type MessageOrigin,
   type MessageSource,
   type MoneyContext,
@@ -16,6 +27,7 @@ import {
   type VoiceRuleScope,
   type VoiceSampleDto,
 } from "@dealdock/core";
+import { contentOf, usagePriceFor } from "./deals";
 import { bytesToBase64 } from "./wav";
 
 /**
@@ -52,6 +64,7 @@ export interface SeedMessage {
   text: string;
   origin?: MessageOrigin;
   audio?: { durationMs: number; transcript: string; language: string };
+  attachments?: MessageAttachment[];
 }
 export interface SeedThread {
   id: string;
@@ -78,6 +91,11 @@ export interface SeedThread {
   hinglish?: boolean;
   /** Creator account the conversation belongs to (agency demo); defaults to the first. */
   account?: string;
+  /** Email threads: the handle is the sender's address and there is a subject. */
+  channel?: "email";
+  subject?: string;
+  /** A seeded draft written for this conversation instead of the generic one. */
+  draftBody?: string;
 }
 
 export const SEED_THREADS: SeedThread[] = [
@@ -143,11 +161,10 @@ export const SEED_THREADS: SeedThread[] = [
     id: "t-founders", handle: "thefounderscircle.in", name: "The Founders Circle", followers: 22_000, verified: false, followsYou: false,
     label: "other_commerce", confidence: 0.83, rationale: "Paid speaking session for a founders community.", min: inr(40_000), max: inr(55_000),
     state: "open", source: "dm",
-    signal: { phrase: "let's lock it for the 14th", amountMinor: null, dealType: "other" },
     messages: [
       { inbound: true, ago: 3 * 24 * 60, text: "Would you do a 45-minute session on founder fitness for our members? It's paid." },
       { inbound: false, ago: 3 * 24 * 60 - 90, origin: "dealdock", text: "Heyy! I'd love that. Sending a couple of dates — what does your schedule look like? – D" },
-      { inbound: true, ago: 2 * 60, text: "Sounds good, let's lock it for the 14th. Sending the advance today." },
+      { inbound: true, ago: 2 * 60, text: "Sounds good! Our budget is ₹50,000. Let's lock it for later this week: sending the 50% advance today, and the rest within 15 days of the session." },
     ],
   },
   {
@@ -247,12 +264,35 @@ export const SEED_THREADS: SeedThread[] = [
     messages: [{ inbound: true, ago: 26 * 60, text: "Hey! Got something you might like. Can I share?" }],
   },
   {
-    id: "r-growth", handle: "growthwala.agency", name: null, followers: 980, verified: false, followsYou: false,
-    label: "spam", confidence: 0.7, rationale: "Follower-growth pitch; asks for nothing specific yet.", min: null, max: null,
+    // A fake ambassador offer: the scam check routes it to Check as spam, with its reason as the rationale.
+    id: "r-scam", handle: "glownest.ambassadors", name: "GlowNest Ambassadors", followers: 640, verified: false, followsYou: false,
+    label: "spam", confidence: 0.9, rationale: "They're asking you to pay to take part.", min: null, max: null,
     state: "open", review: true, source: "dm",
-    messages: [{ inbound: true, ago: 2 * 24 * 60 + 60, text: "We help creators 10x their reach in 30 days. Free audit for you — reply YES." }],
+    messages: [{ inbound: true, ago: 2 * 24 * 60 + 60, text: "Congratulations! You're selected as a GlowNest brand ambassador 🌟 Free products every month and 20% commission. To activate your profile, pay a one-time registration fee of ₹999 here: bit.ly/glownest-amb" }],
+  },
+  {
+    id: "e-lumen", channel: "email", handle: "partnerships@lumenskin.example", name: "Lumen Skincare", followers: null, verified: null, followsYou: null,
+    label: "brand_deal", confidence: 0.92, rationale: "A brand brief with deliverables, dates and a stated budget.", min: inr(120_000), max: inr(150_000),
+    state: "open", source: null, draft: "reply",
+    subject: "Winter glow campaign: brief and ₹1,50,000 budget",
+    draftBody: "Hi Anika,\n\nThank you for the brief! The winter barrier serum is a lovely fit. I'm free 1–15 December for 2 reels + 3 stories, with 3 months of organic usage, and my rate for that package is ₹1,50,000.\n\nHappy to lock the dates once you confirm.\n\nBest,\nDiya",
+    messages: [{
+      inbound: true, ago: 95,
+      text: "Hi Diya,\n\nWe're launching our winter barrier serum in December and would love you on board. The brief is attached: 2 reels + 3 stories between 1 and 15 December, organic usage for 3 months.\n\nOur budget is ₹1,50,000. Could you confirm your availability?\n\nWarmly,\nAnika Rao\nPartnerships, Lumen Skincare",
+      attachments: [{ partId: "1", filename: "Lumen-winter-brief.pdf", mimeType: "application/pdf", size: 248_320 }],
+    }],
+  },
+  {
+    id: "e-neha", channel: "email", handle: "neha.kapoor@example.com", name: "Neha Kapoor", followers: null, verified: null, followsYou: null,
+    label: "coaching_lead", confidence: 0.87, rationale: "Asks for 1:1 coaching, the price and a start date.", min: inr(24_000), max: inr(30_000),
+    state: "open", source: null,
+    subject: "1:1 coaching before my wedding",
+    messages: [{ inbound: true, ago: 7 * 60 + 20, text: "Hi Diya,\n\nI've followed your workouts for a year and want proper 1:1 coaching before my wedding in March. Do you have a slot from January? What does the 12-week program cost?\n\nThanks,\nNeha" }],
   },
 ];
+
+/** The demo's connected Gmail inbox (a reserved .example address), for @diya.moves. */
+export const DEMO_EMAIL_INBOX = { id: "email-demo-diya", address: "collabs@diyamehra.example" };
 
 // ── Ledger history (six months, recovered money climbing toward the goal) ──
 
@@ -283,6 +323,29 @@ export const SEED_SALES: SeedSale[] = [
   { monthsAgo: 5, day: 21, handle: "ritu.trains", name: "Ritu", dealType: "coaching", rupees: 24_000 },
 ];
 export const DEMO_GOAL_MINOR = inr(400_000);
+
+// ── Invoices (fictional identities: the GSTINs only pass the format checksum) ──
+
+/** The workspace's billing details, printed on every demo invoice. */
+export const DEMO_BILLING: BillingProfileInput = {
+  legalName: "Diya Mehra",
+  addressLines: ["12 Sea Breeze Apartments, Carter Road", "Bandra West 400050"],
+  city: "Mumbai",
+  state: "27",
+  country: "IN",
+  email: "diya@example.com",
+  phone: "+91 90000 00000",
+  tax: { kind: "gst_in", number: "27ABJPM4821K1ZE", ratePercent: null, lutArn: null },
+  pan: "ABJPM4821K",
+  udyamNumber: null,
+  sacCode: "998361",
+  payment: { upiId: "diyamehra@okhdfcbank", bankName: "HDFC Bank", accountName: "Diya Mehra", accountNumber: "50100482193716", ifsc: "HDFC0004821", swift: "HDFCINBB", iban: null, paymentLink: null },
+  invoicePrefix: "DM",
+};
+export const DEMO_BILL_TO: Record<"tealeaf" | "expo", InvoiceParty> = {
+  tealeaf: { name: "TeaLeaf Beverages Pvt Ltd", addressLines: ["4th Floor, 21 Residency Road", "560025"], city: "Bengaluru", state: "29", country: "IN", taxNumber: "29AAKCT5310R1ZN" },
+  expo: { name: "Pune Run Expo Pvt Ltd", addressLines: ["Office 7, Baner Road", "411045"], city: "Pune", state: "27", country: "IN", taxNumber: "27AACCP6194M1ZT" },
+};
 export const DEMO_LEAK_BASELINE_MINOR = inr(180_000);
 
 const SALE_ASKS: Record<DealType, string> = {
@@ -517,6 +580,133 @@ export function applyInstruction(body: string, instruction: string): string {
   const cleaned = instruction.trim().replace(/^(please\s+)?(say|mention|tell them|add|note)( that)?\s+/i, "").replace(/[.!\s]+$/, "");
   if (!cleaned) return body;
   return beforeSignoff(body, `${cleaned.charAt(0).toUpperCase()}${cleaned.slice(1)}.`);
+}
+
+// ── Deals: rule-based stand-ins for the deal suggestion and purpose drafts ──
+
+const COUNT_WORDS: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5 };
+const DELIVERABLES = /\b(\d{1,2}|an?|one|two|three|four|five)[\s-]+(reels?|stor(?:y|ies)|posts?|videos?)\b/gi;
+const AMOUNTS = /(?:₹|\brs\.?|\binr)\s?(\d[\d,]*(?:\.\d{1,2})?)\s?(k|l|lakh)?\b/gi;
+const RANGE_DASH = /^\s*[–-]\s*$/;
+
+/** Deal terms read from a conversation (demo stand-in for POST /threads/:id/deal-suggestion). Never saved. */
+export function suggestDealFrom(texts: string[], label: ClassificationLabel | null): DealSuggestion {
+  const body = texts.join("\n");
+  // The latest single amount; both ends of a range ("₹60,000–₹90,000") are still a negotiation.
+  const amounts = [...body.matchAll(AMOUNTS)];
+  const gap = (from: RegExpMatchArray, to: RegExpMatchArray) => body.slice(from.index! + from[0].length, to.index);
+  const single = amounts.filter((match, index) => !(amounts[index + 1] && RANGE_DASH.test(gap(match, amounts[index + 1]!))) && !(amounts[index - 1] && RANGE_DASH.test(gap(amounts[index - 1]!, match))));
+  const last = single[single.length - 1];
+  const unit = last?.[2]?.toLowerCase();
+  const amountMinor = last ? Math.round(Number(last[1]!.replace(/,/g, "")) * (unit === "k" ? 1_000 : unit ? 100_000 : 1) * 100) : null;
+  // One row per kind, in the order first asked for, with the latest count.
+  const counts = new Map<string, number>();
+  for (const match of body.matchAll(DELIVERABLES)) {
+    const noun = match[2]!.toLowerCase();
+    counts.set(noun.startsWith("stor") ? "story" : noun.replace(/s$/, ""), Number(match[1]) || COUNT_WORDS[match[1]!.toLowerCase()] || 1);
+  }
+  const deliverables = [...counts].map(([kind, count], index) => ({
+    id: `d${index + 1}`, label: `${count} ${count === 1 ? kind : kind === "story" ? "stories" : `${kind}s`}`, dueAt: null, done: false,
+  }));
+  const advance = /(\d{1,3})\s?%\s*(?:advance|upfront)/i.exec(body);
+  const advancePercent = advance && Number(advance[1]) <= 100 ? Number(advance[1]) : null;
+  const days = /\bnet[\s-]?(\d{1,3})\b|\b(?:payable|payment|rest|balance)\b[^.\n]{0,30}?\bwithin\s(\d{1,3})\s+days\b|\bpayable\s+in\s+(\d{1,3})\s+days\b/i.exec(body);
+  const paymentDays = days ? Number(days[1] ?? days[2] ?? days[3]) : null;
+  const dealType = dealTypeForLabel(label) ?? "other";
+  const missing = [
+    amountMinor === null ? "the fee" : null,
+    deliverables.length ? null : "what you'll deliver",
+    paymentDays === null || paymentDays > 365 ? "when they'll pay" : null,
+    /\b(?:advance|upfront)\b/i.test(body) && advancePercent === null ? "how much is paid upfront" : null,
+    dealType === "brand" && !/\busage\b/i.test(body) ? "usage rights" : null,
+  ].filter((item): item is string => item !== null);
+  return {
+    title: deliverables.length ? deliverables.map((item) => item.label).join(" + ") : null,
+    dealType,
+    amountMinor,
+    dueAt: null,
+    terms: { ...EMPTY_DEAL_TERMS, deliverables, advancePercent, paymentDays: paymentDays !== null && paymentDays <= 365 ? paymentDays : null },
+    missing,
+    modelVersion: "demo-rules",
+  };
+}
+
+/**
+ * A terms recap, a payment reminder or an invoice's cover note, with exact
+ * amounts. As the API: a reminder chases what is still due (its open
+ * invoices with their tax, else the fee less an advance paid) and firms up
+ * with how late it is; a cover note names the invoice, never bank details.
+ */
+export function dealDraft(purpose: DraftPurpose, deal: DealDto, ctx: MoneyContext, timeZone: string, now: number, invoice?: InvoiceDto, offers: readonly OfferDto[] = []): string {
+  const day = (at: string) => new Intl.DateTimeFormat(ctx.locale ?? "en-IN", { day: "numeric", month: "short", timeZone }).format(new Date(at));
+  const terms = deal.terms;
+  if (purpose === "renewal") {
+    // A warm check-in naming the past work: a rate only as the creator's brand offer states it, never the old fee.
+    const brand = offers.find((offer) => offer.active && offer.dealType === "brand" && offer.priceMinMinor !== null && (offer.igAccountId === null || offer.igAccountId === deal.igAccountId));
+    const season = isFestivePitchSeason(now, timeZone) ? " Festive campaigns are being planned now, so it felt like the right time to reach out:" : "";
+    const rate = brand ? ` My rate for a ${brand.name.toLowerCase()} is ${offerPrice(brand, ctx)} now.` : "";
+    return `Heyy! Loved working with you on ${deal.title} 🙏${season} I'd love to team up again. Anything coming up that we could do together?${rate} ${SIGNOFF}`;
+  }
+  if (purpose === "usage_renewal") {
+    // When the rights end, then an extension at the creator's usage price per month (never a guessed one), else a request to stop. No threats.
+    const price = usagePriceFor(deal, offers);
+    const ends = terms.usageEndsAt ? `on ${day(terms.usageEndsAt)}` : "soon";
+    const extend = price !== null ? `If you'd like to keep running it, I can extend them at ${money(price, ctx)} per month.` : "If you'd like to keep running it, how long would you like to extend for? I'll confirm the price.";
+    return `Heyy! A quick heads-up: the usage rights for ${contentOf(deal)} end ${ends}. ${extend} Otherwise, please stop using the content after that date 🙏 ${SIGNOFF}`;
+  }
+  if (purpose === "invoice" && invoice) {
+    const which = invoice.kind === "advance" ? "the advance invoice" : invoice.kind === "balance" ? "the balance invoice" : "the invoice";
+    return `Heyy! Sharing ${which} for ${deal.title}: ${invoice.number} for ${money(invoice.totalMinor, ctx)}, due by ${day(invoice.dueAt)}. The PDF is attached with the payment details. Let me know once it's processed! ${SIGNOFF}`;
+  }
+  const open = (deal.invoices ?? []).filter((item) => item.status === "issued");
+  const amount = money(purpose === "payment_reminder" ? (open.length ? open.reduce((sum, item) => sum + item.totalMinor, 0) : Math.max(0, deal.amountMinor - (deal.paidMinor ?? 0))) : deal.amountMinor, ctx);
+  if (purpose === "recap") {
+    const lines = [
+      `${deal.title}: ${amount}`,
+      ...terms.deliverables.map((item) => `${item.label}${item.dueAt ? ` by ${day(item.dueAt)}` : ""}`),
+      terms.usage ? `Usage: ${terms.usage}` : null,
+      terms.exclusivity ? `Exclusivity: ${terms.exclusivity}` : null,
+      terms.revisionsIncluded !== null ? `${terms.revisionsIncluded} ${terms.revisionsIncluded === 1 ? "revision" : "revisions"} included` : null,
+      terms.advancePercent ? `${terms.advancePercent}% advance` : null,
+      terms.paymentDays !== null ? `Payment within ${terms.paymentDays} days of the invoice` : deal.dueAt ? `Payment by ${day(deal.dueAt)}` : null,
+    ].filter(Boolean);
+    return `Heyy! Locking in what we agreed:\n${lines.map((line) => `• ${line}`).join("\n")}\nLet me know if anything's off. ${SIGNOFF}`;
+  }
+  const late = daysOverdue(deal, now);
+  const due = deal.dueAt ? day(deal.dueAt) : null;
+  switch (reminderTone(late)) {
+    case "gentle":
+      return `Heyy! Hope all's well 🙏 A quick nudge on the ${amount} for ${deal.title}${due ? `, due ${due}` : ""}. Could you let me know when it'll go out? ${SIGNOFF}`;
+    case "firm":
+      return `Hi! Following up on the ${amount} for ${deal.title}. It was due on ${due} and is now ${late} days late. Could you confirm the payment date this week? ${SIGNOFF}`;
+    default:
+      return `Hi, this is my final reminder about the ${amount} for ${deal.title}, due on ${due} and now ${late} days late. Please clear it within 7 days, or tell me what's holding it up. ${SIGNOFF}`;
+  }
+}
+
+/** A DM-style demo draft as an email: a greeting line, the message, and a sign-off. */
+export function asEmail(body: string): string {
+  const name = /^Heyy ([^!]+)!/.exec(body)?.[1];
+  const text = body.replace(/^Heyy(?: [^!]+)?!\s*/, "").replace(/\s*– D$/, "");
+  return `Hi${name ? ` ${name}` : ""},\n\n${text}\n\nBest,\n${DEMO_CREATOR.firstName}`;
+}
+
+/** A one-page placeholder PDF for demo attachment downloads (fictional; no real file is ever fetched). */
+export function demoPdf(filename: string): string {
+  const line = `Fictional demo file: ${filename}`.replace(/[()\\]/g, "");
+  const stream = `BT /F1 12 Tf 36 96 Td (${line}) Tj ET`;
+  return [
+    "%PDF-1.4",
+    "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj",
+    "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj",
+    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 420 160]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj",
+    `4 0 obj<</Length ${stream.length}>>stream`,
+    stream,
+    "endstream endobj",
+    "5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj",
+    "trailer<</Root 1 0 R>>",
+    "%%EOF",
+  ].join("\n");
 }
 
 /** What changed between the draft and what the creator actually sent ("Noted: …"). */
