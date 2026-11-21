@@ -60,6 +60,6 @@ describe("FEATURE_INVOICES_ENABLED", () => {
   it("tells the web through GET /dashboard features", async () => {
     expect((await app.inject({ method: "GET", url: "/dashboard" })).json().features).toMatchObject({ invoices: true });
     vi.stubEnv("FEATURE_INVOICES_ENABLED", "false");
-    expect((await app.inject({ method: "GET", url: "/dashboard" })).json().features).toEqual({ invoices: false, humanAgent: false, insights: false, commentLeads: false });
+    expect((await app.inject({ method: "GET", url: "/dashboard" })).json().features).toEqual({ invoices: false, humanAgent: false, insights: false, commentLeads: false, unifiedLogin: false });
   });
 });

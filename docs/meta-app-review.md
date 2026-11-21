@@ -6,6 +6,14 @@
 
 **Why this exists now:** Meta Tech Provider registration + `instagram_business_manage_messages` approval is the longest lead-time item in the project (weeks). PLAN.md M0 starts this track so M3 (real Instagram) is never blocked. Owner: founding team. Status: ☐ = not started.
 
+> **22 November: Unified Login.** Meta apps created after ~October 2026 only offer "Instagram API with Unified login" (Facebook Login for Business with a configuration, a system-user token that belongs to the creator's business portfolio, graph.facebook.com). DealDock supports it behind `META_UNIFIED_LOGIN_ENABLED` with `META_LOGIN_CONFIG_ID`. Under it:
+> - **Permissions** use the `instagram_*` names: `instagram_basic`, `instagram_manage_messages`, `instagram_manage_comments`, `instagram_manage_insights` (not `instagram_business_*`). They are chosen in the login configuration, not sent as scopes. Request Advanced Access for the ones the configuration uses; remove `ads_management`, `ads_read` and `instagram_content_publish` from the default configuration.
+> - **App ID/secret** are the Meta app's (App settings → Basic); webhooks are configured on the Meta app's Instagram object and signed with that App secret.
+> - **HUMAN_AGENT** is requested as the Human Agent feature in App Review.
+> - Creators must enable **Allow access to messages** (Instagram → Message controls → Connected tools), or sends fail with `(#200)`.
+> - A creator's business portfolio is required; a Facebook Page is not.
+> The Instagram Login steps below still apply to apps created before the change.
+
 ## 1. Prerequisites
 
 - ☐ Meta Business Manager account (business.facebook.com) verified — legal entity name, address, website (dealdock.io).

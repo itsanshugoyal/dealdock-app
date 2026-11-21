@@ -44,6 +44,15 @@ describe("comments webhook parsing", () => {
     expect(comments.map((comment) => [comment.commentId, comment.commentedAt.getTime()])).toEqual([["17865799348089039", 1_762_509_000_000]]);
   });
 
+  it("reads Unified Login's comment_id", () => {
+    const { id: _id, ...rest } = value();
+    const comments = parseCommentWebhook({
+      object: "instagram",
+      entry: [{ id: CREATOR, time: 1_762_509_000, changes: [{ field: "comments", value: { ...rest, comment_id: "17865799348089039" } }] }],
+    }, NOW);
+    expect(comments.map((comment) => comment.commentId)).toEqual(["17865799348089039"]);
+  });
+
   it("keeps replies to comments and ad comments, which are comments too", () => {
     const comments = parseCommentWebhook({
       object: "instagram",

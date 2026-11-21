@@ -34,4 +34,4 @@ One registry, `packages/core/src/feature-flags.ts` (`FEATURE_FLAGS`, exported fr
 - Test both states: the API refusal and the web hiding.
 - Remove the flag once the feature is fully rolled out. Track the removal in pending.md.
 
-Current flags: `invoices` (`FEATURE_INVOICES_ENABLED`, default on, to be set to `"false"` in production until a chartered accountant signs off), and `humanAgent`, `insights`, `commentLeads` (`META_*`, default off until Meta approves).
+Current flags: `invoices` (`FEATURE_INVOICES_ENABLED`, default on, to be set to `"false"` in production until a chartered accountant signs off), `humanAgent`, `insights`, `commentLeads` (`META_*`, default off until Meta approves), and `unifiedLogin` (`META_UNIFIED_LOGIN_ENABLED`, default off: Instagram API with Unified Login for Meta apps created after October 2026, with `META_LOGIN_CONFIG_ID`).

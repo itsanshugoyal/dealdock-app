@@ -167,6 +167,42 @@ describe("sendMessage error mapping", () => {
   });
 });
 
+describe("Graph error mapping", () => {
+  const target = { platformThreadId: "igsid-user-1", recipientPlatformId: "igsid-user-1" };
+  const failing = (error: Record<string, unknown>) =>
+    new InstagramGraphAdapter({ appSecret: APP_SECRET, fetchImpl: fakeFetch(() => ({ status: 400, body: { error } })) });
+
+  it("reads code 10 as a closed window only with the window subcode or text", async () => {
+    await expect(failing({ code: 10, error_subcode: 2534022, message: "x" }).sendMessage(ACCOUNT, target, "hi")).rejects.toBeInstanceOf(SendWindowClosedError);
+    const permission = failing({ code: 10, message: "(#10) Application does not have permission for this action" }).sendMessage(ACCOUNT, target, "hi");
+    await expect(permission).rejects.not.toBeInstanceOf(SendWindowClosedError);
+    await expect(permission).rejects.toThrow("Graph API error 10");
+  });
+
+  it("treats Instagram's 80002 as throttling", async () => {
+    await expect(failing({ code: 80002, message: "too many calls" }).sendMessage(ACCOUNT, target, "hi")).rejects.toBeInstanceOf(RateBudgetExceededError);
+  });
+});
+
+describe("Unified Login host", () => {
+  it("sends and reads on graph.facebook.com by account id, and follows pagination only there", async () => {
+    const urls: string[] = [];
+    const adapter = new InstagramGraphAdapter({
+      appSecret: APP_SECRET,
+      graphBase: "https://graph.facebook.com/v25.0",
+      fetchImpl: fakeFetch((url) => {
+        urls.push(url);
+        if (url.includes("/messages") && !url.includes("conv")) return { body: { message_id: "mid.1" } };
+        return { body: { data: [], paging: { next: "https://graph.instagram.com/v25.0/17841400000000/conversations?page=2" } } };
+      }),
+    });
+    await adapter.sendMessage(ACCOUNT, { platformThreadId: "igsid-user-1", recipientPlatformId: "igsid-user-1" }, "hi");
+    expect(urls[0]).toBe("https://graph.facebook.com/v25.0/17841400000000/messages");
+    await expect(adapter.listConversations(ACCOUNT)).rejects.toThrow("untrusted URL");
+    expect(urls[1]!.startsWith("https://graph.facebook.com/v25.0/17841400000000/conversations?")).toBe(true);
+  });
+});
+
 describe("per-account rate budget", () => {
   it("throws RateBudgetExceededError once the bucket is spent, with retry hint", async () => {
     let clock = 0;
@@ -236,7 +272,7 @@ describe("listConversations mapping", () => {
       appSecret: APP_SECRET,
       fetchImpl: fakeFetch((url) => {
         urls.push(url);
-        if (url.includes("/me/conversations")) {
+        if (url.includes(`/${ACCOUNT.platformUserId}/conversations`)) {
           return { body: { data: [{ id: "conv-7", updated_time: "2026-07-05T10:00:00+0000", participants: { data: [{ id: "igsid-user-7", username: "buyer" }] } }] } };
         }
         return { body: { data: [{ id: "m.7", created_time: "2026-07-05T10:00:00+0000", from: { id: "igsid-user-7" }, message: "Rates?" }] } };

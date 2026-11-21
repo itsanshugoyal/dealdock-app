@@ -25,6 +25,11 @@ export const FEATURE_FLAGS = {
     default: false,
     description: "Comment leads: the comments OAuth scope, webhook subscription and processing; needs instagram_business_manage_comments approved.",
   },
+  unifiedLogin: {
+    env: "META_UNIFIED_LOGIN_ENABLED",
+    default: false,
+    description: "Instagram API with Unified Login (Facebook Login for Business config, system-user token, graph.facebook.com) for Meta apps created after Oct 2026; needs META_LOGIN_CONFIG_ID.",
+  },
 } as const satisfies Record<string, { env: string; default: boolean; description: string }>;
 
 export type FeatureName = keyof typeof FEATURE_FLAGS;

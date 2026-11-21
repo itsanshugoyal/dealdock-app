@@ -18,10 +18,12 @@ export async function connectGraphAccount(
     handle: string;
     accountType: "business" | "creator";
     accessToken: string;
-    expiresIn?: number;
+    /** Seconds; null = never expires (Unified Login system-user token); unset = Instagram Login's 60 days. */
+    expiresIn?: number | null;
   }
 ) {
   const accessTokenEnc = encryptToken(input.accessToken);
+  const tokenExpiresAt = input.expiresIn === null ? null : new Date(Date.now() + (input.expiresIn ?? 60 * 86400) * 1000);
   return prisma.$transaction(async (tx) => {
     // Serialize tier-cap decisions per organization. Count-then-create without
     // this lock lets two simultaneous OAuth callbacks exceed Solo/Roster caps.
@@ -38,7 +40,7 @@ export async function connectGraphAccount(
         data: {
           accessTokenEnc,
           tokenRefreshedAt: new Date(),
-          tokenExpiresAt: new Date(Date.now() + (input.expiresIn ?? 60 * 86400) * 1000),
+          tokenExpiresAt,
           handle: input.handle,
           accountType: input.accountType,
           status: "active",
@@ -62,7 +64,7 @@ export async function connectGraphAccount(
         accountType: input.accountType,
         accessTokenEnc,
         tokenRefreshedAt: new Date(),
-        tokenExpiresAt: new Date(Date.now() + (input.expiresIn ?? 60 * 86400) * 1000),
+        tokenExpiresAt,
       },
     });
     await tx.ingestionCheckpoint.create({

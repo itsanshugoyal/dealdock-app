@@ -25,7 +25,7 @@ import {
 import { MockInstagramAdapter, RateBudgetExceededError, subscribeToInstagramWebhooks, TokenExpiredError } from "@dealdock/messaging";
 import { requireAuth } from "../auth";
 import { isCommentLeadsEnabled } from "../feature-flags";
-import { getGraphAdapter } from "../graph";
+import { getGraphAdapter, instagramGraphBase } from "../graph";
 import { AccountRef, IgAccountId, requireIgAccount, requirePermission, requireWritable } from "../guards";
 
 /** Its own instance: like Instagram, it takes one private reply per comment. */
@@ -79,7 +79,7 @@ export async function commentLeadRoutes(app: FastifyInstance) {
     const connected = keywords.keywords.length ? await getConnectedAccount(auth.orgId, account.id) : null;
     if (connected?.provider === "instagram_graph" && connected.status === "active") {
       try {
-        await subscribeToInstagramWebhooks({}, connected.accessToken, connected.platformUserId, ["comments", "messages"]);
+        await subscribeToInstagramWebhooks({ graphBase: instagramGraphBase() }, connected.accessToken, connected.platformUserId, ["comments", "messages"]);
       } catch {
         req.log.warn({ igAccountId: account.id }, "comment webhook subscription failed");
         return reply.code(502).send({ error: "instagram_subscription_failed", hint: "Instagram didn't turn on comment updates, so nothing was saved. Try again, or reconnect Instagram in Settings." });

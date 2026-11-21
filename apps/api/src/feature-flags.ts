@@ -10,6 +10,7 @@ export { featureFlags, isFeatureEnabled } from "@dealdock/core";
 export const isHumanAgentEnabled = (): boolean => isFeatureEnabled("humanAgent");
 export const isInsightsEnabled = (): boolean => isFeatureEnabled("insights");
 export const isCommentLeadsEnabled = (): boolean => isFeatureEnabled("commentLeads");
+export const isUnifiedLoginEnabled = (): boolean => isFeatureEnabled("unifiedLogin");
 
 /** The answer every invoice entry point gives while FEATURE_INVOICES_ENABLED is off. */
 export const FEATURE_DISABLED = { error: "feature_disabled" } as const;

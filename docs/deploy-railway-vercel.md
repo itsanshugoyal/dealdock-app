@@ -63,8 +63,13 @@ Project `dealdock`, configs `prd_web`, `prd_api`, `prd_worker`. Sync `prd_web` t
 
 ## 6. Meta app
 
-- Instagram → API setup with Instagram login → OAuth redirect `https://api.dealdock.io/ig/callback`.
-- Webhooks → callback `https://api.dealdock.io/webhooks/instagram`, verify token = `META_WEBHOOK_VERIFY_TOKEN`, subscribe to `messages`.
+New Meta apps only offer **Instagram API with Unified login**, so production runs with `META_UNIFIED_LOGIN_ENABLED=true`.
+
+- Use cases → Instagram API → Customize → **1. Configure your app**: create a configuration with login variation General, token **System-user access token (never expires)**, business asset **Instagram account** only (no ad account), permissions **`instagram_basic`, `instagram_manage_messages`** (add `instagram_manage_comments` / `instagram_manage_insights` only when those flags will be on; remove the ads and publish permissions). Copy its **configuration ID** to `META_LOGIN_CONFIG_ID`.
+- Register the redirect URL `https://api.dealdock.io/ig/callback` (= `IG_OAUTH_REDIRECT_URI`).
+- App settings → Basic: **App ID** → `META_APP_ID`, **App secret** → `META_APP_SECRET` (API only).
+- **3. Configure webhooks** (after the API is live): callback `https://api.dealdock.io/webhooks/instagram`, verify token = `META_WEBHOOK_VERIFY_TOKEN`, subscribe to `messages`. DealDock subscribes each connected account itself.
+- Creators must turn on **Allow access to messages** in Instagram (Settings → Messages and story replies → Message controls → Connected tools), or sends fail.
 - App roles → add each pilot creator as an **Instagram tester**; they accept in Instagram (Settings → Apps and websites → Tester invites).
 
 ## 7. Payments

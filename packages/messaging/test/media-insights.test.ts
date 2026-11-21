@@ -58,7 +58,7 @@ describe("Instagram media insights", () => {
       // `saved` is saves; a number Instagram can't have sent (negative) reads as none.
       metrics: { views: 12_400, reach: 9_800, likes: 1_130, comments: 84, shares: null, saves: 210 },
     });
-    expect(calls[0]).toContain("/me/media?fields=id%2Cpermalink%2Ctimestamp%2Cmedia_type");
+    expect(calls[0]).toContain("/17841400000000/media?fields=id%2Cpermalink%2Ctimestamp%2Cmedia_type");
     expect(calls.at(-1)).toContain(`/333/insights?metric=${encodeURIComponent(INSIGHT_METRICS.join(","))}`);
     // Never the deprecated metrics.
     expect(INSIGHT_METRICS.join(",")).not.toMatch(/impressions|plays|video_views/);

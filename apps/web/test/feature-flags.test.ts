@@ -61,6 +61,6 @@ describe("where the web reads features", () => {
     expect(store.getSnapshot().features.invoices).toBe(true);
     store.authenticate("actor", async () => "actor");
     await vi.waitFor(() => expect(store.getSnapshot().state).toBe("ready"));
-    expect(store.getSnapshot().features).toEqual({ invoices: false, humanAgent: false, insights: false, commentLeads: false });
+    expect(store.getSnapshot().features).toEqual({ invoices: false, humanAgent: false, insights: false, commentLeads: false, unifiedLogin: false });
   });
 });
