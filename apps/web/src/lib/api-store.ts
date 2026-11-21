@@ -59,6 +59,9 @@ import {
   type VoiceRuleScope,
   type VoiceRuleStatus,
   type VoiceStudio,
+  FEATURE_FLAGS,
+  FEATURE_NAMES,
+  type FeatureFlags,
 } from "@dealdock/core";
 import { emptySnapshot, errorMessage, errorStatus, failed, IDLE, loading, ready } from "./snapshot";
 import type {
@@ -408,6 +411,7 @@ export class ApiStore implements AppStoreApi {
       next.dashboard = toDashboard(dashboard);
       next.money = toMoney(dashboard.org ? org : dashboard);
       next.workspaceName = str(org.name) || null;
+      next.features = toFeatures(dashboard.features);
     }
     const lists = { ...this.lists };
     if (landed.has("inbox")) lists.inbox = (landed.get("inbox") as InboxResponse).rows.map(fromInboxRow);
@@ -1555,6 +1559,11 @@ function toEmailAccount(raw: unknown): EmailAccountView {
     id: str(row.id), address: str(row.address), status: row.status === "token_expired" ? "token_expired" : "active",
     connectedAt: iso(row.connectedAt) ?? new Date().toISOString(), lastSyncedAt: iso(row.lastSyncedAt), ownerAccountId: str(row.ownerAccountId) || null,
   };
+}
+/** Each registry flag the API answered with a boolean; any it left out keeps its default. */
+function toFeatures(raw: unknown): FeatureFlags {
+  const row = obj(raw);
+  return Object.fromEntries(FEATURE_NAMES.map((name) => [name, typeof row[name] === "boolean" ? row[name] : FEATURE_FLAGS[name].default])) as FeatureFlags;
 }
 function toMe(raw: unknown): MeView {
   const row = obj(raw);

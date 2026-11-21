@@ -9,9 +9,9 @@ import {
 } from "lucide-react";
 import { dispatchCommand } from "../lib/commands";
 import { accountBigOneThreshold, atHandle, byValueDesc, isBigOne, needsYou, toCheck } from "../lib/format";
-import { SETTINGS_SECTIONS, type SettingsSectionId } from "../lib/settings-sections";
+import { visibleSettingsSections, type SettingsSectionId } from "../lib/settings-sections";
 import { setUiPref, useUiPrefs } from "../lib/ui-prefs";
-import { appStore, useApp, useSettings, type DemoThread } from "../lib/use-demo";
+import { appStore, useApp, useFeatures, useSettings, type DemoThread } from "../lib/use-demo";
 import { Kbd } from "./ui/kbd";
 import { LabelChip } from "./ui/label-chip";
 import { MoneyValue } from "./ui/money-value";
@@ -49,6 +49,7 @@ export default function PaletteContent({ onClose }: { onClose: () => void }) {
   const pathname = usePathname();
   const { threads, money, offers } = useApp();
   const settings = useSettings();
+  const features = useFeatures();
   const prefs = useUiPrefs();
   const [search, setSearch] = useState("");
   const threadId = pathname.startsWith("/thread/") ? decodeURIComponent(pathname.split("/")[2] ?? "") : null;
@@ -129,7 +130,7 @@ export default function PaletteContent({ onClose }: { onClose: () => void }) {
           <Item icon={Settings} value="Settings" kbd="g s" onSelect={() => go("/settings")}>Settings</Item>
           <Item icon={CommandIcon} value="Activity audit" onSelect={() => go("/activity")}>Activity</Item>
           {roster && <Item icon={Users} value="All creators roster" onSelect={() => go("/roster")}>All creators</Item>}
-          {SETTINGS_SECTIONS.map((section) => (
+          {visibleSettingsSections(features).map((section) => (
             <Item key={section.id} icon={Settings} value={`Settings ${section.label}`} keywords={SECTION_KEYWORDS[section.id]} onSelect={() => go(`/settings#${section.id}`)}>Settings › {section.label}</Item>
           ))}
         </Command.Group>

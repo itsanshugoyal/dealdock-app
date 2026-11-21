@@ -8,9 +8,9 @@ import { Activity, AlertTriangle, AtSign, AudioLines, Bell, ChevronRight, Credit
 import { businessFacts, creatorAnswers, profileFor, withCreatorProfile, type BusinessFacts } from "../../lib/business-profile";
 import { agoText, formatDate, pluralize, roleText, tierText } from "../../lib/format";
 import { useMinuteClock } from "../../lib/keyboard";
-import { SETTINGS_SECTIONS } from "../../lib/settings-sections";
+import { visibleSettingsSections } from "../../lib/settings-sections";
 import { errorMessage } from "../../lib/snapshot";
-import { appStore, useApp, useBilling, useCan, useDataSummary, useEmailAccounts, useIgnoreList, useMe, useMoneyContext, useNotificationPrefs, useOnboarding, useSeats, useSettings } from "../../lib/use-demo";
+import { appStore, useApp, useBilling, useFeatures, useCan, useDataSummary, useEmailAccounts, useIgnoreList, useMe, useMoneyContext, useNotificationPrefs, useOnboarding, useSeats, useSettings } from "../../lib/use-demo";
 import type { EmailAccountView } from "../../lib/types";
 import { setUiPref, useUiPrefs, type ThemePreference, type UndoSeconds } from "../../lib/ui-prefs";
 import { useAuthActions } from "../../components/auth-session";
@@ -42,18 +42,20 @@ const LOCALES = [
 export default function SettingsPage() {
   const settings = useSettings();
   const me = useMe();
+  const features = useFeatures();
+  const sections = useMemo(() => visibleSettingsSections(features), [features]);
   const [activeSection, setActiveSection] = useState("");
   const sectionsReady = Boolean(settings.data);
 
   useEffect(() => {
     const syncSection = () => {
       const id = window.location.hash.slice(1);
-      setActiveSection(SETTINGS_SECTIONS.some((section) => section.id === id) ? id : "");
+      setActiveSection(sections.some((section) => section.id === id) ? id : "");
     };
     syncSection();
     window.addEventListener("hashchange", syncSection);
     return () => window.removeEventListener("hashchange", syncSection);
-  }, []);
+  }, [sections]);
   useEffect(() => {
     if (sectionsReady && activeSection) document.getElementById(activeSection)?.scrollIntoView({ block: "start" });
   }, [sectionsReady, activeSection]);
@@ -65,17 +67,17 @@ export default function SettingsPage() {
         <div className="mb-5 lg:hidden">
           <Select label="Jump to a setting" value={activeSection} disabled={!sectionsReady} onChange={(event) => {
             const id = event.target.value;
-            if (!SETTINGS_SECTIONS.some((section) => section.id === id)) return;
+            if (!sections.some((section) => section.id === id)) return;
             window.history.replaceState(null, "", `#${id}`);
             setActiveSection(id);
           }}>
             <option value="" disabled>Choose a section…</option>
-            {SETTINGS_SECTIONS.map((section) => <option key={section.id} value={section.id}>{section.label}</option>)}
+            {sections.map((section) => <option key={section.id} value={section.id}>{section.label}</option>)}
           </Select>
         </div>
         <nav aria-label="Settings sections" className="hidden lg:block">
           <div className="sticky top-6"><ul className="flex flex-col gap-0.5">
-            {SETTINGS_SECTIONS.map((section) => (
+            {sections.map((section) => (
               <li key={section.id}><a href={`#${section.id}`} aria-current={activeSection === section.id ? "location" : undefined} className={cx("flex min-h-11 items-center rounded-xl px-3 py-2 text-[14px] font-medium text-ink-2 hover:bg-inset hover:text-ink focus-visible:outline-2 focus-visible:outline-info", activeSection === section.id && "bg-surface text-ink shadow-card hover:bg-surface")}>{section.label}</a></li>
             ))}
             <li><Link href="/activity" className="flex min-h-11 items-center rounded-xl px-3 py-2 text-[14px] font-medium text-ink-2 hover:bg-inset hover:text-ink focus-visible:outline-2 focus-visible:outline-info">Activity</Link></li>
@@ -94,7 +96,7 @@ export default function SettingsPage() {
               <EmailSection />
               <CommentKeywordsSection />
               <BusinessSection />
-              <BillingSection />
+              {features.invoices && <BillingSection />}
               <LeadSourcesSection />
               <NotificationsSection />
               <RegionSection />

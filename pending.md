@@ -9,6 +9,7 @@ Recorded 1 November 2026 from the [product audit](docs/ux-and-product-audit-2026
 - [ ] **Speaking-voice deletion:** retain vendor voice identifiers until deletion succeeds; use durable retryable deletion work when replacing or withdrawing a voice.
 - [ ] **Audio approval:** bind approval to the exact previewed clip, text and voice revision, and prevent duplicate synthesis. Keep customer audio sending disabled until these controls and provider validation pass.
 - [ ] **Synthetic-audio disclosure (built 5 November; legal review still needed):** India’s IT Rules have required a “prominently prefixed audio disclosure” on synthetic audio since 20 February 2026. Today the disclosure is a separate, best-effort text message. Add a spoken prefix to the clip itself, treat a missing disclosure as a failed send, and get legal review before any Indian creator uses speaking voice. See [the workflow review](docs/workflow-and-functionality-review-2026-11-04.md).
+- [ ] **Invoices flag (`FEATURE_INVOICES_ENABLED`):** set it to `"false"` in production until a chartered accountant signs off on the GST/VAT invoices. Once they're approved and live, remove the flag from the registry, the routes and the web (see AGENTS.md "Feature flags").
 - [ ] **Previously learned influence:** offer an explicit provenance-aware reset/rebuild after sample exclusion. Forward filtering and stale-result rejection are implemented; exclusion does not retrospectively erase existing rules or style-card influence.
 
 ## Owner/account-dependent gates
@@ -19,7 +20,7 @@ Recorded 1 November 2026 from the [product audit](docs/ux-and-product-audit-2026
 | Regenerate 50 real-model drafts and blind-score them independently | Both founders | At least 70% A/B ratings, with recorded scores. |
 | Complete Meta Business verification and app review. Also request `instagram_business_manage_comments` (comment leads) and `instagram_business_manage_insights` (results for proof of results), each with Advanced Access, in this submission or a second one | Anshu/account owner | Approved permissions, confirmed callback/origins, real incoming message, approved reply and delivery receipt, disconnect/reconnect. Verify available history and Requests coverage. Until approval, only accounts with a role on the app work. |
 | Verify Clerk organizations, invitations and roles | Anshu | Real account flows and correct deployed callback/origin configuration; deployed auth bypass remains unset. |
-| Razorpay: test plans (Solo, Studio, Roster) and the webhook `https://api.dealdock.io/webhooks/razorpay`, then the same in live mode after approval. Paddle: apply now (policy pages live; submit `dealdock.io` and `app.dealdock.io`; describe DealDock as a deal inbox with replies you approve, never as automation), then sandbox prices | Anshu | Charge, failure, cancellation and reconciliation checks; agreed pilot billing terms before charging. |
+| Razorpay: test plans (Solo, Studio, Roster) and the webhook `https://api.dealdock.io/webhooks/razorpay`, then the same in live mode after approval. Paddle: apply now (policy pages live; submit `dealdock.io` and `app.dealdock.io`; describe DealDock as a deal inbox with replies you approve, never as automation). Then, per environment, create an API key, put it in `.env` as `PADDLE_API_KEY` and run `node --env-file=.env scripts/paddle-setup.mjs --env sandbox` (later `--env live` with the live key); it creates the product, the three USD prices, the webhook, the `/pay` payment link and the client token, and prints the Doppler values. Live: re-run after `app.dealdock.io` is approved so the payment link is set | Anshu | Charge, failure, cancellation and reconciliation checks; agreed pilot billing terms before charging. |
 | Configure VAPID and verify installed-device notifications | Anshu | Delivery evidence on intended iOS/Android devices and understood quiet-hour behavior. |
 | Validate optional speech provider and rights | Anshu/creator owner | Account-specific consent/rights, processor terms, deletion proof, language listening tests and actual Meta audio/disclosure delivery. No purchase is required by this task. |
 | Approve deployment separately | Anshu | Secrets separation, migrations, backup/restore, readiness and monitoring checks for Vercel, Railway, Railway Postgres and Railway Redis (7 November: Railway Postgres replaces Neon). No deployment has been performed here. |
@@ -30,31 +31,77 @@ Recorded 1 November 2026 from the [product audit](docs/ux-and-product-audit-2026
 | Send an invoice PDF as an Instagram file message on a real account (needs PUBLIC_API_URL on https) | Anshu | The brand receives the PDF; a refusal returns the hint and the PDF downloads. |
 | Run the deals and invoice integration suites on a real Postgres (row locks and races; the local run used single-session embedded Postgres) | Engineering | Deals, invoices and off-platform suites pass on Postgres with concurrency. |
 
-## Go-live (recorded 7 November)
+## Go-live checklist (updated 22 November)
 
-The full order, DNS values and production settings are in [the go-live checklist](docs/go-live-2026-11-07.md). Meta's App Review can finish later.
+Order, DNS values and vendor details are in [the go-live guide](docs/go-live-2026-11-07.md). Launch is the private pilot: Instagram only, text replies, creators onboarded personally and added as Instagram testers until Meta approves.
 
-| Action | Owner | Acceptance evidence |
+### 1. Start now: the long waits, and how each is kept off the critical path
+
+| Item | Typical wait | Mitigation |
 |---|---|---|
-| Publish the policy pages on dealdock.io, linked from the navigation or footer: Terms (legal company name), Privacy (names OpenAI, Groq, Google, Meta, Razorpay, Paddle, Clerk, Railway and Vercel; data stored in Singapore; Gmail data never trains AI), Refund and cancellation, Shipping or delivery, Contact, Pricing and Features | Anshu | Razorpay live mode, Paddle, Google and Meta all accept the site. |
-| Add the DNS records: `app` to Vercel; `api` to Railway (CNAME and TXT); Clerk's `clerk`, `accounts`, `clkmail` and DKIM records; Search Console TXT; DMARC. Keep Zoho's records and exactly one SPF record | Anshu | Every dashboard shows the domain verified. |
-| Clerk production: domain `dealdock.io`, allowed subdomain `app.dealdock.io`, Google sign-in with its own OAuth client | Anshu | Sign-in, invite and sign-out work on the real domain. |
-| Hosting: Vercel Pro (root `apps/web`, region `sin1`); Railway Pro in Singapore with the API, worker, Postgres (point-in-time restore on) and Redis (AOF on); Doppler syncing `prd_web`, `prd_api` and `prd_worker` | Anshu | `https://api.dealdock.io/ready` answers; the worker runs; a restore test works. |
-| Production values in Doppler: origins (`WEB_APP_URL`, `NEXT_PUBLIC_API_URL`, `PUBLIC_API_URL`), callbacks (`IG_OAUTH_REDIRECT_URI`, `GOOGLE_REDIRECT_URI`), AI (`AI_PROVIDER=openai`, `AI_FALLBACK_PROVIDER=groq`, both keys), `TOKEN_ENCRYPTION_KEY`, `MEDIA_SIGNING_KEY`, VAPID keys. Leave `META_COMMENTS_ENABLED`, `META_INSIGHTS_ENABLED` and `META_HUMAN_AGENT_ENABLED` off until Meta approves | Anshu | The API and worker start in production mode with no missing-setting errors. |
-| Monitoring and accounts: Sentry projects for web, API and worker; UptimeRobot on the app and `/ready`; two-factor login on the registrar and every vendor; domain auto-renew | Anshu | An uptime alert and a test error arrive. |
-| Start Meta Business Verification now (up to 14 business days). Instagram's Advanced Access and WhatsApp both need it | Anshu | Verified business in Meta Business Manager. |
-| Legal review of the privacy policy and the spoken AI disclosure | Anshu | Reviewed text published. |
+| Meta Business Verification | up to 14 business days | Pilot creators are Instagram testers (50 max, 500 once verified). `META_*` flags stay off. |
+| Meta App Review (messages, comments, insights) | weeks | Same tester route. Needed only for public signup. |
+| Razorpay KYC → live mode (they asked for the IBT/business-model reply) | unknown | Billing starts on day 7. The scheduler skips any rail that isn't configured. |
+| Paddle account + domain approval (`dealdock.io`, `app.dealdock.io`) | 5–7 business days, may decline | Non-INR workspaces wait until Paddle's keys are set. Fallback: Dodo Payments. |
+| Google verification + CASA | 4–8 weeks, ~$500/yr | Gmail is off while `GOOGLE_*` is unset; launch on the unverified 100-user tier. |
+| Chartered accountant review of invoices | days–weeks | `FEATURE_INVOICES_ENABLED=false` in production until sign-off. |
+| Legal review of the privacy policy | days–weeks | Publish a careful draft, swap in the reviewed text. Speaking voice stays off. |
+| DNS propagation | up to 72 hours | Add records on day 1. |
 
-**Engineering before go-live:**
+### 2. Engineering
 
-- [ ] **Decision needed:** until Paddle is approved, stop workspaces outside India from subscribing, with a clear message (recommended), or build the Paddle checkout now.
-- [ ] Add the Sentry SDK to the web app, API and worker.
-- [ ] A nightly database dump stored outside Railway.
-- [ ] After the first deploy: a hosted CI run with Postgres and Redis, the real-Postgres concurrency run, a backup-restore drill, an export and deletion drill, and one live Instagram invoice PDF send.
-- [x] Production session tokens are bound to the app's origin (Clerk `authorizedParties`), added 7 November.
-- [x] Checked 7 November: Gmail push renewal runs daily, CORS allows only the app's origin, and the web app sends session tokens as Bearer tokens.
+- [x] **E1** Feature build committed (`73cbceb`, 21 Nov) and pushed.
+- [ ] **E2** CI green on the branch: commit today's changes and push. Locally (22 Nov): typecheck, lint, safety, 965 unit tests, `npm audit` (0), migrations + drift check and all 106 DB integration tests pass. The Redis-backed integration gate and the browser tests run only in CI.
+- [x] **E3** Billing scheduler: skips unconfigured rails, releases the claim only on a definite rail refusal (ambiguous failures log `NEEDS MANUAL CHECK`), one org's failure no longer stops the tick, unpaid Paddle checkouts cancel via their transaction.
+- [x] **E4** Feature-flag registry (`packages/core/src/feature-flags.ts`, see AGENTS.md) with `invoices` behind it.
+- [x] Paddle checkout: `/pay` page and `scripts/paddle-setup.mjs`.
+- [ ] **E5** Sentry SDK in web, API and worker (should alert on `NEEDS MANUAL CHECK`). *Deferred.*
+- [ ] **E6** Nightly database dump stored off the host. *Deferred.*
+- [ ] Billing manual check until a stale-claim sweep exists: on `NEEDS MANUAL CHECK`, look the org up in the rail dashboard, then save the subscription or clear `firstInvoiceRequestedAt`. Confirm Paddle honours `Idempotency-Key`.
+- [ ] Hosting files for the chosen host (only if a VPS: Dockerfiles, compose, Caddy, backup cron).
 
-**Later channels:** WhatsApp (about 3–5 weeks of building, alongside 2–4 weeks of Meta approvals) and TikTok for creators outside India (about 3–4 weeks of building plus TikTok's reviews). Scopes, steps and blockers are in [the go-live checklist](docs/go-live-2026-11-07.md#whatsapp-scopes-steps-effort-and-blockers).
+### 3. Accounts and hosting (owner)
+
+- [ ] **A1** Policy pages on dealdock.io, linked in the footer: Terms, Privacy, Data deletion, Refunds, Delivery, Contact, Pricing, Features. Prompt: [docs/policy-pages-prompt.md](docs/policy-pages-prompt.md). Fill its placeholders (legal name, address, phone, grievance officer, hosting providers).
+- [ ] **Hosting decision.** Vercel's free plan bans commercial use; Railway Pro isn't needed (Hobby is $5/month minimum, ~$10–20 with four services). Options: one ~$6/month VPS in Singapore/Bangalore running everything with Docker Compose + Caddy (recommended); Oracle Always Free (2 CPU / 12 GB, capacity and idle-reclaim risks); or web on Netlify/Cloudflare free + Railway Hobby.
+- [ ] **A2** DNS: `app` and `api` to the chosen host (Railway also needs its TXT record), Clerk's `clerk`, `accounts`, `clkmail` and DKIM records ("DNS only" on Cloudflare), Search Console TXT, `_dmarc`. Keep Zoho's records and exactly one SPF record.
+- [ ] **A3/A4** Hosting up: web at `app.dealdock.io`, API at `api.dealdock.io`, worker, Postgres (point-in-time restore or the E6 dump) and Redis (AOF on), all in Singapore or India.
+- [ ] **A5** Doppler syncing `prd_web`, `prd_api` and `prd_worker` with every value in section 4.
+- [ ] **A6** Clerk production: domain `dealdock.io`, allowed subdomain `app.dealdock.io`, Google sign-in with its own OAuth client.
+- [ ] **A7** Meta app: callback `https://api.dealdock.io/ig/callback`, webhook URL and verify token, each pilot creator added as an Instagram tester.
+- [ ] **A8** Razorpay test mode: Solo, Studio and Roster plans, webhook `https://api.dealdock.io/webhooks/razorpay`, then subscribe → renew → fail → cancel. Repeat in live mode after approval.
+- [ ] **A8b** Paddle (22 Nov: sandbox fully set up, values in `.env`; live set up except the payment link, values in `.env.live.local`, waiting on `app.dealdock.io` domain approval, then re-run `--env live`): sandbox account → API key → `node --env-file=.env scripts/paddle-setup.mjs --env sandbox` → values into Doppler dev/stg. Live account → verification and domain approval → the same with `--env live` → values into prd; re-run after `app.dealdock.io` is approved so the payment link is set.
+- [ ] **A9** Monitoring: Sentry projects (with E5), UptimeRobot on `app.dealdock.io` and `api.dealdock.io/ready`, two-factor login on every vendor and the registrar, domain auto-renew.
+- [ ] **A10** VAPID keys, generated once (`npx web-push generate-vapid-keys`).
+
+### 4. Production settings, per service
+
+- [ ] **Web (`prd_web`):** `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `NEXT_PUBLIC_API_URL=https://api.dealdock.io`, `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `NEXT_PUBLIC_DEALDOCK_DEMO_MODE=false`, `NEXT_PUBLIC_PADDLE_ENV`, `NEXT_PUBLIC_PADDLE_CLIENT_TOKEN` (both inlined at build time: rebuild after changing).
+- [ ] **API (`prd_api`):** `DATABASE_URL`, `REDIS_URL`, `CLERK_SECRET_KEY`, `WEB_APP_URL=https://app.dealdock.io`, `PUBLIC_API_URL=https://api.dealdock.io`, `META_APP_ID`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `IG_OAUTH_REDIRECT_URI=https://api.dealdock.io/ig/callback`, `TOKEN_ENCRYPTION_KEY` and `MEDIA_SIGNING_KEY` (API only; never rotate the encryption key casually), `AI_PROVIDER=openai`, `AI_FALLBACK_PROVIDER=groq`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `OPENAI_REASONING_EFFORT=high`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_PLAN_SOLO/STUDIO/ROSTER`, `PADDLE_ENV`, `PADDLE_API_KEY`, `PADDLE_WEBHOOK_SECRET`, `PADDLE_PRICE_SOLO/STUDIO/ROSTER`, `FEATURE_INVOICES_ENABLED=false`. Later: `GOOGLE_CLIENT_ID/SECRET/REDIRECT_URI`, `GMAIL_PUBSUB_*`, Sentry DSN.
+- [ ] **Worker (`prd_worker`):** `DATABASE_URL`, `REDIS_URL`, the API's AI settings, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, the Razorpay keys and plan ids, `PADDLE_ENV`, `PADDLE_API_KEY`, `PADDLE_PRICE_*` (the billing scheduler runs here). **Never** Meta, Google or encryption keys: the worker refuses to start with them.
+- [ ] **Off or unset in production:** `META_COMMENTS_ENABLED`, `META_INSIGHTS_ENABLED`, `META_HUMAN_AGENT_ENABLED` (until Meta approves), `SPEECH_PROVIDER` (voice off). **Never set** `DEALDOCK_DISABLE_AUTH`, `DEALDOCK_DEV_ORG_ID`, `MOCK_WEBHOOK_SECRET`, `DEALDOCK_AI_MODE`, `DEALDOCK_API_URL`.
+
+### 5. Launch-day checks
+
+- [ ] `https://api.dealdock.io/ready` answers, the worker runs, migrations applied (`npm run db:migrate -w @dealdock/db`, never `db push` or the demo seed).
+- [ ] Clerk sign-in, invite and sign-out on `app.dealdock.io`.
+- [ ] One real Instagram account: DM in → sorted → draft → approved → delivered; disconnect and reconnect.
+- [ ] Push notification on a real iPhone and a real Android phone.
+- [ ] Backup-restore drill; data export and deletion drill.
+- [ ] A test error reaches Sentry (after E5); an uptime alert fires.
+- [ ] Paddle sandbox: open a `/pay?_ptxn=…` checkout and pay with a test card; the webhook marks the subscription active.
+- [ ] Strongly recommended: both founders blind-score 50 real drafts (≥70% A/B).
+
+### 6. After launch (optional)
+
+- [ ] Meta approval → drop the tester step, open signup, turn on `META_COMMENTS_ENABLED` / `META_INSIGHTS_ENABLED`.
+- [ ] Paddle live approval → live keys, non-INR billing open.
+- [ ] CA sign-off → `FEATURE_INVOICES_ENABLED=true`, one live invoice PDF on Instagram, then remove the flag.
+- [ ] Gmail: `GOOGLE_*` keys and one real-inbox test; CASA when nearing 100 users; Pub/Sub for instant mail.
+- [ ] Reviewed privacy policy; Sentry (E5) and off-host dump (E6) if not done before launch.
+- [ ] Web shows invoice buttons briefly before `/dashboard` answers when the flag is off: hide flagged UI until flags load.
+- [ ] Stale first-invoice claim sweep that reconciles by `requestKey`.
+- [ ] Later channels: WhatsApp (about 3–5 weeks plus Meta approvals) and TikTok for creators outside India (about 3–4 weeks plus TikTok's reviews). Details in [the go-live guide](docs/go-live-2026-11-07.md#whatsapp-scopes-steps-effort-and-blockers).
 
 ## Private-pilot improvements
 

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { DEAL_TYPES } from "@dealdock/core";
+import { DEAL_TYPES, featureFlags } from "@dealdock/core";
 import { deleteLedgerEntry, getDashboard, getLedger, updateLedgerEntry } from "@dealdock/db";
 import { requireAuth } from "../auth";
 import { requirePermission, requireWritable } from "../guards";
@@ -72,7 +72,8 @@ export async function ledgerRoutes(app: FastifyInstance) {
     return [header, ...lines].join("\n");
   });
 
+  // `features`: the feature-flag snapshot the web reads on every core refresh (the server decides, see AGENTS.md).
   app.get("/dashboard", { preHandler: requireAuth }, async (req) => {
-    return getDashboard(req.auth!.orgId);
+    return { ...(await getDashboard(req.auth!.orgId)), features: featureFlags() };
   });
 }

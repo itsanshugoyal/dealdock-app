@@ -6,6 +6,7 @@ import type {
   CreateSubscriptionInput,
   CreatedSubscription,
 } from "./provider";
+import { isDefiniteRejection, RailRejectedError } from "./provider";
 
 /**
  * Paddle Billing rail (merchant of record — all non-INR orgs, ADR-4).
@@ -54,9 +55,13 @@ export class PaddleRail implements BillingProvider {
     };
   }
 
+  get configured(): boolean {
+    return Boolean(this.apiKey && this.priceIds.solo && this.priceIds.studio && this.priceIds.roster);
+  }
+
   async createSubscription(input: CreateSubscriptionInput): Promise<CreatedSubscription> {
     const priceId = this.priceIds[input.tier];
-    if (!priceId) throw new Error(`PADDLE_PRICE_${input.tier.toUpperCase()} not configured`);
+    if (!priceId) throw new RailRejectedError(`PADDLE_PRICE_${input.tier.toUpperCase()} not configured`);
 
     const res = await this.fetchImpl(`${API_BASE()}/transactions`, {
       method: "POST",
@@ -76,7 +81,8 @@ export class PaddleRail implements BillingProvider {
       error?: { detail?: string };
     };
     if (!res.ok || !body.data?.id) {
-      throw new Error(`Paddle transaction create failed: ${body.error?.detail ?? res.status}`);
+      const message = `Paddle transaction create failed: ${body.error?.detail ?? res.status}`;
+      throw isDefiniteRejection(res.status) ? new RailRejectedError(message) : new Error(message);
     }
     // The transaction id is a provisional external id; the durable
     // subscription id replaces it via the subscription.activated webhook.
@@ -84,15 +90,17 @@ export class PaddleRail implements BillingProvider {
   }
 
   async cancelAtPeriodEnd(externalId: string): Promise<void> {
+    // Checkout not paid yet: the row still holds the provisional txn_ id, so cancel the open transaction.
+    const unpaid = externalId.startsWith("txn_");
     const res = await this.fetchImpl(
-      `${API_BASE()}/subscriptions/${externalId}/cancel`,
+      unpaid ? `${API_BASE()}/transactions/${externalId}` : `${API_BASE()}/subscriptions/${externalId}/cancel`,
       {
-        method: "POST",
+        method: unpaid ? "PATCH" : "POST",
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ effective_from: "next_billing_period" }),
+        body: JSON.stringify(unpaid ? { status: "canceled" } : { effective_from: "next_billing_period" }),
       }
     );
     if (!res.ok) {

@@ -22,6 +22,7 @@ export * from "./rate-card";
 export * from "./comment-leads";
 export * from "./renewals";
 export * from "./lead-pipeline";
+export * from "./feature-flags";
 
 /**
  * @dealdock/core — domain types, zod schemas, shared constants.

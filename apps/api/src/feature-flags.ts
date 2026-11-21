@@ -1,30 +1,18 @@
 /**
- * Server-side capability flags derived from configuration. Shared by routes
- * so the web always learns the same answer (GET /settings, /voice, thread DTOs).
+ * Server-side capability flags. Feature flags live in the one registry in
+ * @dealdock/core (FEATURE_FLAGS, see AGENTS.md); these helpers keep the
+ * existing call sites short. The web learns the same answers from the API.
  */
+import { isFeatureEnabled } from "@dealdock/core";
 
-/** Meta must approve the HUMAN_AGENT tag for this app before it may be set. */
-export function isHumanAgentEnabled(): boolean {
-  return process.env.META_HUMAN_AGENT_ENABLED === "true";
-}
+export { featureFlags, isFeatureEnabled } from "@dealdock/core";
 
-/**
- * "Fetch from Instagram" for post results needs the
- * instagram_business_manage_insights permission, which Meta grants through
- * App Review: off until then, and Instagram connections don't ask for it.
- */
-export function isInsightsEnabled(): boolean {
-  return process.env.META_INSIGHTS_ENABLED === "true";
-}
+export const isHumanAgentEnabled = (): boolean => isFeatureEnabled("humanAgent");
+export const isInsightsEnabled = (): boolean => isFeatureEnabled("insights");
+export const isCommentLeadsEnabled = (): boolean => isFeatureEnabled("commentLeads");
 
-/**
- * Comment leads need Meta to approve instagram_business_manage_comments for
- * this app. On: the OAuth scope, the comments webhook subscription and its
- * processing, and GET /comment-leads reporting the feature as available.
- */
-export function isCommentLeadsEnabled(): boolean {
-  return process.env.META_COMMENTS_ENABLED === "true";
-}
+/** The answer every invoice entry point gives while FEATURE_INVOICES_ENABLED is off. */
+export const FEATURE_DISABLED = { error: "feature_disabled" } as const;
 
 /**
  * The configured speech provider (null when voice cloning / transcription is

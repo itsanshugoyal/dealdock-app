@@ -1,5 +1,6 @@
 import type {
   AudioAttachment,
+  FeatureFlags,
   AuditRow,
   BillingProfileDto,
   BillingProfileInput,
@@ -352,6 +353,8 @@ export interface AppSnapshot {
   timezone: string;
   workspaceName: string | null;
   dashboard: DashboardView | null;
+  /** Feature flags as the API decided them (GET /dashboard `features`); registry defaults until it answers, and in demo. */
+  features: FeatureFlags;
   onboarded: boolean;
   /**
    * Core refresh status. "loading" also covers a later full refresh (retry, back online) — use `loadedAt`

@@ -23,6 +23,7 @@ import {
   voidInvoice,
 } from "@dealdock/db";
 import { requireAuth } from "../auth";
+import { FEATURE_DISABLED, isFeatureEnabled } from "../feature-flags";
 import { AccountRef, requirePermission, requireWritable } from "../guards";
 import { invoiceFileName, renderInvoicePdf } from "../invoice-pdf";
 import { verifyInvoiceSignature } from "../media-sign";
@@ -41,6 +42,11 @@ const CreateBody = z.object({
 const PaidBody = z.object({ receivedMinor: Minor.optional(), tdsMinor: Minor.optional(), paidAt: When.optional(), idempotencyKey: IdempotencyKey });
 
 export async function invoiceRoutes(app: FastifyInstance) {
+  // Every route here (billing details, invoices, the signed PDF) is the Invoices feature; scoped to this plugin.
+  app.addHook("onRequest", async (_req, reply) => {
+    if (!isFeatureEnabled("invoices")) return reply.code(404).send(FEATURE_DISABLED);
+  });
+
   const write = { preHandler: [requireAuth, requireWritable, requirePermission("close")] };
 
   /** The workspace's billing profile, or a creator account's own (falling back to the workspace's). */

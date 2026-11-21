@@ -19,6 +19,7 @@ import {
   type OrgId,
 } from "@dealdock/db";
 import { requireAuth } from "../auth";
+import { FEATURE_DISABLED, isFeatureEnabled } from "../feature-flags";
 import { DRAFT_PURPOSES, toDraftDto } from "../dto/draft";
 import { requirePermission, requireWritable } from "../guards";
 
@@ -86,6 +87,7 @@ export async function draftingRoutes(app: FastifyInstance) {
     if (!thread) return reply.code(404).send({ error: "not_found" });
 
     const { chips = [], instruction, variants = 1, purpose, dealId, invoiceId } = parsed.data;
+    if (invoiceId && !isFeatureEnabled("invoices")) return reply.code(404).send(FEATURE_DISABLED);
     // The remaining reads are independent; retrieval reuses the consent the
     // creator context already loaded instead of reading the profile again.
     const now = new Date();

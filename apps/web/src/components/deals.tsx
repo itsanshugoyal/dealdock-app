@@ -19,7 +19,7 @@ import {
 import { atHandle, dayKey, dealTypeForLabel, dealTypeText, formatDate, pluralize } from "../lib/format";
 import { useMinuteClock } from "../lib/keyboard";
 import { errorMessage } from "../lib/snapshot";
-import { appStore, useBillingProfile, useCan, useMoneyContext, useOffers, useSettings, type DemoThread } from "../lib/use-demo";
+import { appStore, useBillingProfile, useCan, useFeature, useMoneyContext, useOffers, useSettings, type DemoThread } from "../lib/use-demo";
 import { downloadInvoice, InvoicePreviewSheet, InvoiceSheet, VoidInvoiceDialog } from "./invoices";
 import { Tag } from "./kit";
 import { paidWords } from "./pipeline";
@@ -560,7 +560,8 @@ function DealCards({ deals, thread, now, drafting = null, onDraft }: {
   const router = useRouter();
   // Only seats that manage settings can read billing details; for the rest, creating the invoice says if they're missing.
   const canReadBilling = useCan("manage_settings");
-  const billing = useBillingProfile(deals[0]?.igAccountId, deals.length > 0 && canReadBilling === true);
+  const invoicesOn = useFeature("invoices");
+  const billing = useBillingProfile(deals[0]?.igAccountId, invoicesOn && deals.length > 0 && canReadBilling === true);
   const billingMissing = billing.status === "ready" && billing.data?.profile === null;
   const [paying, setPaying] = useState<Paying | null>(null);
   const [requesting, setRequesting] = useState<DealDto | null>(null);
@@ -634,11 +635,13 @@ function DealCards({ deals, thread, now, drafting = null, onDraft }: {
       {deals.map((deal) => {
         // Writing in the conversation since a moment counts as that message having gone out (a recap, an invoice's note).
         const sentSince = thread ? (at: string) => thread.messages.some((message) => message.direction === "outbound" && message.sentAt > Date.parse(at)) : undefined;
-        const primary = dealPrimaryAction(deal, now, sentSince);
-        const open = openInvoice(deal);
-        const invoiced = liveInvoices(deal).length > 0;
-        const current = open ?? liveInvoices(deal).at(-1) ?? null;
-        const kinds = invoiceKinds(deal);
+        // With Invoices off the card shows and offers nothing about invoices; sheets get the whole deal for its money.
+        const card = invoicesOn ? deal : { ...deal, invoices: [] };
+        const primary = dealPrimaryAction(card, now, sentSince, invoicesOn);
+        const open = openInvoice(card);
+        const invoiced = liveInvoices(card).length > 0;
+        const current = open ?? liveInvoices(card).at(-1) ?? null;
+        const kinds = invoicesOn ? invoiceKinds(deal) : [];
         const create = kinds[0] === "balance" ? "balance" : "invoice";
         const items: MenuItem[] = [
           ...(thread && primary !== "recap" && !invoiced ? [{ label: ACTION.recap.label, icon: ACTION.recap.icon, onSelect: () => run(deal, "recap") }] : []),
@@ -663,7 +666,7 @@ function DealCards({ deals, thread, now, drafting = null, onDraft }: {
         return (
           <DealCard
             key={deal.id}
-            deal={deal}
+            deal={card}
             now={now}
             ticking={ticking === deal.id}
             items={items}
@@ -1138,7 +1141,7 @@ export function DealRow({ deal, now, creator, onOpen }: { deal: DealDto; now: nu
 export function OwedRow({ deal, now, creator, onPaid, onOpen }: { deal: DealDto; now: number; creator?: string | null; onPaid: () => void; onOpen?: () => void }) {
   const { locale, timezone } = useMoneyContext();
   const late = daysOverdue(deal, now);
-  const action = owedAction(deal);
+  const action = owedAction(deal, useFeature("invoices"));
   const label = action === "invoice_paid" ? ACTION.invoice_paid.label : action === "balance" ? ACTION.balance.label : ACTION.paid.label;
   const paidMinor = deal.paidMinor ?? 0;
   return (
