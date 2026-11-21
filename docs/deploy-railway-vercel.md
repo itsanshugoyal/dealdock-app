@@ -26,8 +26,8 @@ Full lists of production values: section 4 of the go-live checklist in [pending.
    - **Pre-deploy step:** `npm run db:migrate -w @dealdock/db`
    - **Healthcheck path:** `/ready`. Restart policy: on failure, 10 retries.
    - Settings → **Region**: Singapore. Rename the service `api`.
-   - Variables: `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`, `REDIS_URL` = `${{Redis.REDIS_URL}}`, `NODE_ENV=production`, plus everything in the API list (or connect Doppler, step 6).
-   - Settings → **Networking → Custom domain** `api.dealdock.io`. Railway shows a **CNAME and a TXT record**; both go into DNS (step 3). Without the TXT, Railway answers 404.
+   - Variables: `DATABASE_URL` = `${{Postgres.DATABASE_URL}}`, `REDIS_URL` = `${{Redis.REDIS_URL}}`, `NODE_ENV=production`, plus everything in the API list in pending.md section 4 (or connect Doppler, section 5).
+   - Settings → **Networking → Public Networking → Generate Domain** first (port: the one Railway suggests, usually 8080; the API logs `Server listening at …:<port>` after its first deploy). Then **+ Custom Domain** appears: enter `api.dealdock.io` with the same port. Railway shows a **CNAME and a TXT record**; both go into DNS (step 3). Without the TXT, Railway answers 404. The trial plan allows 1 custom domain, Hobby 2 per service: only the API needs one.
 5. **Add → GitHub repo** again (the worker): rename it `worker`, region Singapore, root directory empty, branch `main`, Wait for CI on, Serverless off. **Build command:** `npm ci --include=dev && npx turbo run build --filter=@dealdock/worker`. **Start command:** `node apps/worker/dist/index.js`. No pre-deploy step, no healthcheck, restart on failure (or always). Same `DATABASE_URL`/`REDIS_URL` references, `NODE_ENV=production`, plus the worker list. **No public domain.** Never give it Meta, Google or encryption keys: it refuses to start with them.
 6. Each API deploy runs the database migrations first (the pre-deploy step), then waits for `/ready`. Check **Workspace → Plans** shows Hobby: a trial plan caps each service at 1 GB and stops when its credit runs out.
 
