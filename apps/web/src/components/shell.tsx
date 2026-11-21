@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, type ReactNode } from "react";
 import { LucideProvider } from "lucide-react";
 import {
@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { dispatchCommand } from "../lib/commands";
 import { needsYou, roleText, tierText, toCheck } from "../lib/format";
+import { shouldRedirectToSetup } from "../lib/onboarding-flow";
 import { setUiPref, useUiPrefs } from "../lib/ui-prefs";
 import { cancelPendingActions, flushPendingActions } from "../lib/undo";
 import { appStore, IS_DEMO_MODE, useApp, useMe, useSettings, type DemoThread } from "../lib/use-demo";
@@ -73,11 +74,18 @@ export function Shell({ children }: { children: ReactNode }) {
 
 function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname() ?? "/";
+  const router = useRouter();
   const { threads, state, error, workspaceName } = useApp();
   const chromeless = CHROMELESS.some((prefix) => pathname.startsWith(prefix));
   const badge = needsYouCount(threads);
+  const setupNeeded = !IS_DEMO_MODE && state === "error" && Boolean(error?.includes("needs setup"));
+  const redirectToSetup = shouldRedirectToSetup({ demo: IS_DEMO_MODE, setupNeeded, pathname });
 
   useShellEffects(pathname, workspaceName);
+  // No workspace yet: straight to onboarding. The setup card below stays as the fallback (and on Settings).
+  useEffect(() => {
+    if (redirectToSetup) router.replace("/onboarding");
+  }, [redirectToSetup, router]);
 
   const skip = (
     <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[70] focus:rounded-full focus:bg-primary focus:px-4 focus:py-2 focus:text-label focus:text-on-primary">
@@ -107,7 +115,6 @@ function AppShell({ children }: { children: ReactNode }) {
     );
   }
 
-  const setupNeeded = !IS_DEMO_MODE && state === "error" && Boolean(error?.includes("needs setup"));
   const showTabs = !NO_TABS.some((prefix) => pathname.startsWith(prefix));
   // The desk (list + conversation) scrolls inside its panes on large screens; everything else scrolls the page.
   const desk = DESK.some((prefix) => pathname.startsWith(prefix));

@@ -30,6 +30,11 @@ export const FEATURE_FLAGS = {
     default: false,
     description: "Instagram API with Unified Login (Facebook Login for Business config, system-user token, graph.facebook.com) for Meta apps created after Oct 2026; needs META_LOGIN_CONFIG_ID.",
   },
+  instagramOpenAccess: {
+    env: "META_ADVANCED_ACCESS_ENABLED",
+    default: false,
+    description: "On once Meta grants Advanced Access: any professional account can connect, so onboarding drops the private-pilot Instagram Tester steps.",
+  },
 } as const satisfies Record<string, { env: string; default: boolean; description: string }>;
 
 export type FeatureName = keyof typeof FEATURE_FLAGS;

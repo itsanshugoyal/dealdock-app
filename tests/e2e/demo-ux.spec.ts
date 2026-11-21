@@ -30,6 +30,9 @@ test.describe("demo product UI regressions", () => {
     await expect(page.getByText("Instagram · sample account")).toBeVisible();
     await page.waitForLoadState("networkidle"); // Full demo callback navigation must hydrate before the next click.
     await page.getByRole("button", { name: "Continue", exact: true }).click();
+    // The demo has Gmail, so its optional step follows Instagram.
+    await expect(page.getByRole("heading", { name: "Brand emails too?" })).toBeVisible();
+    await page.getByRole("button", { name: "Skip for now" }).click();
     await expect(page.getByRole("heading", { name: "What do you sell?" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Brand collaborations" })).toHaveAttribute("aria-pressed", "true");
     await page.getByRole("button", { name: "Continue", exact: true }).click();
@@ -82,7 +85,8 @@ test.describe("demo product UI regressions", () => {
     test.skip(testInfo.project.name !== "mobile", "Phone-specific touch targets.");
     await page.goto("/inbox");
     const tabs = page.getByRole("tablist", { name: "Inbox views" }).getByRole("tab");
-    await expect(tabs).toHaveCount(5);
+    // The demo has comment leads, so Comments joins the five views once they load (waiting avoids counting too early).
+    await expect(tabs).toHaveCount(6);
     const filters = page.getByRole("group", { name: "Creator" }).getByRole("button");
     await expect(filters).toHaveCount(4);
     for (const control of [...await tabs.all(), ...await filters.all()]) {

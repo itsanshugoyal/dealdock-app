@@ -1115,9 +1115,10 @@ export class ApiStore implements AppStoreApi {
   loadEmailAccounts() {
     return this.loadSlice("emailAccounts", "/email/accounts", (raw): EmailInboxes => ({ accounts: arr(obj(raw).accounts).map(toEmailAccount), available: obj(raw).configured !== false }));
   }
-  async connectEmail(igAccountId?: string) {
+  async connectEmail(igAccountId?: string, returnTo?: "onboarding") {
+    const query = new URLSearchParams({ ...(igAccountId ? { igAccountId } : {}), ...(returnTo ? { returnTo } : {}) }).toString();
     try {
-      return await this.request<{ authorizeUrl: string }>(`/email/connect${igAccountId ? `?igAccountId=${enc(igAccountId)}` : ""}`);
+      return await this.request<{ authorizeUrl: string }>(`/email/connect${query ? `?${query}` : ""}`);
     } catch (error) {
       // Not set up on this deployment: Settings hides the Email section from now on.
       if ((error as { code?: unknown }).code === "email_not_configured") this.patchSlice("emailAccounts", (inboxes) => ({ ...inboxes, available: false }));

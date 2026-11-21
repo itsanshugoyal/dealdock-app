@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { z } from "zod";
 import { isDomainError } from "@dealdock/core";
 import {
   asOrgId,
@@ -22,34 +23,42 @@ import { AccountRef, requirePermission, requireWritable } from "../guards";
 import { scheduleEmailSync } from "../email-sync";
 import { getGmailProvider, gmailConfig, gmailPushConfig, withGmailAccount } from "../gmail";
 
+/** Where Google's redirect lands: a fixed allow-list, never a URL from the request. */
+const RETURN_TO = ["settings", "onboarding"] as const;
+type ReturnTo = (typeof RETURN_TO)[number];
+const ConnectQuery = AccountRef.extend({ returnTo: z.enum(RETURN_TO).optional() });
+
 /**
  * Signed state ties the callback to the org and creator account that started
- * it — CSRF protection, as in the Instagram connect flow (routes/ig.ts).
+ * it — CSRF protection, as in the Instagram connect flow (routes/ig.ts) — and
+ * to the page it returns to.
  */
-function signState(orgId: string, ownerAccountId: string, secret: string): string {
-  const payload = `${orgId}.${ownerAccountId}.${Date.now()}`;
+function signState(orgId: string, ownerAccountId: string, returnTo: ReturnTo, secret: string): string {
+  const payload = `${orgId}.${ownerAccountId}.${returnTo}.${Date.now()}`;
   const sig = createHmac("sha256", secret).update(payload).digest("hex");
   return Buffer.from(`${payload}.${sig}`).toString("base64url");
 }
 
-function verifyState(state: string, secret: string): { orgId: string; ownerAccountId: string } | null {
+function verifyState(state: string, secret: string): { orgId: string; ownerAccountId: string; returnTo: ReturnTo } | null {
   try {
-    const [orgId, ownerAccountId, ts, sig] = Buffer.from(state, "base64url").toString().split(".");
-    if (!orgId || !ownerAccountId || !ts || !sig) return null;
-    const expected = createHmac("sha256", secret).update(`${orgId}.${ownerAccountId}.${ts}`).digest("hex");
+    const [orgId, ownerAccountId, returnTo, ts, sig, extra] = Buffer.from(state, "base64url").toString().split(".");
+    if (!orgId || !ownerAccountId || !returnTo || !ts || !sig || extra !== undefined) return null;
+    const expected = createHmac("sha256", secret).update(`${orgId}.${ownerAccountId}.${returnTo}.${ts}`).digest("hex");
     if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(expected, "hex"))) return null;
+    if (!(RETURN_TO as readonly string[]).includes(returnTo)) return null;
     const issuedAt = Number(ts);
     if (!Number.isSafeInteger(issuedAt) || issuedAt > Date.now() || Date.now() - issuedAt > 15 * 60_000) return null;
-    return { orgId, ownerAccountId };
+    return { orgId, ownerAccountId, returnTo: returnTo as ReturnTo };
   } catch {
     return null;
   }
 }
 
-/** Back to Settings → Email with a success or error flag the web turns into a message. */
-function toSettings(reply: FastifyReply, outcome: { ok: true } | { error: string }) {
+/** Back to Settings → Email (or the onboarding Gmail step) with a success or error flag the web turns into a message. */
+function toWeb(reply: FastifyReply, outcome: { ok: true } | { error: string }, returnTo: ReturnTo = "settings") {
   const flag = "ok" in outcome ? "email=connected" : `email_error=${encodeURIComponent(outcome.error)}`;
-  return reply.redirect(`${process.env.WEB_APP_URL ?? "http://localhost:3100"}/settings?${flag}#email`);
+  const path = returnTo === "onboarding" ? `/onboarding?step=email&${flag}` : `/settings?${flag}#email`;
+  return reply.redirect(`${process.env.WEB_APP_URL ?? "http://localhost:3100"}${path}`);
 }
 
 /** Equal-length digests, so neither the token nor its length leaks through timing. */
@@ -76,10 +85,10 @@ export async function emailRoutes(app: FastifyInstance) {
   app.get("/email/connect", { preHandler: [requireAuth, requireWritable, requirePermission("manage_settings")] }, async (req, reply) => {
     const cfg = gmailConfig();
     if (!cfg) return reply.code(409).send({ error: "email_not_configured" });
-    const parsed = AccountRef.safeParse(req.query ?? {});
+    const parsed = ConnectQuery.safeParse(req.query ?? {});
     if (!parsed.success) return reply.code(400).send({ error: "invalid_query" });
     const owner = await resolveInboxOwner(req.auth!.orgId, parsed.data.igAccountId);
-    return { authorizeUrl: buildGoogleAuthorizeUrl(cfg, signState(req.auth!.orgId, owner.id, cfg.clientSecret)) };
+    return { authorizeUrl: buildGoogleAuthorizeUrl(cfg, signState(req.auth!.orgId, owner.id, parsed.data.returnTo ?? "settings", cfg.clientSecret)) };
   });
 
   /** Google's redirect: code → tokens → address → inbox row → first sync (and push, when on). */
@@ -87,9 +96,10 @@ export async function emailRoutes(app: FastifyInstance) {
     const cfg = gmailConfig();
     if (!cfg) return reply.code(409).send({ error: "email_not_configured" });
     const { code, state, error } = req.query as Record<string, string | undefined>;
-    if (error) return toSettings(reply, { error: error === "access_denied" ? "access_denied" : "oauth_failed" });
     const signed = state ? verifyState(state, cfg.clientSecret) : null;
-    if (!code || !signed) return toSettings(reply, { error: "invalid_state" });
+    const back = (outcome: { ok: true } | { error: string }) => toWeb(reply, outcome, signed?.returnTo);
+    if (error) return back({ error: error === "access_denied" ? "access_denied" : "oauth_failed" });
+    if (!code || !signed) return back({ error: "invalid_state" });
 
     let tokens: Awaited<ReturnType<typeof exchangeGoogleCode>>;
     let address: string;
@@ -97,14 +107,14 @@ export async function emailRoutes(app: FastifyInstance) {
       tokens = await exchangeGoogleCode(cfg, code);
       // Google's consent screen lets people untick scopes; reading and replying both need theirs.
       if (!tokens.scopes.includes(GMAIL_READ_SCOPE) || !tokens.scopes.includes(GMAIL_SEND_SCOPE)) {
-        return toSettings(reply, { error: "scopes_missing" });
+        return back({ error: "scopes_missing" });
       }
-      if (!tokens.refreshToken) return toSettings(reply, { error: "connection_failed" });
+      if (!tokens.refreshToken) return back({ error: "connection_failed" });
       address = await fetchGmailAddress(cfg, tokens.accessToken);
     } catch (err) {
       // Google's error bodies stay in server logs, never in the browser.
       req.log.error({ err: (err as Error).message }, "gmail oauth exchange failed");
-      return toSettings(reply, { error: "connection_failed" });
+      return back({ error: "connection_failed" });
     }
 
     let account: Awaited<ReturnType<typeof connectEmailAccount>>;
@@ -117,9 +127,9 @@ export async function emailRoutes(app: FastifyInstance) {
         expiresIn: tokens.expiresIn,
       });
     } catch (err) {
-      if (isDomainError(err) && err.status < 500) return toSettings(reply, { error: err.code });
+      if (isDomainError(err) && err.status < 500) return back({ error: err.code });
       req.log.error({ err: (err as Error).message }, "gmail inbox save failed");
-      return toSettings(reply, { error: "connection_failed" });
+      return back({ error: "connection_failed" });
     }
 
     // Both best effort once the inbox is saved: the scheduled poll syncs it, the daily renewal re-watches it.
@@ -129,7 +139,7 @@ export async function emailRoutes(app: FastifyInstance) {
     }
     await scheduleEmailSync(signed.orgId, account.id, `connect:${Date.now()}`)
       .catch((err: Error) => req.log.warn({ err: err.message }, "gmail first sync not queued"));
-    return toSettings(reply, { ok: true });
+    return back({ ok: true });
   });
 
   /** Settings → Email: each live inbox, the creator it belongs to, and when it last synced. */
