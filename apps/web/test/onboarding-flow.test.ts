@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { featureFlags } from "@dealdock/core";
-import { connectChecklist, flowSteps, friendlyConnectError, nextStep, progressSteps, shouldRedirectToSetup, stepFromQuery, type FlowContext, type Step } from "../src/lib/onboarding-flow";
+import { flowSteps, pilotInviteHelp, progressIndex, friendlyConnectError, nextStep, progressSteps, shouldRedirectToSetup, stepFromQuery, type FlowContext, type Step } from "../src/lib/onboarding-flow";
 import { demoStore } from "../src/lib/demo-store";
 import { ApiStore } from "../src/lib/api-store";
 
@@ -20,21 +20,24 @@ describe("onboarding steps", () => {
   it("with Instagram and Gmail: the Gmail step follows Instagram, and the scan ends on the reveal", () => {
     const context = { instagram: true, gmail: true };
     expect(walk(context)).toEqual(["welcome", "region", "connect", "email", "business", "voice", "scan", "reveal"]);
-    expect(progressSteps(context).map((item) => item.label)).toEqual(["Region", "Instagram", "Email", "Business", "Voice", "Scan"]);
+    expect(progressSteps(context).map((item) => item.label)).toEqual(["Region", "Connect", "Business", "Voice", "Scan"]);
+    // Gmail shares Connect's place on the bar.
+    expect(progressIndex("email", context)).toBe(progressIndex("connect", context));
   });
 
   it("without Gmail on this deployment the Gmail step never appears, and a stray visit moves on", () => {
     const context = { instagram: true, gmail: false };
     expect(walk(context)).toEqual(["welcome", "region", "connect", "business", "voice", "scan", "reveal"]);
-    expect(progressSteps(context).map((item) => item.label)).toEqual(["Region", "Instagram", "Business", "Voice", "Scan"]);
+    expect(progressSteps(context).map((item) => item.label)).toEqual(["Region", "Connect", "Business", "Voice", "Scan"]);
     expect(nextStep("email", context)).toBe("business");
   });
 
-  it("connecting Instagram later skips Gmail, voice and the scan, and ends on You're set up", () => {
+  it("connecting Instagram later skips Gmail, voice and the scan, and ends on You're in", () => {
     for (const gmail of [true, false]) {
       const context = { instagram: false, gmail };
       expect(walk(context)).toEqual(["welcome", "region", "connect", "business", "done"]);
-      expect(progressSteps(context).map((item) => item.label)).toEqual(["Region", "Instagram", "Business"]);
+      expect(progressSteps(context).map((item) => item.label)).toEqual(["Region", "Connect", "Business"]);
+      expect(progressIndex("done", context)).toBe(-1);
       expect(flowSteps(context)).not.toContain("email");
     }
   });
@@ -49,15 +52,14 @@ describe("onboarding steps", () => {
 });
 
 describe("pilot Instagram guidance (instagramOpenAccess)", () => {
-  it("off: a three-item checklist with the tester steps and the address as text", () => {
-    const items = connectChecklist(false);
-    expect(items.map((item) => item.title)).toEqual(["A Creator or Business account", "We add you as a tester", "Accept the invite"]);
-    expect(items[1]!.body).toContain("hello@dealdock.io");
-    expect(items[2]!.body).toContain("Tester invites");
+  it("off: one sentence with the address and where to accept the invite", () => {
+    const help = pilotInviteHelp(false)!;
+    expect(help).toContain("hello@dealdock.io");
+    expect(help).toContain("Tester invites");
   });
 
   it("on: no tester content at all", () => {
-    expect(connectChecklist(true)).toEqual([]);
+    expect(pilotInviteHelp(true)).toBeNull();
   });
 
   it("is off by default in demo mode and comes from GET /dashboard otherwise", async () => {

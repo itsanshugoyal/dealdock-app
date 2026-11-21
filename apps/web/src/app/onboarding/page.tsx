@@ -6,7 +6,7 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { CURRENCY_SYMBOL, DEFAULT_LOCALE, formatMoneyExact, parseMoneyInput, type CurrencyCode } from "@dealdock/core";
 import { ArrowLeft, ArrowRight, AudioLines, Camera, Check, CheckCheck, ChevronDown, Eye, Info, Lock, LogOut, Mail, ShieldCheck } from "lucide-react";
 import { atHandle } from "../../lib/format";
-import { EMAIL_ERRORS, PILOT_CONTACT, connectChecklist, friendlyConnectError, nextStep, progressSteps, stepFromQuery, type Step } from "../../lib/onboarding-flow";
+import { EMAIL_ERRORS, PILOT_CONTACT, friendlyConnectError, nextStep, pilotInviteHelp, progressIndex, progressSteps, stepFromQuery, type Step } from "../../lib/onboarding-flow";
 import { errorMessage } from "../../lib/snapshot";
 import { IS_DEMO_MODE, appStore, useApp, useEmailAccounts, useFeature, useOnboarding } from "../../lib/use-demo";
 import type { LeakScanSummary } from "../../lib/types";
@@ -43,7 +43,7 @@ function Onboarding() {
   const go = (next: Step) => router.push(`/onboarding?step=${next}${later ? "&later=1" : ""}`, { scroll: true });
   const advance = () => go(nextStep(step, context));
   const progress = progressSteps(context);
-  const index = progress.findIndex((item) => item.step === step);
+  const index = progressIndex(step, context);
   const dark = step === "scan" || step === "reveal";
   const end = step === "reveal" || step === "done";
   // No Gmail on this deployment (or Google said so just now): the step quietly moves on.
@@ -222,7 +222,7 @@ function Region({ onNext }: { onNext: () => void }) {
 function Connect({ onNext, onLater, connected, error, openAccess }: { onNext: () => void; onLater: () => void; connected: string | null; error: string | null; openAccess: boolean }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(error ? friendlyConnectError(error) : null);
-  const checklist = connectChecklist(openAccess);
+  const invite = pilotInviteHelp(openAccess);
   const start = async () => {
     setBusy(true);
     setProblem(null);
@@ -238,7 +238,11 @@ function Connect({ onNext, onLater, connected, error, openAccess }: { onNext: ()
   return (
     <StepFrame
       title={connected ? "You're connected." : "Connect your Instagram"}
-      body={connected ? <>DealDock can now read DMs sent to <b className="font-semibold text-ink">@{connected}</b>.</> : "Use the Business or Creator account your DMs come to. You'll approve it on Instagram's own screen."}
+      body={connected
+        ? <>DealDock can now read DMs sent to <b className="font-semibold text-ink">@{connected}</b>.</>
+        : invite
+          ? "Use the Business or Creator account your DMs come to. During the pilot, accept our Instagram invite first."
+          : "Use the Business or Creator account your DMs come to. You'll approve it on Instagram's own screen."}
       footer={connected
         ? <Button variant="primary" size="lg" fullWidth iconRight={ArrowRight} onClick={onNext}>Continue</Button>
         : <>
@@ -246,7 +250,7 @@ function Connect({ onNext, onLater, connected, error, openAccess }: { onNext: ()
               <Camera aria-hidden size={20} />{busy ? "Opening Instagram…" : "Continue with Instagram"}
             </button>
             {problem && <p role="alert" className="text-center text-caption text-danger">{problem}</p>}
-            <Button variant="ghost" size="lg" fullWidth onClick={onLater}>I&apos;ll connect Instagram later</Button>
+            <Button variant="ghost" fullWidth onClick={onLater}>Connect later</Button>
           </>}
     >
       {connected ? (
@@ -262,30 +266,28 @@ function Connect({ onNext, onLater, connected, error, openAccess }: { onNext: ()
           <Assurance icon={<LogOut aria-hidden size={18} />} title="Disconnect any time">You control the connection in Settings.</Assurance>
         </ul>
       )}
-      {!connected && checklist.length > 0 && (
-        <>
-          <h2 className="mt-7 text-heading text-ink">Before you connect</h2>
-          <p className="text-[14px] text-ink-2">DealDock is in a private pilot, so Instagram only lets in accounts we&apos;ve added.</p>
-          <ol className="mt-3 divide-y divide-hairline overflow-hidden rounded-2xl bg-surface shadow-card">
-            {checklist.map((item, i) => {
-              const [before, after] = item.body.split(PILOT_CONTACT);
-              return (
-                <Assurance key={item.title} icon={<span className="text-[15px] font-semibold tabular-nums">{i + 1}</span>} title={item.title}>
-                  {after === undefined ? item.body : <>{before}<b className="font-semibold text-ink">{PILOT_CONTACT}</b>{after}</>}
-                </Assurance>
-              );
-            })}
-          </ol>
-        </>
-      )}
-      {!connected && checklist.length === 0 && (
-        <details className="group mt-4 rounded-[20px] bg-surface px-4 shadow-card">
-          <summary className="dd-summary flex min-h-12 items-center justify-between gap-3 rounded text-[14px] font-semibold text-ink focus-visible:outline-2 focus-visible:outline-info">On a personal account?<ChevronDown aria-hidden size={16} className="shrink-0 text-ink-3 transition-transform group-open:rotate-180" /></summary>
-          <p className="pb-4 text-[14px] text-ink-2">Switching is free and takes about two minutes: Instagram → Settings → Account type and tools → Switch to professional account. Choose Creator or Business, then come back here.</p>
-        </details>
+      {!connected && invite && <Help summary="How do I get the invite?">{withContact(invite)}</Help>}
+      {!connected && (
+        <Help summary="On a personal account?">Switching is free and takes about two minutes: Instagram → Settings → Account type and tools → Switch to professional account. Choose Creator or Business, then come back here.</Help>
       )}
     </StepFrame>
   );
+}
+
+/** A one-line question that opens to a short answer: help stays out of the way until someone needs it. */
+function Help({ summary, children }: { summary: string; children: React.ReactNode }) {
+  return (
+    <details className="group mt-3 rounded-[20px] bg-surface px-4 shadow-card first-of-type:mt-4">
+      <summary className="dd-summary flex min-h-12 items-center justify-between gap-3 rounded text-[14px] font-semibold text-ink focus-visible:outline-2 focus-visible:outline-info">{summary}<ChevronDown aria-hidden size={16} className="shrink-0 text-ink-3 transition-transform group-open:rotate-180" /></summary>
+      <p className="pb-4 text-[14px] text-ink-2">{children}</p>
+    </details>
+  );
+}
+
+/** The pilot address in bold, so it reads as something to copy. */
+function withContact(text: string) {
+  const [before, after] = text.split(PILOT_CONTACT);
+  return after === undefined ? text : <>{before}<b className="font-semibold text-ink">{PILOT_CONTACT}</b>{after}</>;
 }
 
 function Assurance({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
@@ -319,14 +321,15 @@ function Email({ onNext, connected, error }: { onNext: () => void; connected: bo
   };
   return (
     <StepFrame
-      title={connected ? "Gmail connected." : "Brand emails too?"}
-      body={connected ? "Brand emails show up in your inbox in a few minutes, next to your DMs." : "Connect Gmail and brand emails land in the same inbox as your DMs. Replies still wait for you to approve them."}
+      title={connected ? "Gmail connected." : "Add Gmail too?"}
+      body={connected ? "Brand emails show up next to your DMs in a few minutes." : "Brand emails land next to your DMs. Nothing sends without you."}
       footer={connected
         ? <Button variant="primary" size="lg" fullWidth iconRight={ArrowRight} onClick={onNext}>Continue</Button>
         : <>
             <Button variant="primary" size="lg" fullWidth icon={Mail} loading={busy} loadingLabel="Opening Google…" onClick={() => void start()}>Connect Gmail</Button>
             {problem && <p role="alert" className="text-center text-caption text-danger">{problem}</p>}
-            <Button variant="ghost" size="lg" fullWidth disabled={busy} onClick={onNext}>Skip for now</Button>
+            <p className="text-center text-caption text-ink-3">If Google says it hasn&apos;t verified the app, tap Advanced, then Continue.</p>
+            <Button variant="ghost" fullWidth disabled={busy} onClick={onNext}>Skip</Button>
           </>}
     >
       {connected ? (
@@ -336,16 +339,18 @@ function Email({ onNext, connected, error }: { onNext: () => void; connected: bo
           <span className="flex h-8 w-8 items-center justify-center rounded-full bg-brand text-on-brand"><Check aria-hidden size={18} /></span>
         </div>
       ) : (
-        <>
-          <ul className="divide-y divide-hairline overflow-hidden rounded-2xl bg-surface shadow-card">
-            <Assurance icon={<Mail aria-hidden size={18} />} title="One inbox for DMs and email">DealDock reads your primary inbox and puts brand deals on top.</Assurance>
-            <Assurance icon={<ShieldCheck aria-hidden size={18} />} title="Nothing sends without you">Every email reply waits for you to approve it.</Assurance>
-          </ul>
-          <div className="mt-4 flex gap-3 rounded-[20px] bg-surface p-4 shadow-card">
-            <Info aria-hidden size={18} className="mt-0.5 shrink-0 text-ink-3" />
-            <p className="text-[14px] text-ink-2"><span className="block font-semibold text-ink">Google may say &ldquo;Google hasn&apos;t verified this app&rdquo;</span>Google is still reviewing DealDock. Tap Advanced, then Continue to DealDock.</p>
+        // Show, don't tell: one brand email sitting in the inbox, like the welcome preview.
+        <div aria-hidden className="dd-rise flex items-center gap-3 rounded-[20px] bg-surface p-3.5 shadow-raised">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-info-tint text-info"><Mail size={20} /></span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="truncate text-[15px] font-semibold text-ink">Glow Labs Partnerships</span>
+              <span className="shrink-0 text-caption text-ink-3">Email</span>
+            </div>
+            <div className="mt-0.5 flex items-center gap-2 text-caption"><LabelDot label="brand_deal" /></div>
+            <p className="truncate text-[13px] text-ink-3">Brief: 3 reels for our summer launch. Your rates?</p>
           </div>
-        </>
+        </div>
       )}
     </StepFrame>
   );
@@ -356,21 +361,13 @@ function Email({ onNext, connected, error }: { onNext: () => void; connected: bo
 function Done({ openAccess, gmail }: { openAccess: boolean; gmail: boolean }) {
   return (
     <StepFrame
-      title="You're set up."
-      body="Your workspace is ready. Here's what's left, whenever you are."
-      footer={<>
-        <Link href="/" className={buttonClasses({ variant: "primary", size: "lg", fullWidth: true })}>Go to Today<ArrowRight aria-hidden size={20} className="shrink-0" /></Link>
-        <Link href="/settings#instagram" className={buttonClasses({ variant: "ghost", size: "lg", fullWidth: true })}>Open Settings</Link>
-        <p className="flex items-center justify-center gap-1.5 text-caption text-ink-3"><Lock aria-hidden size={13} />Nothing ever sends without you</p>
-      </>}
+      title="You're in."
+      body={openAccess
+        ? `Connect Instagram${gmail ? " and Gmail" : ""} any time from Settings.`
+        : `Connect Instagram from Settings once your invite arrives${gmail ? ", then add Gmail" : ""}.`}
+      footer={<Link href="/" className={buttonClasses({ variant: "primary", size: "lg", fullWidth: true })}>Go to Today<ArrowRight aria-hidden size={20} className="shrink-0" /></Link>}
     >
-      <ul className="divide-y divide-hairline overflow-hidden rounded-2xl bg-surface shadow-card">
-        <Assurance icon={<Camera aria-hidden size={18} />} title="Connect Instagram">
-          {openAccess ? "Connect your Creator or Business account from Settings → Instagram." : "Once you've accepted your tester invite, connect it from Settings → Instagram."}
-        </Assurance>
-        {gmail && <Assurance icon={<Mail aria-hidden size={18} />} title="Connect Gmail">After Instagram, add Gmail in Settings so brand emails land in the same inbox.</Assurance>}
-      </ul>
-      {!openAccess && <p className="mt-4 text-[14px] text-ink-2">Not a tester yet? Message your Instagram username to <b className="font-semibold text-ink">{PILOT_CONTACT}</b> and we&apos;ll add you within a day.</p>}
+      {!openAccess && <Help summary="How do I get the invite?">{withContact(pilotInviteHelp(false)!)}</Help>}
     </StepFrame>
   );
 }

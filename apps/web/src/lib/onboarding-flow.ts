@@ -8,7 +8,8 @@ export type Step = "welcome" | "region" | "connect" | "email" | "business" | "vo
 /** Every step, in walking order. */
 export const STEPS: Step[] = ["welcome", "region", "connect", "email", "business", "voice", "scan", "reveal", "done"];
 
-const LABELS: Partial<Record<Step, string>> = { region: "Region", connect: "Instagram", email: "Email", business: "Business", voice: "Voice", scan: "Scan" };
+// Gmail sits inside "Connect", so the bar keeps five short labels.
+const LABELS: Partial<Record<Step, string>> = { region: "Region", connect: "Connect", business: "Business", voice: "Voice", scan: "Scan" };
 
 /** `instagram`: an account is connected (or still on the way); `gmail`: this deployment can connect Gmail. */
 export interface FlowContext { instagram: boolean; gmail: boolean }
@@ -26,6 +27,12 @@ export function flowSteps({ instagram, gmail }: FlowContext): Step[] {
 /** What the progress bar counts and labels (welcome and the final screen sit outside it). */
 export function progressSteps(context: FlowContext): Array<{ step: Step; label: string }> {
   return flowSteps(context).flatMap((step) => (LABELS[step] ? [{ step, label: LABELS[step] }] : []));
+}
+
+/** Where a step sits on the progress bar; Gmail shares Connect's place (-1: off the bar). */
+export function progressIndex(step: Step, context: FlowContext): number {
+  const at = step === "email" ? "connect" : step;
+  return progressSteps(context).findIndex((item) => item.step === at);
 }
 
 /** The step after this one on this person's path; a step not on it (Gmail just turned out unavailable) moves on too. */
@@ -51,17 +58,13 @@ export function shouldRedirectToSetup({ demo, setupNeeded, pathname }: { demo: b
 export const PILOT_CONTACT = "hello@dealdock.io";
 
 /**
- * "Before you connect", shown until Meta grants Advanced Access
- * (`instagramOpenAccess`): only accounts added as Instagram Testers can
- * connect, and Meta's own screen doesn't say why others fail.
+ * Until Meta grants Advanced Access (`instagramOpenAccess`), only accounts
+ * added as Instagram Testers can connect, and Meta's screen doesn't say why
+ * others fail. One sentence, behind "How do I get the invite?".
  */
-export function connectChecklist(openAccess: boolean): Array<{ title: string; body: string }> {
-  if (openAccess) return [];
-  return [
-    { title: "A Creator or Business account", body: "On a personal account? Switching is free and takes about two minutes: Instagram → Settings → Account type and tools → Switch to professional account." },
-    { title: "We add you as a tester", body: `During the private pilot, message your Instagram username to ${PILOT_CONTACT}. We'll add you within a day.` },
-    { title: "Accept the invite", body: "Instagram → Settings → Apps and websites → Tester invites. It's easiest on instagram.com." },
-  ];
+export function pilotInviteHelp(openAccess: boolean): string | null {
+  if (openAccess) return null;
+  return `Email your Instagram username to ${PILOT_CONTACT}. We'll send an invite within a day: accept it in Instagram → Settings → Apps and websites → Tester invites, then connect here.`;
 }
 
 /** Instagram connection failures (the callback's `error`, or POST /ig/connect's code) in plain words. */
