@@ -10,7 +10,7 @@ test.describe("live product critical path", () => {
   test("inbox and thread detail are real, accessible API-backed screens", async ({ page }, testInfo) => {
     await page.goto("/inbox");
     await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
-    const detail = page.locator('a[href^="/thread/"]').filter({ hasText: `@e2e.${testInfo.project.name}` });
+    const detail = page.locator("a[data-thread-row]").filter({ hasText: `@e2e.${testInfo.project.name}` });
     await expect(detail).toBeVisible();
     expect((await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa"]).analyze()).violations).toEqual([]);
     await detail.click();
@@ -23,7 +23,7 @@ test.describe("live product critical path", () => {
 
   test("human draft approval sends once and records a paid deal", async ({ page }, testInfo) => {
     await page.goto("/inbox");
-    await page.locator('a[href^="/thread/"]').filter({ hasText: `@e2e.${testInfo.project.name}` }).click();
+    await page.locator("a[data-thread-row]").filter({ hasText: `@e2e.${testInfo.project.name}` }).click();
     const generate = page.getByRole("button", { name: /Generate draft|Regenerate draft/ });
     await generate.click();
     const reply = page.getByLabel("Review and edit before sending");

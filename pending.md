@@ -63,7 +63,8 @@ Order, DNS values and vendor details are in [the go-live guide](docs/go-live-202
 ### 3. Accounts and hosting (owner)
 
 - [ ] **A1** Policy pages on dealdock.io, linked in the footer: Terms, Privacy, Data deletion, Refunds, Delivery, Contact, Pricing, Features. Prompt: [docs/policy-pages-prompt.md](docs/policy-pages-prompt.md). Fill its placeholders (legal name, address, phone, grievance officer, hosting providers).
-- [ ] **Hosting decision.** Vercel's free plan bans commercial use; Railway Pro isn't needed (Hobby is $5/month minimum, ~$10–20 with four services). Options: one ~$6/month VPS in Singapore/Bangalore running everything with Docker Compose + Caddy (recommended); Oracle Always Free (2 CPU / 12 GB, capacity and idle-reclaim risks); or web on Netlify/Cloudflare free + Railway Hobby.
+- [x] **Hosting decided (22 Nov):** web on the marketing site's Vercel account (free now, Pro before the first creator pays), API/worker/Postgres/Redis on Railway Hobby in Singapore. Step-by-step: [docs/deploy-railway-vercel.md](docs/deploy-railway-vercel.md). Production secrets generated in `.env.production.secrets.local` (gitignored).
+- [ ] Disconnect or delete the old Vercel project (`dealdock-app-web` in `infinitys-projects`); it posts a failing check on every PR.
 - [ ] **A2** DNS: `app` and `api` to the chosen host (Railway also needs its TXT record), Clerk's `clerk`, `accounts`, `clkmail` and DKIM records ("DNS only" on Cloudflare), Search Console TXT, `_dmarc`. Keep Zoho's records and exactly one SPF record.
 - [ ] **A3/A4** Hosting up: web at `app.dealdock.io`, API at `api.dealdock.io`, worker, Postgres (point-in-time restore or the E6 dump) and Redis (AOF on), all in Singapore or India.
 - [ ] **A5** Doppler syncing `prd_web`, `prd_api` and `prd_worker` with every value in section 4.

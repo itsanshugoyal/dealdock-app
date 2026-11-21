@@ -1,0 +1,15 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "RAILPACK",
+    "buildCommand": "npm ci --include=dev && npx turbo run build --filter=@dealdock/api"
+  },
+  "deploy": {
+    "startCommand": "node apps/api/dist/index.js",
+    "preDeployCommand": ["npm run db:migrate -w @dealdock/db"],
+    "healthcheckPath": "/ready",
+    "healthcheckTimeout": 120,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}
