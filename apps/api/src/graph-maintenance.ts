@@ -4,6 +4,7 @@ import { QUEUES, type IngestionJob } from "@dealdock/core";
 import { adoptParticipantHandles, asOrgId, getConnectedAccount, listActiveGraphAccounts, markLeakScanCompleted, markTokenExpired, updateBackfillCheckpoint, enqueueIngestionOutbox, saveRefreshedGraphToken } from "@dealdock/db";
 import { MockInstagramAdapter, TokenExpiredError, ingestionContent, ingestionDedupeKey, refreshLongLivedToken, type RemoteMessage, type RemoteThread } from "@dealdock/messaging";
 import { getGraphAdapter } from "./graph";
+import { isUnifiedLoginEnabled } from "./feature-flags";
 import { redisConnection } from "./queues";
 import { scheduleVoiceRefreshAfterScan } from "./routes/voice";
 
@@ -32,7 +33,8 @@ export async function scanAccountHistory(orgIdValue: string, accountId: string, 
   const connected = await getConnectedAccount(orgId, accountId);
   // Instagram accounts only: a Gmail token must never be sent to graph.instagram.com (email syncs in email-sync.ts).
   if (!connected || connected.status !== "active" || (connected.provider !== "instagram_graph" && connected.provider !== "mock")) return 0;
-  if (connected.provider === "instagram_graph" && connected.tokenRefreshedAt && Date.now() - connected.tokenRefreshedAt.getTime() >= 7 * 864e5) {
+  // Unified Login tokens (no expiry) have no Instagram refresh: calling it would fail every backfill.
+  if (connected.provider === "instagram_graph" && !isUnifiedLoginEnabled() && connected.tokenExpiresAt && connected.tokenRefreshedAt && Date.now() - connected.tokenRefreshedAt.getTime() >= 7 * 864e5) {
     const refreshed = await refreshLongLivedToken({}, connected.accessToken);
     await saveRefreshedGraphToken(orgId, accountId, refreshed.accessToken, refreshed.expiresIn);
     connected.accessToken = refreshed.accessToken;

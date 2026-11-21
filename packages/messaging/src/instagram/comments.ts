@@ -38,6 +38,8 @@ interface CommentChange {
   field?: unknown;
   value?: {
     id?: unknown;
+    /** Unified Login (Facebook Login for Business format) names the comment comment_id. */
+    comment_id?: unknown;
     text?: unknown;
     from?: { id?: unknown; username?: unknown };
     media?: { id?: unknown; media_product_type?: unknown };
@@ -55,7 +57,7 @@ export function parseCommentWebhook(payload: unknown, now: number = Date.now()):
     for (const change of changes) {
       if (change?.field !== "comments" || !change.value) continue;
       const { value } = change;
-      const commentId = id(value.id);
+      const commentId = id(value.id ?? value.comment_id);
       const commenterId = id(value.from?.id);
       const mediaId = id(value.media?.id);
       const text = typeof value.text === "string" ? value.text.trim() : "";

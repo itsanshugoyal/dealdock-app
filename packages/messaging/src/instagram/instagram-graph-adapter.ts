@@ -21,7 +21,8 @@ import { InMemoryGraphRateBudget, type GraphRateBudget } from "./graph-rate-budg
 
 /**
  * Official Instagram API with Instagram Login (ARCHITECTURE.md §4, PRD §7.2).
- * graph.instagram.com only — no scraping, no automation, nothing else.
+ * The configured Graph host only (graph.instagram.com, or graph.facebook.com for
+ * Unified Login) — no scraping, no automation, nothing else.
  *
  * Thread identity: we key threads by the COUNTERPARTY's Instagram-scoped ID
  * (IGSID), not Meta's conversation id — webhooks carry only IGSIDs, so this
@@ -37,7 +38,11 @@ import { InMemoryGraphRateBudget, type GraphRateBudget } from "./graph-rate-budg
  *    accounts is limited to what the API exposes (PRD §6.2 honesty requirement).
  */
 
-const GRAPH_BASE = "https://graph.instagram.com/v25.0";
+/** Instagram Login host. Unified Login apps pass UNIFIED_GRAPH_BASE as `graphBase`. */
+export const INSTAGRAM_GRAPH_BASE = "https://graph.instagram.com/v25.0";
+export const UNIFIED_GRAPH_BASE = "https://graph.facebook.com/v25.0";
+/** Meta: "This message is sent outside of allowed window" (code 10). */
+const WINDOW_CLOSED_SUBCODE = 2534022;
 const BUDGET_CAPACITY = 180; // conservative vs Meta's ~200/hr
 const BUDGET_WINDOW_MS = 60 * 60_000;
 
@@ -107,6 +112,12 @@ function historyMedia(
   return { kind, url: url ?? null };
 }
 
+/** Graph paths are named by the account id (the Instagram professional account id in both login modes): never build one from anything else. */
+function accountPath(account: ConnectedAccount): string {
+  if (!/^\d{1,32}$/.test(account.platformUserId)) throw new Error("Instagram account id is invalid");
+  return `/${account.platformUserId}`;
+}
+
 const stringOrNull = (value: unknown) => (typeof value === "string" && value ? value : null);
 const boolOrNull = (value: unknown) => (typeof value === "boolean" ? value : null);
 
@@ -116,6 +127,8 @@ export interface InstagramGraphAdapterOptions {
   now?: () => number;
   /** API injects a Redis implementation so replicas share the same budget. */
   rateBudget?: GraphRateBudget;
+  /** Graph host and version; defaults to Instagram Login. Pagination may only follow this host. */
+  graphBase?: string;
 }
 
 export class InstagramGraphAdapter implements MessagingProvider {
@@ -125,6 +138,8 @@ export class InstagramGraphAdapter implements MessagingProvider {
   private fetchImpl: typeof fetch;
   private now: () => number;
   private rateBudget: GraphRateBudget;
+  private graphBase: string;
+  private graphHost: string;
 
   constructor(opts: InstagramGraphAdapterOptions = {}) {
     this.appSecret = opts.appSecret ?? process.env.META_APP_SECRET ?? "";
@@ -132,6 +147,8 @@ export class InstagramGraphAdapter implements MessagingProvider {
     this.now = opts.now ?? Date.now;
     this.rateBudget =
       opts.rateBudget ?? new InMemoryGraphRateBudget(BUDGET_CAPACITY, BUDGET_WINDOW_MS, this.now);
+    this.graphBase = opts.graphBase ?? INSTAGRAM_GRAPH_BASE;
+    this.graphHost = new URL(this.graphBase).hostname;
   }
 
   // ── Webhooks ──────────────────────────────────────────────────────────────
@@ -223,7 +240,7 @@ export class InstagramGraphAdapter implements MessagingProvider {
     // `since` — not at the first old conversation.
     const conversations = await this.graphGetAll<Conversation>(
       account,
-      `/me/conversations`,
+      `${accountPath(account)}/conversations`,
       { platform: "instagram", fields: "id,updated_time,participants", limit: "50" },
       since ? (page) => page.length > 0 && page.every((conv) => updatedAt(conv) <= since) : undefined
     );
@@ -327,7 +344,7 @@ export class InstagramGraphAdapter implements MessagingProvider {
     if (!shortcode) return null;
     type Media = { id?: string; permalink?: string; timestamp?: string; media_type?: string };
     type Page = { data?: Media[]; paging?: { next?: string } };
-    let page = await this.graphGet<Page>(account, "/me/media", { fields: "id,permalink,timestamp,media_type", limit: "50" });
+    let page = await this.graphGet<Page>(account, `${accountPath(account)}/media`, { fields: "id,permalink,timestamp,media_type", limit: "50" });
     let match: Media | undefined;
     for (let read = 1; ; read += 1) {
       match = (page.data ?? []).find((media) => media.permalink && postShortcode(media.permalink) === shortcode);
@@ -395,10 +412,8 @@ export class InstagramGraphAdapter implements MessagingProvider {
    * 7 days of it, and replies { recipient_id, message_id }.
    */
   async sendPrivateReply(account: ConnectedAccount, commentId: string, text: string): Promise<SendReceipt> {
-    // The account id names the Graph path: never build one from anything else.
-    if (!/^\d{1,32}$/.test(account.platformUserId)) throw new Error("Instagram account id is invalid");
     if (!commentId || commentId.length > 128) throw new Error("Instagram comment id is invalid");
-    return this.post(account, `/${account.platformUserId}/messages`, { recipient: { comment_id: commentId }, message: { text } });
+    return this.post(account, `${accountPath(account)}/messages`, { recipient: { comment_id: commentId }, message: { text } });
   }
 
   /** A post's permalink, for a comment lead's link to the post (one Graph read); null when Meta gives none. */
@@ -414,7 +429,7 @@ export class InstagramGraphAdapter implements MessagingProvider {
     message: Record<string, unknown>,
     opts: SendOptions
   ): Promise<SendReceipt> {
-    return this.post(account, "/me/messages", {
+    return this.post(account, `${accountPath(account)}/messages`, {
       recipient: { id: target.recipientPlatformId },
       message,
       // Meta documents MESSAGE_TAG + HUMAN_AGENT on the Page (Facebook Login)
@@ -428,7 +443,7 @@ export class InstagramGraphAdapter implements MessagingProvider {
   /** One POST to a messages edge; Meta answers with the new message's id. */
   private async post(account: ConnectedAccount, path: string, payload: Record<string, unknown>, target?: SendTarget): Promise<SendReceipt> {
     await this.consumeBudget(account.accountId);
-    const res = await this.fetchImpl(`${GRAPH_BASE}${path}`, {
+    const res = await this.fetchImpl(`${this.graphBase}${path}`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${account.accessToken}`,
@@ -455,16 +470,16 @@ export class InstagramGraphAdapter implements MessagingProvider {
   private async conversationWith(account: ConnectedAccount, participantId: string): Promise<string | undefined> {
     const conv = await this.graphGet<{ data?: Array<{ id: string }> }>(
       account,
-      `/me/conversations`,
+      `${accountPath(account)}/conversations`,
       { platform: "instagram", user_id: participantId }
     );
     return conv.data?.[0]?.id;
   }
 
-  /** The next page of a Graph listing: graph.instagram.com only, within the account's budget. */
+  /** The next page of a Graph listing: the configured host only, within the account's budget. */
   private async graphNext<T>(account: ConnectedAccount, next: string): Promise<T> {
     const url = new URL(next);
-    if (url.protocol !== "https:" || url.hostname !== "graph.instagram.com") throw new Error("Graph pagination returned an untrusted URL");
+    if (url.protocol !== "https:" || url.hostname !== this.graphHost) throw new Error("Graph pagination returned an untrusted URL");
     await this.consumeBudget(account.accountId);
     const res = await this.fetchImpl(url.toString(), { headers: { Authorization: `Bearer ${account.accessToken}` }, signal: AbortSignal.timeout(15_000) });
     const body = (await res.json()) as T & { error?: GraphError };
@@ -479,7 +494,7 @@ export class InstagramGraphAdapter implements MessagingProvider {
   ): Promise<T> {
     await this.consumeBudget(account.accountId);
     const qs = new URLSearchParams(params).toString();
-    const res = await this.fetchImpl(`${GRAPH_BASE}${path}?${qs}`, {
+    const res = await this.fetchImpl(`${this.graphBase}${path}?${qs}`, {
       headers: { Authorization: `Bearer ${account.accessToken}` },
       signal: AbortSignal.timeout(15_000),
     });
@@ -511,7 +526,7 @@ export class InstagramGraphAdapter implements MessagingProvider {
     for (let page = 0; next && page < 19; page += 1) {
       const url = new URL(next);
       next = undefined;
-      if (url.protocol !== "https:" || url.hostname !== "graph.instagram.com") {
+      if (url.protocol !== "https:" || url.hostname !== this.graphHost) {
         throw new Error("Graph pagination returned an untrusted URL");
       }
       await this.consumeBudget(account.accountId);
@@ -539,12 +554,13 @@ export class InstagramGraphAdapter implements MessagingProvider {
 
     // OAuthException — token invalid/expired/revoked → reconnect flow.
     if (code === 190) return new TokenExpiredError(account.accountId);
-    // Outside the 24h standard messaging window (code 10 / policy subcodes).
-    if (code === 10 || /outside of allowed window|24 ?hour/i.test(message)) {
+    // Outside the 24h standard messaging window. Bare code 10 is also a missing permission
+    // or a personal account (Unified Login), so it needs the window subcode or text.
+    if ((code === 10 && error?.error_subcode === WINDOW_CLOSED_SUBCODE) || /outside of allowed window|24 ?hour/i.test(message)) {
       return new SendWindowClosedError(target?.platformThreadId ?? "unknown");
     }
     // Platform throttling.
-    if (code === 4 || code === 17 || code === 613) {
+    if (code === 4 || code === 17 || code === 613 || code === 80002) {
       return new RateBudgetExceededError(account.accountId, 60_000);
     }
     return new Error(`Graph API error ${code ?? "?"}: ${message}`);

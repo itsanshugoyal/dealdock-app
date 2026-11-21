@@ -5,6 +5,8 @@
  * Personal accounts are REJECTED with switch-to-professional guidance.
  */
 
+import { UNIFIED_GRAPH_BASE } from "./instagram-graph-adapter";
+
 const AUTHORIZE_URL = "https://www.instagram.com/oauth/authorize";
 const TOKEN_URL = "https://api.instagram.com/oauth/access_token";
 const GRAPH_BASE = "https://graph.instagram.com";
@@ -134,14 +136,87 @@ export async function fetchIgProfile(
   };
 }
 
+// ── Instagram API with Unified Login (Meta apps created after ~Oct 2026) ──
+// Facebook Login for Business with a configuration (its permissions replace
+// `scope`), a Business Integration System User token that belongs to the
+// creator's business portfolio, and graph.facebook.com.
+
+const UNIFIED_AUTHORIZE_URL = "https://www.facebook.com/dialog/oauth";
+const UNIFIED_PERMISSIONS = new Set(["instagram_basic", "instagram_manage_messages"]);
+
+export function buildUnifiedAuthorizeUrl(cfg: Pick<IgOauthConfig, "appId" | "redirectUri"> & { configId: string }, state: string): string {
+  const params = new URLSearchParams({
+    client_id: cfg.appId,
+    config_id: cfg.configId,
+    redirect_uri: cfg.redirectUri,
+    response_type: "code",
+    state,
+    // Shows the Instagram login option even when the person is signed in to Facebook.
+    prompt: "login",
+  });
+  return `${UNIFIED_AUTHORIZE_URL}?${params.toString()}`;
+}
+
+/** code → system-user token. No long-lived exchange; `expiresIn` is null when the configuration says "never". */
+export async function exchangeUnifiedCode(cfg: IgOauthConfig, code: string): Promise<{ accessToken: string; expiresIn: number | null }> {
+  if (!code || code.length > 4_000) throw new Error("IG authorization code is invalid");
+  const params = new URLSearchParams({ client_id: cfg.appId, client_secret: cfg.appSecret, redirect_uri: cfg.redirectUri, code });
+  const res = await oauthFetch(cfg, `${UNIFIED_GRAPH_BASE}/oauth/access_token?${params.toString()}`);
+  const body = (await res.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error?: { message?: string } };
+  if (!res.ok || !body.access_token) throw new Error(`IG token exchange failed: ${body.error?.message ?? res.status}`);
+  const expiresIn = typeof body.expires_in === "number" && body.expires_in > 0 ? body.expires_in : null;
+  return { accessToken: body.access_token, expiresIn };
+}
+
+/**
+ * The Instagram professional accounts the creator shared. `/me` is the system
+ * user, not an Instagram account. When the assigned list is empty (reported
+ * when app and account share a portfolio), fall back to the token's granted
+ * target ids. Ids equal Instagram Login's `user_id`.
+ */
+export async function fetchUnifiedAccounts(cfg: Pick<IgOauthConfig, "appId" | "appSecret" | "fetchImpl" | "timeoutMs">, accessToken: string): Promise<IgProfile[]> {
+  const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
+  const listed = await oauthFetch(cfg, `${UNIFIED_GRAPH_BASE}/me/assigned_instagram_accounts?fields=id,username`, auth);
+  const list = (await listed.json().catch(() => ({}))) as { data?: Array<{ id?: unknown; username?: unknown }> };
+  if (!listed.ok) throw new Error("IG account lookup failed");
+  const profiles = (list.data ?? []).flatMap(toProfile);
+  if (profiles.length) return profiles;
+
+  const debug = await oauthFetch(cfg, `${UNIFIED_GRAPH_BASE}/debug_token?${new URLSearchParams({ input_token: accessToken, access_token: `${cfg.appId}|${cfg.appSecret}` })}`);
+  const token = (await debug.json().catch(() => ({}))) as { data?: { granular_scopes?: Array<{ scope?: string; target_ids?: unknown[] }> } };
+  if (!debug.ok) throw new Error("IG token inspection failed");
+  const ids = new Set(
+    (token.data?.granular_scopes ?? [])
+      .filter((grant) => grant.scope && UNIFIED_PERMISSIONS.has(grant.scope))
+      .flatMap((grant) => grant.target_ids ?? [])
+      .map(String)
+      .filter((value) => /^\d{1,32}$/.test(value))
+  );
+  const found: IgProfile[] = [];
+  for (const igId of ids) {
+    const res = await oauthFetch(cfg, `${UNIFIED_GRAPH_BASE}/${igId}?fields=id,username`, auth);
+    const body = (await res.json().catch(() => ({}))) as { id?: unknown; username?: unknown };
+    if (res.ok) found.push(...toProfile(body));
+  }
+  return found;
+}
+
+function toProfile(row: { id?: unknown; username?: unknown }): IgProfile[] {
+  const userId = typeof row.id === "string" || typeof row.id === "number" ? String(row.id) : "";
+  if (!/^\d{1,32}$/.test(userId)) return [];
+  // Unified Login only shares professional accounts; the type isn't readable here.
+  return [{ userId, username: typeof row.username === "string" ? row.username : "", accountType: "UNKNOWN" }];
+}
+
 /**
  * Subscribe the connected professional account to official webhooks:
  * messages, plus comments when comment leads are on. Runs in the API only
  * (OAuth callback, saving comment keywords); it never accepts a user-supplied
- * account id and does not expose a token to the worker.
+ * account id and does not expose a token to the worker. Unified Login passes
+ * its graph.facebook.com host as `graphBase`.
  */
 export async function subscribeToInstagramWebhooks(
-  cfg: Pick<IgOauthConfig, "fetchImpl" | "timeoutMs">,
+  cfg: Pick<IgOauthConfig, "fetchImpl" | "timeoutMs"> & { graphBase?: string },
   accessToken: string,
   igUserId: string,
   fields: ReadonlyArray<"comments" | "messages"> = ["messages"]
@@ -149,7 +224,7 @@ export async function subscribeToInstagramWebhooks(
   if (!accessToken || !igUserId || !/^\d+$/.test(igUserId) || fields.length === 0) {
     throw new Error("IG webhook subscription input is invalid");
   }
-  const res = await oauthFetch(cfg, `${GRAPH_BASE}/${encodeURIComponent(igUserId)}/subscribed_apps`, {
+  const res = await oauthFetch(cfg, `${cfg.graphBase ?? GRAPH_BASE}/${encodeURIComponent(igUserId)}/subscribed_apps`, {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ subscribed_fields: fields.join(",") }),
