@@ -46,7 +46,7 @@ export function Conversation({ id }: { id: string }) {
   const account = params?.get("account");
   const { thread, row, status, error, notFound } = useThread(id);
   const view = thread ?? row;
-  const { money, timezone, threads, voice, settings } = useApp();
+  const { money, timezone, threads, voice, settings, features } = useApp();
   const now = useMinuteClock();
   const locale = money.locale ?? "en-IN";
 
@@ -78,8 +78,8 @@ export function Conversation({ id }: { id: string }) {
 
   // Load the draft into the composer whenever a new draft (or version) arrives.
   const draft = thread?.draft ?? null;
-  // An invoice's cover note sends that invoice's PDF with it.
-  const draftInvoice = draft?.invoiceId ? thread?.deals.flatMap((deal) => deal.invoices ?? []).find((invoice) => invoice.id === draft.invoiceId) ?? null : null;
+  // An invoice's cover note sends that invoice's PDF with it (nothing of it shows while Invoices is off).
+  const draftInvoice = features.invoices && draft?.invoiceId ? thread?.deals.flatMap((deal) => deal.invoices ?? []).find((invoice) => invoice.id === draft.invoiceId) ?? null : null;
   // A new draft grows the composer, which would cover the last message: scroll to the end again once it has grown.
   const revealEnd = useRef(false);
   useEffect(() => {

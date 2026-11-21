@@ -151,7 +151,7 @@ export async function dealRoutes(app: FastifyInstance) {
   });
 
   /** Terms read from the conversation for the creator to check; never saved. Ignored handles never reach a model. */
-  app.post("/threads/:id/deal-suggestion", { preHandler: [requireAuth, requirePermission("close")] }, async (req, reply) => {
+  app.post("/threads/:id/deal-suggestion", write, async (req, reply) => {
     const { id } = req.params as { id: string };
     const { orgId } = req.auth!;
     const conversation = await getDealConversation(orgId, id);

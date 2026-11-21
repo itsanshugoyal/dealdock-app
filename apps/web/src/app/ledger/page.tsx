@@ -42,7 +42,8 @@ function Revenue() {
   const deals = useDeals("open", account);
   const settings = useSettings();
   const insights = useInsights(6);
-  const { money, timezone } = useApp();
+  const { money, timezone, features } = useApp();
+  const invoices = features.invoices;
   const locale = money.locale ?? "en-IN";
   const [editing, setEditing] = useState<DemoLedgerEntry | null>(null);
   const [goalOpen, setGoalOpen] = useState(false);
@@ -60,7 +61,7 @@ function Revenue() {
   const owing = (deals.data ?? []).filter(isDealOpen).sort(byDealUrgency);
   const openedDeal = owing.find((deal) => deal.id === opened) ?? null;
   const settle = (deal: DealDto) => {
-    const action = owedAction(deal);
+    const action = owedAction(deal, invoices);
     if (action === "balance") setInvoicing(deal);
     else setPaying({ deal, invoice: action === "invoice_paid" ? openInvoice(deal) : null });
   };

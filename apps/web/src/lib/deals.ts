@@ -65,19 +65,21 @@ export type DealAction = "recap" | "request" | "remind" | "paid" | "invoice" | "
  * message. Overdue: Remind. An unpaid invoice: send it with a note, then Mark
  * invoice paid. An advance paid: Invoice the balance. Payment asked for without
  * an invoice: Mark paid. Agreed: a terms recap until the creator has written
- * since recording it, then Create invoice.
+ * since recording it, then Create invoice. With the Invoices feature off
+ * (`invoices` false) no invoice step: Request payment, then Mark paid.
  */
-export function dealPrimaryAction(deal: Pick<DealDto, "stage" | "dueAt" | "createdAt" | "invoices">, now: number, sentSince?: (at: string) => boolean): DealAction {
+export function dealPrimaryAction(deal: Pick<DealDto, "stage" | "dueAt" | "createdAt" | "invoices">, now: number, sentSince?: (at: string) => boolean, invoices = true): DealAction {
   if (sentSince && daysOverdue(deal, now) > 0) return "remind";
-  const open = openInvoice(deal);
+  const open = invoices ? openInvoice(deal) : null;
   if (open) return sentSince && !sentSince(open.issuedAt) ? "send_invoice" : "invoice_paid";
-  if (liveInvoices(deal).length) return "balance";
+  if (invoices && liveInvoices(deal).length) return "balance";
   if (deal.stage === "invoiced") return "paid";
-  return sentSince && !sentSince(deal.createdAt) ? "recap" : "invoice";
+  return sentSince && !sentSince(deal.createdAt) ? "recap" : invoices ? "invoice" : "request";
 }
 
-/** Revenue's money action on an owed deal: its open invoice, the balance after an advance, or the deal itself. */
-export function owedAction(deal: Pick<DealDto, "invoices">): "invoice_paid" | "balance" | "paid" {
+/** Revenue's money action on an owed deal: its open invoice, the balance after an advance, or the deal itself (always, with Invoices off). */
+export function owedAction(deal: Pick<DealDto, "invoices">, invoices = true): "invoice_paid" | "balance" | "paid" {
+  if (!invoices) return "paid";
   if (openInvoice(deal)) return "invoice_paid";
   return liveInvoices(deal).length ? "balance" : "paid";
 }

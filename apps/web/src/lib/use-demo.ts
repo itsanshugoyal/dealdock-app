@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { can, type MoneyContext, type PermissionAction } from "@dealdock/core";
+import { can, FEATURE_NAMES, type FeatureFlags, type FeatureName, type MoneyContext, type PermissionAction } from "@dealdock/core";
 import { demoStore } from "./demo-store";
 import { apiStore } from "./api-store";
 import { emptySnapshot, IDLE, isFresh, loading } from "./snapshot";
@@ -80,6 +80,19 @@ const sameMoney = (a: MoneyView, b: MoneyView) => a.money.currency === b.money.c
 /** Money context, time zone and locale for leaf components: the object changes only when one of them does. */
 export function useMoneyContext(): MoneyView {
   return useAppSelector(selectMoney, sameMoney);
+}
+
+const selectFeatures = (snapshot: AppSnapshot) => snapshot.features;
+const sameFeatures = (a: FeatureFlags, b: FeatureFlags) => FEATURE_NAMES.every((name) => a[name] === b[name]);
+
+/** Every feature flag as the server decided them (AGENTS.md "Feature flags"); the object changes only when a flag does. */
+export function useFeatures(): FeatureFlags {
+  return useAppSelector(selectFeatures, sameFeatures);
+}
+
+/** Whether one feature is on. Gate every entry point to a flagged feature with this. */
+export function useFeature(name: FeatureName): boolean {
+  return useFeatures()[name];
 }
 
 /** The inputs each slice was last loaded with through useLazy, tagged with the account epoch. */

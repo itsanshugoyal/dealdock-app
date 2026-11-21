@@ -6,6 +6,7 @@ import type {
   CreateSubscriptionInput,
   CreatedSubscription,
 } from "./provider";
+import { isDefiniteRejection, RailRejectedError } from "./provider";
 
 /**
  * Razorpay Subscriptions rail (INR orgs — UPI Autopay / card mandates).
@@ -46,13 +47,17 @@ export class RazorpayRail implements BillingProvider {
     };
   }
 
+  get configured(): boolean {
+    return Boolean(this.keyId && this.keySecret && this.planIds.solo && this.planIds.studio && this.planIds.roster);
+  }
+
   private authHeader(): string {
     return `Basic ${Buffer.from(`${this.keyId}:${this.keySecret}`).toString("base64")}`;
   }
 
   async createSubscription(input: CreateSubscriptionInput): Promise<CreatedSubscription> {
     const planId = this.planIds[input.tier];
-    if (!planId) throw new Error(`RAZORPAY_PLAN_${input.tier.toUpperCase()} not configured`);
+    if (!planId) throw new RailRejectedError(`RAZORPAY_PLAN_${input.tier.toUpperCase()} not configured`);
 
     const res = await this.fetchImpl(`${API_BASE}/subscriptions`, {
       method: "POST",
@@ -73,7 +78,8 @@ export class RazorpayRail implements BillingProvider {
       error?: { description?: string };
     };
     if (!res.ok || !body.id) {
-      throw new Error(`Razorpay createSubscription failed: ${body.error?.description ?? res.status}`);
+      const message = `Razorpay createSubscription failed: ${body.error?.description ?? res.status}`;
+      throw isDefiniteRejection(res.status) ? new RailRejectedError(message) : new Error(message);
     }
     return { externalId: body.id, checkoutUrl: body.short_url ?? null };
   }

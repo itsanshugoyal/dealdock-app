@@ -1,3 +1,4 @@
+import { featureFlags } from "@dealdock/core";
 import type { AppSnapshot, LoadState, Slice } from "./types";
 
 export const IDLE: Slice<never> = Object.freeze({ status: "idle", data: null, error: null, errorStatus: null, loadedAt: null, stale: false }) as Slice<never>;
@@ -29,6 +30,8 @@ export function emptySnapshot(state: LoadState, epoch = 0): AppSnapshot {
     timezone: "Asia/Kolkata",
     workspaceName: null,
     dashboard: null,
+    // The registry defaults (never the browser's env): the API's answer replaces them on the first core refresh.
+    features: featureFlags({}),
     onboarded: false,
     state,
     error: null,

@@ -34,6 +34,7 @@
     "node": ">=20"
   },
   "overrides": {
-    "deepmerge-ts": "$deepmerge-ts"
+    "deepmerge-ts": "$deepmerge-ts",
+    "effect": "3.22.5"
   }
 }

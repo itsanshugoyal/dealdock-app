@@ -27,7 +27,7 @@ import { requireAuth } from "../auth";
 import { requirePermission, requireWritable } from "../guards";
 import { getGraphAdapter } from "../graph";
 import { getGmailProvider, gmailAccount } from "../gmail";
-import { isHumanAgentEnabled } from "../feature-flags";
+import { FEATURE_DISABLED, isFeatureEnabled, isHumanAgentEnabled } from "../feature-flags";
 import { synthesizeVoiceClip } from "../voice-clip";
 import { invoiceFileName, renderInvoicePdf } from "../invoice-pdf";
 import { publicInvoiceUrl, signInvoicePath } from "../media-sign";
@@ -144,6 +144,7 @@ export async function threadRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: "voice_not_supported", hint: "Email replies are sent as text." });
     }
     // An invoice cover note sends the invoice PDF too, so the invoice must still be owed.
+    if (draft.invoiceId && !isFeatureEnabled("invoices")) return reply.code(404).send(FEATURE_DISABLED);
     const invoice = draft.invoiceId ? await getInvoice(auth.orgId, draft.invoiceId) : null;
     if (draft.invoiceId && invoice?.status !== "issued") {
       return reply.code(409).send({ error: "invoice_not_open", hint: "This invoice was paid or withdrawn. Draft a new note to send." });

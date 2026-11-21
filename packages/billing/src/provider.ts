@@ -74,8 +74,23 @@ export interface BillingStatusSnapshot {
   occurredAt?: Date;
 }
 
+/**
+ * A create call the rail answered with a client error: nothing was created, so
+ * the caller may retry. Network errors and 5xx stay plain errors (ambiguous).
+ */
+export class RailRejectedError extends Error {
+  readonly definite = true;
+}
+
+/** 4xx means the rail refused the request. 409 (idempotency conflict) is not proof of nothing created. */
+export function isDefiniteRejection(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 409;
+}
+
 export interface BillingProvider {
   readonly rail: BillingRail;
+  /** Keys and every tier's plan/price id are set. The scheduler skips a rail that isn't. */
+  readonly configured: boolean;
   createSubscription(input: CreateSubscriptionInput): Promise<CreatedSubscription>;
   cancelAtPeriodEnd(externalId: string): Promise<void>;
   /** Remote status fetch for the reconciliation poller (webhooks can be lost). */

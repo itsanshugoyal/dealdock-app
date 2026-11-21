@@ -79,6 +79,33 @@ describe("Razorpay rail", () => {
     expect(created).toEqual({ externalId: "sub_new1", checkoutUrl: "https://rzp.io/i/abc" });
   });
 
+  it("marks only client-error rejections as definite (safe to retry)", async () => {
+    const input = { orgId: "o", tier: "solo" as const, currencyCode: "USD", customerEmail: "a@b.c", requestKey: "k" };
+    const reply = (status: number) => new PaddleRail({ apiKey: "a", priceIds: { solo: "pri_1" }, fetchImpl: (async () => new Response(JSON.stringify({ error: { detail: "x" } }), { status })) as typeof fetch });
+    await expect(reply(400).createSubscription(input)).rejects.toMatchObject({ definite: true });
+    await expect(reply(503).createSubscription(input)).rejects.not.toHaveProperty("definite");
+    await expect(reply(409).createSubscription(input)).rejects.not.toHaveProperty("definite");
+  });
+
+  it("cancels an unpaid Paddle checkout by cancelling its transaction", async () => {
+    const calls: Array<{ url: string; method?: string; body?: string }> = [];
+    const rail = new PaddleRail({ apiKey: "a", fetchImpl: (async (url: string, init?: RequestInit) => { calls.push({ url, method: init?.method, body: String(init?.body) }); return new Response("{}", { status: 200 }); }) as typeof fetch });
+    await rail.cancelAtPeriodEnd("txn_123");
+    await rail.cancelAtPeriodEnd("sub_456");
+    expect(calls[0]).toMatchObject({ method: "PATCH", body: JSON.stringify({ status: "canceled" }) });
+    expect(calls[0]!.url).toMatch(/\/transactions\/txn_123$/);
+    expect(calls[1]).toMatchObject({ method: "POST" });
+    expect(calls[1]!.url).toMatch(/\/subscriptions\/sub_456\/cancel$/);
+  });
+
+  it("is configured only with keys and all three tier ids", () => {
+    const planIds = { solo: "p1", studio: "p2", roster: "p3" };
+    expect(new RazorpayRail({ keyId: "k", keySecret: "s", planIds }).configured).toBe(true);
+    expect(new RazorpayRail({ keyId: "", keySecret: "s", planIds }).configured).toBe(false);
+    expect(new PaddleRail({ apiKey: "a", priceIds: planIds }).configured).toBe(true);
+    expect(new PaddleRail({ apiKey: "a", priceIds: { solo: "p1", studio: "p2", roster: "" } }).configured).toBe(false);
+  });
+
   it("returns a reconciliation snapshot with period end rather than an invented event", async () => {
     const rail = new RazorpayRail({
       keyId: "k",
