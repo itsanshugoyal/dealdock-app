@@ -66,6 +66,10 @@ export function buildServer() {
     allowList: (req) => req.url.startsWith("/webhooks/"), // Meta/rails retry storms must not 429
   });
 
+  // The API is never indexed: every response says so, and crawlers are told to stay out.
+  app.addHook("onSend", async (_req, reply) => { reply.header("X-Robots-Tag", "noindex, nofollow"); });
+  app.get("/robots.txt", async (_req, reply) => reply.type("text/plain").send("User-agent: *\nDisallow: /\n"));
+
   app.get("/health", async () => ({
     status: "ok",
     service: "dealdock-api",
