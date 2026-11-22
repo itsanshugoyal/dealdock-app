@@ -4,69 +4,94 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { CURRENCY_SYMBOL, DEFAULT_LOCALE, formatMoneyExact, parseMoneyInput, type CurrencyCode } from "@dealdock/core";
-import { ArrowLeft, ArrowRight, AudioLines, Camera, Check, CheckCheck, ChevronDown, Eye, Lock, LogOut, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, AudioLines, Camera, Check, CheckCheck, ChevronDown, Eye, Lock, LogOut, Mail, ShieldCheck } from "lucide-react";
 import { atHandle } from "../../lib/format";
+import { EMAIL_ERRORS, PILOT_CONTACT, friendlyConnectError, nextStep, pilotInviteHelp, progressIndex, progressSteps, stepFromQuery, type Step } from "../../lib/onboarding-flow";
 import { errorMessage } from "../../lib/snapshot";
-import { IS_DEMO_MODE, appStore, useApp, useOnboarding } from "../../lib/use-demo";
+import { IS_DEMO_MODE, appStore, useApp, useEmailAccounts, useFeature, useOnboarding } from "../../lib/use-demo";
 import type { LeakScanSummary } from "../../lib/types";
 import { LabelDot, Logo } from "../../components/kit";
 import { usePoll } from "../../components/use-poll";
-import { Button } from "../../components/ui/button";
+import { Button, buttonClasses } from "../../components/ui/button";
 import { cx } from "../../components/ui/cx";
 import { MoneyField } from "../../components/ui/field";
 import { MoneyCounter, MoneyValue } from "../../components/ui/money-value";
 import { Avatar } from "../../components/ui/sender";
 
-type Step = "welcome" | "region" | "connect" | "business" | "voice" | "scan" | "reveal";
-const STEPS: Step[] = ["welcome", "region", "connect", "business", "voice", "scan", "reveal"];
-const PROGRESS: Step[] = ["region", "connect", "business", "voice", "scan"];
-const STEP_LABELS = ["Region", "Instagram", "Business", "Voice", "Scan"];
-
 export default function OnboardingPage() {
   return <Suspense fallback={null}><Onboarding /></Suspense>;
 }
 
-/** First run: region → Instagram → what you sell → voice consent → Leak Scan → the reveal. */
+/**
+ * First run: region → Instagram → Gmail (when this deployment has it) → what
+ * you sell → voice consent → Leak Scan → the reveal. "Connect later" skips
+ * everything that needs Instagram and ends on "You're set up" (`later=1`
+ * stays in the address so the path survives reloads).
+ */
 function Onboarding() {
   const router = useRouter();
   const params = useSearchParams();
-  const requested = params?.get("step") as Step | null;
-  const step: Step = requested && STEPS.includes(requested) ? requested : "welcome";
-  const go = (next: Step) => router.push(`/onboarding?step=${next}`, { scroll: true });
+  const connected = params?.get("connected") ?? null;
+  const igError = params?.get("error") ?? null;
+  const step = stepFromQuery(params?.get("step"), Boolean(connected || igError));
+  const later = params?.get("later") === "1";
+  const openAccess = useFeature("instagramOpenAccess");
+  // GET /email/accounts needs a workspace, which the Region step creates.
+  const inboxes = useEmailAccounts(step !== "welcome" && step !== "region");
+  const gmail = inboxes.data?.available !== false;
+  const context = { instagram: !later, gmail };
+  const go = (next: Step) => router.push(`/onboarding?step=${next}${later ? "&later=1" : ""}`, { scroll: true });
+  const advance = () => go(nextStep(step, context));
+  const progress = progressSteps(context);
+  const index = progressIndex(step, context);
   const dark = step === "scan" || step === "reveal";
-  const index = PROGRESS.indexOf(step);
+  const end = step === "reveal" || step === "done";
+  // No Gmail on this deployment (or Google said so just now): the step quietly moves on.
+  useEffect(() => {
+    if (step === "email" && !gmail) router.replace(`/onboarding?step=${nextStep("email", context)}`);
+  }, [step, gmail]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className={cx("flex flex-1 flex-col", dark ? "bg-[#07080A] text-white" : "bg-canvas")}>
       {step !== "welcome" && (
         <header className="mx-auto w-full max-w-[560px] px-5 pt-[max(20px,env(safe-area-inset-top))]">
           <div className="flex items-center gap-3">
-          {step !== "reveal" && step !== "scan" ? (
+          {!end && step !== "scan" ? (
             <button type="button" onClick={() => router.back()} aria-label="Back" className="dd-press flex h-11 w-11 items-center justify-center rounded-full hover:bg-inset focus-visible:outline-2 focus-visible:outline-info">
               <ArrowLeft aria-hidden size={22} />
             </button>
           ) : <Logo size={28} />}
           {index >= 0 && (
-            <div className="flex flex-1 gap-1.5" role="progressbar" aria-label="Setup progress" aria-valuemin={1} aria-valuemax={PROGRESS.length} aria-valuenow={index + 1}>
-              {PROGRESS.map((item, i) => (
-                <span key={item} className={cx("h-1 flex-1 rounded-full transition-colors duration-300", i <= index ? (dark ? "bg-hero-accent" : "bg-brand") : dark ? "bg-white/15" : "bg-fill")} />
+            <div className="flex flex-1 gap-1.5" role="progressbar" aria-label="Setup progress" aria-valuemin={1} aria-valuemax={progress.length} aria-valuenow={index + 1}>
+              {progress.map((item, i) => (
+                <span key={item.step} className={cx("h-1 flex-1 rounded-full transition-colors duration-300", i <= index ? (dark ? "bg-hero-accent" : "bg-brand") : dark ? "bg-white/15" : "bg-fill")} />
               ))}
             </div>
           )}
-          {step !== "reveal" && <span className={cx("text-caption font-semibold", dark ? "text-white/50" : "text-ink-3")}>{index >= 0 ? `${index + 1} of ${PROGRESS.length}` : ""}</span>}
+          {!end && <span className={cx("text-caption font-semibold", dark ? "text-white/50" : "text-ink-3")}>{index >= 0 ? `${index + 1} of ${progress.length}` : ""}</span>}
           </div>
-          {index >= 0 && <div className={cx("mt-3 flex justify-between gap-1 text-[10px] font-semibold uppercase tracking-[0.06em] sm:text-[11px]", dark ? "text-white/40" : "text-ink-3")} aria-hidden>{STEP_LABELS.map((label, i) => <span key={label} className={cx(i === index && (dark ? "text-white" : "text-ink"))}>{label}</span>)}</div>}
+          {index >= 0 && <div className={cx("mt-3 flex justify-between gap-1 text-[10px] font-semibold uppercase tracking-[0.06em] sm:text-[11px]", dark ? "text-white/40" : "text-ink-3")} aria-hidden>{progress.map((item, i) => <span key={item.step} className={cx(i === index && (dark ? "text-white" : "text-ink"))}>{item.label}</span>)}</div>}
         </header>
       )}
       {/* Phones pin each step's action to the bottom edge; wider screens centre the step as one group. */}
       <div className="mx-auto flex w-full max-w-[560px] flex-1 flex-col px-5 pb-[max(24px,env(safe-area-inset-bottom))] md:justify-center md:pb-12">
         {step === "welcome" && <Welcome onNext={() => go("region")} />}
         {step === "region" && <Region onNext={() => go("connect")} />}
-        {step === "connect" && <Connect onNext={() => go("business")} connected={params?.get("connected") ?? null} error={params?.get("error") ?? null} />}
-        {step === "business" && <Business onNext={() => go("voice")} />}
-        {step === "voice" && <Voice onNext={() => go("scan")} />}
-        {step === "scan" && <Scan onDone={() => go("reveal")} />}
+        {step === "connect" && (
+          <Connect
+            onNext={advance}
+            onLater={() => router.push(`/onboarding?step=${nextStep("connect", { ...context, instagram: false })}&later=1`, { scroll: true })}
+            connected={connected}
+            error={igError}
+            openAccess={openAccess}
+          />
+        )}
+        {step === "email" && gmail && <Email onNext={advance} connected={params?.get("email") === "connected"} error={params?.get("email_error") ?? null} />}
+        {step === "business" && <Business onNext={advance} />}
+        {step === "voice" && <Voice onNext={advance} />}
+        {step === "scan" && <Scan onDone={advance} />}
         {step === "reveal" && <Reveal />}
+        {step === "done" && <Done openAccess={openAccess} gmail={gmail} />}
       </div>
     </div>
   );
@@ -194,9 +219,10 @@ function Region({ onNext }: { onNext: () => void }) {
 
 /* ── Connect Instagram ─────────────────────────────────────────────────── */
 
-function Connect({ onNext, connected, error }: { onNext: () => void; connected: string | null; error: string | null }) {
+function Connect({ onNext, onLater, connected, error, openAccess }: { onNext: () => void; onLater: () => void; connected: string | null; error: string | null; openAccess: boolean }) {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(error ? friendlyConnectError(error) : null);
+  const invite = pilotInviteHelp(openAccess);
   const start = async () => {
     setBusy(true);
     setProblem(null);
@@ -204,14 +230,19 @@ function Connect({ onNext, connected, error }: { onNext: () => void; connected: 
       const { authorizeUrl } = await appStore.connectInstagram();
       window.location.assign(authorizeUrl);
     } catch (failure) {
-      setProblem(errorMessage(failure, "Couldn't open Instagram. Try again."));
+      const code = (failure as { code?: unknown }).code;
+      setProblem(code === "meta_app_not_configured" ? friendlyConnectError(code) : errorMessage(failure, "Couldn't open Instagram. Try again."));
       setBusy(false);
     }
   };
   return (
     <StepFrame
       title={connected ? "You're connected." : "Connect your Instagram"}
-      body={connected ? <>DealDock can now read DMs sent to <b className="font-semibold text-ink">@{connected}</b>.</> : "Use the Business or Creator account your DMs come to. You'll approve it on Instagram's own screen."}
+      body={connected
+        ? <>DealDock can now read DMs sent to <b className="font-semibold text-ink">@{connected}</b>.</>
+        : invite
+          ? "Use the Business or Creator account your DMs come to. During the pilot, accept our Instagram invite first."
+          : "Use the Business or Creator account your DMs come to. You'll approve it on Instagram's own screen."}
       footer={connected
         ? <Button variant="primary" size="lg" fullWidth iconRight={ArrowRight} onClick={onNext}>Continue</Button>
         : <>
@@ -219,6 +250,7 @@ function Connect({ onNext, connected, error }: { onNext: () => void; connected: 
               <Camera aria-hidden size={20} />{busy ? "Opening Instagram…" : "Continue with Instagram"}
             </button>
             {problem && <p role="alert" className="text-center text-caption text-danger">{problem}</p>}
+            <Button variant="ghost" fullWidth onClick={onLater}>Connect later</Button>
           </>}
     >
       {connected ? (
@@ -234,20 +266,28 @@ function Connect({ onNext, connected, error }: { onNext: () => void; connected: 
           <Assurance icon={<LogOut aria-hidden size={18} />} title="Disconnect any time">You control the connection in Settings.</Assurance>
         </ul>
       )}
+      {!connected && invite && <Help summary="How do I get the invite?">{withContact(invite)}</Help>}
       {!connected && (
-        <details className="group mt-4 rounded-[20px] bg-surface px-4 shadow-card">
-          <summary className="dd-summary flex min-h-12 items-center justify-between gap-3 rounded text-[14px] font-semibold text-ink focus-visible:outline-2 focus-visible:outline-info">On a personal account?<ChevronDown aria-hidden size={16} className="shrink-0 text-ink-3 transition-transform group-open:rotate-180" /></summary>
-          <p className="pb-4 text-[14px] text-ink-2">Switching is free and takes about two minutes: Instagram → Settings → Account type and tools → Switch to professional account. Choose Creator or Business, then come back here.</p>
-        </details>
+        <Help summary="On a personal account?">Switching is free and takes about two minutes: Instagram → Settings → Account type and tools → Switch to professional account. Choose Creator or Business, then come back here.</Help>
       )}
     </StepFrame>
   );
 }
 
-function friendlyConnectError(code: string): string {
-  if (/personal/i.test(code)) return "That's a personal account. Switch it to Creator or Business, then try again.";
-  if (/denied|cancel/i.test(code)) return "Instagram didn't give access. Try again when you're ready.";
-  return "Instagram didn't finish connecting. Try again.";
+/** A one-line question that opens to a short answer: help stays out of the way until someone needs it. */
+function Help({ summary, children }: { summary: string; children: React.ReactNode }) {
+  return (
+    <details className="group mt-3 rounded-[20px] bg-surface px-4 shadow-card first-of-type:mt-4">
+      <summary className="dd-summary flex min-h-12 items-center justify-between gap-3 rounded text-[14px] font-semibold text-ink focus-visible:outline-2 focus-visible:outline-info">{summary}<ChevronDown aria-hidden size={16} className="shrink-0 text-ink-3 transition-transform group-open:rotate-180" /></summary>
+      <p className="pb-4 text-[14px] text-ink-2">{children}</p>
+    </details>
+  );
+}
+
+/** The pilot address in bold, so it reads as something to copy. */
+function withContact(text: string) {
+  const [before, after] = text.split(PILOT_CONTACT);
+  return after === undefined ? text : <>{before}<b className="font-semibold text-ink">{PILOT_CONTACT}</b>{after}</>;
 }
 
 function Assurance({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
@@ -256,6 +296,79 @@ function Assurance({ icon, title, children }: { icon: React.ReactNode; title: st
       <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-tint text-recovered">{icon}</span>
       <span><span className="block text-[15px] font-semibold text-ink">{title}</span><span className="block text-[14px] text-ink-2">{children}</span></span>
     </li>
+  );
+}
+
+/* ── Gmail (optional) ──────────────────────────────────────────────────── */
+
+function Email({ onNext, connected, error }: { onNext: () => void; connected: boolean; error: string | null }) {
+  const onboarding = useOnboarding();
+  const inboxes = useEmailAccounts();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(error ? EMAIL_ERRORS[error] ?? "Gmail couldn't be connected. Try again." : null);
+  const address = inboxes.data?.accounts.find((inbox) => inbox.status === "active")?.address;
+  const start = async () => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      // The inbox belongs to the Instagram account just connected; Google comes back here, not to Settings.
+      const { authorizeUrl } = await appStore.connectEmail(onboarding.data?.igAccounts[0]?.id, "onboarding");
+      window.location.assign(authorizeUrl);
+    } catch (failure) {
+      setProblem(errorMessage(failure, "Couldn't open Google. Try again."));
+      setBusy(false);
+    }
+  };
+  return (
+    <StepFrame
+      title={connected ? "Gmail connected." : "Add Gmail too?"}
+      body={connected ? "Brand emails show up next to your DMs in a few minutes." : "Brand emails land next to your DMs. Nothing sends without you."}
+      footer={connected
+        ? <Button variant="primary" size="lg" fullWidth iconRight={ArrowRight} onClick={onNext}>Continue</Button>
+        : <>
+            <Button variant="primary" size="lg" fullWidth icon={Mail} loading={busy} loadingLabel="Opening Google…" onClick={() => void start()}>Connect Gmail</Button>
+            {problem && <p role="alert" className="text-center text-caption text-danger">{problem}</p>}
+            <p className="text-center text-caption text-ink-3">If Google says it hasn&apos;t verified the app, tap Advanced, then Continue.</p>
+            <Button variant="ghost" fullWidth disabled={busy} onClick={onNext}>Skip</Button>
+          </>}
+    >
+      {connected ? (
+        <div className="flex items-center gap-3 rounded-2xl bg-surface p-4 shadow-card">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-info-tint text-info"><Mail aria-hidden size={22} /></span>
+          <div className="min-w-0 flex-1"><p className="truncate text-[15px] font-semibold text-ink"><bdi>{address ?? "Gmail"}</bdi></p><p className="text-caption text-ink-3">Gmail · Connected</p></div>
+          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-brand text-on-brand"><Check aria-hidden size={18} /></span>
+        </div>
+      ) : (
+        // Show, don't tell: one brand email sitting in the inbox, like the welcome preview.
+        <div aria-hidden className="dd-rise flex items-center gap-3 rounded-[20px] bg-surface p-3.5 shadow-raised">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-info-tint text-info"><Mail size={20} /></span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="truncate text-[15px] font-semibold text-ink">Glow Labs Partnerships</span>
+              <span className="shrink-0 text-caption text-ink-3">Email</span>
+            </div>
+            <div className="mt-0.5 flex items-center gap-2 text-caption"><LabelDot label="brand_deal" /></div>
+            <p className="truncate text-[13px] text-ink-3">Brief: 3 reels for our summer launch. Your rates?</p>
+          </div>
+        </div>
+      )}
+    </StepFrame>
+  );
+}
+
+/* ── You're set up (without Instagram) ─────────────────────────────────── */
+
+function Done({ openAccess, gmail }: { openAccess: boolean; gmail: boolean }) {
+  return (
+    <StepFrame
+      title="You're in."
+      body={openAccess
+        ? `Connect Instagram${gmail ? " and Gmail" : ""} any time from Settings.`
+        : `Connect Instagram from Settings once your invite arrives${gmail ? ", then add Gmail" : ""}.`}
+      footer={<Link href="/" className={buttonClasses({ variant: "primary", size: "lg", fullWidth: true })}>Go to Today<ArrowRight aria-hidden size={20} className="shrink-0" /></Link>}
+    >
+      {!openAccess && <Help summary="How do I get the invite?">{withContact(pilotInviteHelp(false)!)}</Help>}
+    </StepFrame>
   );
 }
 

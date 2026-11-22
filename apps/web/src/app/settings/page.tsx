@@ -12,6 +12,7 @@ import { visibleSettingsSections } from "../../lib/settings-sections";
 import { errorMessage } from "../../lib/snapshot";
 import { appStore, useApp, useBilling, useFeatures, useCan, useDataSummary, useEmailAccounts, useIgnoreList, useMe, useMoneyContext, useNotificationPrefs, useOnboarding, useSeats, useSettings } from "../../lib/use-demo";
 import type { EmailAccountView } from "../../lib/types";
+import { EMAIL_ERRORS } from "../../lib/onboarding-flow";
 import { setUiPref, useUiPrefs, type ThemePreference, type UndoSeconds } from "../../lib/ui-prefs";
 import { useAuthActions } from "../../components/auth-session";
 import { BillingSection } from "../../components/billing";
@@ -265,19 +266,6 @@ function InstagramSection() {
 }
 
 /* ── Email ─────────────────────────────────────────────────────────────── */
-
-/** Google sends people back with ?email_error=<code>; each gets a plain sentence. */
-const EMAIL_ERRORS: Record<string, string> = {
-  access_denied: "Google access wasn't allowed, so no inbox was connected.",
-  oauth_failed: "Google couldn't finish connecting. Try again.",
-  invalid_state: "That connection link expired. Start again here.",
-  scopes_missing: "DealDock needs permission to read and send email. Connect again and keep both boxes ticked.",
-  connection_failed: "Gmail couldn't be connected. Try again.",
-  email_account_limit: "Your plan can't connect another inbox. Disconnect one first.",
-  email_connected_to_other_creator: "That inbox is already connected for another creator.",
-  account_connected_to_other_org: "That inbox is connected to another DealDock workspace.",
-  ig_account_not_in_org: "That creator isn't in this workspace any more.",
-};
 
 /**
  * Gmail inboxes, each belonging to a creator. Connecting goes to Google and

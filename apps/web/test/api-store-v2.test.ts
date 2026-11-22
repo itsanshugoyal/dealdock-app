@@ -480,12 +480,14 @@ describe("writes refetch only what they change", () => {
       "GET /settings": () => ({ tier: "roster", accounts: [{ id: "ig-1", handle: "creator", status: "active", provider: "instagram_graph" }, { id: "gm-1", handle: "creator@studio.example", status: "active", provider: "gmail" }] }),
       "GET /email/accounts": () => ({ accounts: [{ id: "gm-1", address: "creator@studio.example", status: "active", connectedAt: iso(86_400_000), lastSyncedAt: iso(60_000), ownerAccountId: "ig-1" }] }),
       "GET /email/connect?igAccountId=ig-1": () => configured ? { authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=signed" } : new Response(JSON.stringify({ error: "email_not_configured" }), { status: 409 }),
+      "GET /email/connect?igAccountId=ig-1&returnTo=onboarding": () => ({ authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=onboarding" }),
       "POST /email/accounts/gm-1/disconnect": () => ({ disconnected: true }),
     });
     const store = await signedIn();
     expect((await store.loadSettings())?.accounts.map((account) => account.id)).toEqual(["ig-1"]);
     expect(await store.loadEmailAccounts()).toEqual({ available: true, accounts: [expect.objectContaining({ id: "gm-1", address: "creator@studio.example", ownerAccountId: "ig-1" })] });
     expect(await store.connectEmail("ig-1")).toEqual({ authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=signed" });
+    expect(await store.connectEmail("ig-1", "onboarding")).toEqual({ authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=onboarding" });
     await store.disconnectEmail("gm-1");
     expect(calls).toContain("POST /email/accounts/gm-1/disconnect");
     expect(store.getSnapshot().emailAccounts.data?.accounts).toEqual([]);

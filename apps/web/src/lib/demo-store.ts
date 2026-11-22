@@ -1264,7 +1264,7 @@ class DemoStore implements AppStoreApi {
   // ── Email (Gmail) ──────────────────────────────────────────────────────
 
   loadEmailAccounts(): Promise<EmailInboxes | null> { return this.load("emailAccounts"); }
-  async connectEmail(igAccountId?: string) {
+  async connectEmail(igAccountId?: string, returnTo?: "onboarding") {
     await this.init();
     const creators = this.s.settings.accounts;
     if (!igAccountId && this.s.settings.tier === "roster" && creators.length > 1) throw demoError(400, "ig_account_required", "Choose which creator this inbox belongs to.");
@@ -1273,12 +1273,12 @@ class DemoStore implements AppStoreApi {
     const at = new Date().toISOString();
     const inboxes = this.s.emailAccounts ?? [];
     const existing = inboxes.find((inbox) => inbox.ownerAccountId === owner.id);
-    // No Google here: the creator's inbox is (re)connected now, and the "consent screen" returns straight to Settings as the real callback does.
+    // No Google here: the creator's inbox is (re)connected now, and the "consent screen" returns straight to where it started, as the real callback does.
     this.s.emailAccounts = existing
       ? inboxes.map((inbox) => (inbox === existing ? { ...inbox, status: "active", lastSyncedAt: at } : inbox))
       : [...inboxes, { id: `email-${owner.id}`, address: `collabs@${owner.handle.replace(/[^a-z0-9]/gi, "")}.example`, status: "active", connectedAt: at, lastSyncedAt: at, ownerAccountId: owner.id }];
     this.emit();
-    return { authorizeUrl: "/settings?email=connected#email" };
+    return { authorizeUrl: returnTo === "onboarding" ? "/onboarding?step=email&email=connected" : "/settings?email=connected#email" };
   }
   async disconnectEmail(accountId: string) {
     await this.init();

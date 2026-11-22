@@ -119,7 +119,7 @@ Navigation: phone tab bar (Today, Inbox, Revenue, You); desktop sidebar (Today, 
 | All creators | `/roster` | Agency desk: totals, a card per creator, one biggest-first queue across creators |
 | Settings | `/settings` | Profile, studio links (phone), Instagram accounts, Email (a Gmail inbox per creator), What you sell (per creator on Roster), Billing details (tax registration, how brands pay, invoice numbers; per creator on Roster), notifications, follow-ups and region, monthly goal, people to skip, team, plan, appearance and sending, your data |
 | Activity | `/activity` | Who sent what (with draft vs sent), sales, sorting and settings changes, by day, filterable by kind and person |
-| Onboarding | `/onboarding` | Welcome, region, connect Instagram, what you sell, voice consent, the leak scan, the reveal |
+| Onboarding | `/onboarding` | Welcome, region, connect Instagram (pilot tester checklist while `instagramOpenAccess` is off, or "connect later"), optional Gmail, what you sell, voice consent, the leak scan, the reveal; without Instagram it ends on "You're set up" |
 | Sign in | `/sign-in` | Dark brand panel (desktop) and Clerk's form in the house style |
 
 ### 4.1 Renewals and the coach pipeline (7 November)

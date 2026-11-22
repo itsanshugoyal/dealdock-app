@@ -30,6 +30,9 @@ test.describe("demo product UI regressions", () => {
     await expect(page.getByText("Instagram · sample account")).toBeVisible();
     await page.waitForLoadState("networkidle"); // Full demo callback navigation must hydrate before the next click.
     await page.getByRole("button", { name: "Continue", exact: true }).click();
+    // The demo has Gmail, so its optional step follows Instagram.
+    await expect(page.getByRole("heading", { name: "Add Gmail too?" })).toBeVisible();
+    await page.getByRole("button", { name: "Skip", exact: true }).click();
     await expect(page.getByRole("heading", { name: "What do you sell?" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Brand collaborations" })).toHaveAttribute("aria-pressed", "true");
     await page.getByRole("button", { name: "Continue", exact: true }).click();

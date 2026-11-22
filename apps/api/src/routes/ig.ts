@@ -80,18 +80,21 @@ export async function igRoutes(app: FastifyInstance) {
    * interstitial from this error.
    */
   app.get("/ig/callback", async (req, reply) => {
+    // The browser arrives here from Meta, so every outcome returns to the onboarding Instagram step.
+    const back = (error: string) => reply.redirect(`${process.env.WEB_APP_URL ?? "http://localhost:3100"}/onboarding?step=connect&error=${encodeURIComponent(error)}`);
     const cfg = oauthConfig();
-    if (!cfg) return reply.code(503).send({ error: "meta_app_not_configured" });
+    if (!cfg) return back("meta_app_not_configured");
 
     const { code, state, error_description } = req.query as Record<string, string | undefined>;
     if (error_description) {
-      return reply.code(400).send({ error: "oauth_denied", detail: error_description });
+      req.log.info({ detail: error_description }, "ig oauth denied");
+      return back("oauth_denied");
     }
     const orgId = state ? verifyState(state, cfg.appSecret) : null;
-    if (!code || !orgId) return reply.code(400).send({ error: "invalid_state_or_code" });
+    if (!code || !orgId) return back("invalid_state_or_code");
 
     const org = await getOrganization(orgId as never);
-    if (!org) return reply.code(404).send({ error: "org_not_found" });
+    if (!org) return back("org_not_found");
 
     // Upstream failures return a clean 502 — Meta error bodies are logged
     // server-side only, never surfaced to the browser (M5 audit).
@@ -109,23 +112,14 @@ export async function igRoutes(app: FastifyInstance) {
       }
     } catch (err) {
       req.log.error({ err: (err as Error).message }, "ig oauth exchange failed");
-      return reply.code(502).send({ error: "instagram_connection_failed" });
+      return back("instagram_connection_failed");
     }
-    if (!profiles.length) {
-      return reply.code(409).send({
-        error: "no_instagram_account",
-        guidance: "No Instagram account was shared. Reconnect and choose your Instagram professional account.",
-      });
-    }
+    if (!profiles.length) return back("no_instagram_account");
 
     // Unified Login shares professional accounts only, and their type isn't readable.
     const type = profiles[0]!.accountType.toUpperCase();
     if (!unified && type !== "BUSINESS" && type !== "MEDIA_CREATOR" && type !== "CREATOR") {
-      return reply.code(409).send({
-        error: "personal_account",
-        guidance:
-          "This is a Personal Instagram account. Switch to a free Professional account (Settings → Account type → Switch to professional — takes ~2 minutes), then reconnect.",
-      });
+      return back("personal_account");
     }
 
     // One Unified Login token can cover several accounts: each is connected with it, within the tier cap.
@@ -142,7 +136,10 @@ export async function igRoutes(app: FastifyInstance) {
         }));
       } catch (err) {
         // The first failure is the caller's answer (e.g. the tier cap); a later one keeps what's connected.
-        if (!connected.length) throw err;
+        if (!connected.length) {
+          req.log.error({ err: (err as Error).message }, "ig: connecting the shared account failed");
+          return back(/^ig_account_limit/.test((err as Error).message) ? "ig_account_limit" : "instagram_connection_failed");
+        }
         req.log.warn({ err: (err as Error).message }, "ig: an extra shared account was not connected");
         break;
       }

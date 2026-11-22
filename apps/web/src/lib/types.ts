@@ -543,7 +543,8 @@ export interface AppStoreApi {
   // Email (Gmail) inboxes
   loadEmailAccounts(): Promise<EmailInboxes | null>;
   /** Google's consent URL for one creator's inbox (required on Roster). */
-  connectEmail(igAccountId?: string): Promise<{ authorizeUrl: string }>;
+  /** `returnTo` "onboarding" brings Google's redirect back to the onboarding Gmail step instead of Settings. */
+  connectEmail(igAccountId?: string, returnTo?: "onboarding"): Promise<{ authorizeUrl: string }>;
   disconnectEmail(accountId: string): Promise<void>;
 
   // Instagram + onboarding

@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { FEATURE_FLAGS, featureFlags, isFeatureEnabled } from "../src/feature-flags";
 
 it("uses each flag's default when its env var is unset", () => {
-  expect(featureFlags({})).toEqual({ invoices: true, humanAgent: false, insights: false, commentLeads: false, unifiedLogin: false });
+  expect(featureFlags({})).toEqual({ invoices: true, humanAgent: false, insights: false, commentLeads: false, unifiedLogin: false, instagramOpenAccess: false });
 });
 
 it("switches only on exactly \"true\" or \"false\"", () => {
@@ -27,4 +27,10 @@ it("switches Unified Login on its own env var, off by default", () => {
   expect(FEATURE_FLAGS.unifiedLogin.env).toBe("META_UNIFIED_LOGIN_ENABLED");
   expect(isFeatureEnabled("unifiedLogin", {})).toBe(false);
   expect(isFeatureEnabled("unifiedLogin", { META_UNIFIED_LOGIN_ENABLED: "true" })).toBe(true);
+});
+
+it("switches Instagram open access on its own env var, off until Meta grants Advanced Access", () => {
+  expect(FEATURE_FLAGS.instagramOpenAccess.env).toBe("META_ADVANCED_ACCESS_ENABLED");
+  expect(isFeatureEnabled("instagramOpenAccess", {})).toBe(false);
+  expect(isFeatureEnabled("instagramOpenAccess", { META_ADVANCED_ACCESS_ENABLED: "true" })).toBe(true);
 });

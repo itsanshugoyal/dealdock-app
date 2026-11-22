@@ -64,10 +64,10 @@ describe("Instagram Login (flag off)", () => {
     expect(messaging.exchangeUnifiedCode).not.toHaveBeenCalled();
   });
 
-  it("still rejects a personal account", async () => {
+  it("still rejects a personal account, back on the Instagram step", async () => {
     vi.mocked(messaging.fetchIgProfile).mockResolvedValueOnce({ userId: "1", username: "me", accountType: "PERSONAL" });
     const response = await callback();
-    expect([response.statusCode, response.json().error]).toEqual([409, "personal_account"]);
+    expect([response.statusCode, response.headers.location]).toEqual([302, "https://app.example.test/onboarding?step=connect&error=personal_account"]);
   });
 });
 
@@ -112,10 +112,10 @@ describe("Unified Login (META_UNIFIED_LOGIN_ENABLED)", () => {
     expect([response.statusCode, response.headers.location]).toEqual([302, "https://app.example.test/onboarding?connected=one"]);
   });
 
-  it("answers no_instagram_account when nothing was shared", async () => {
+  it("returns to onboarding with no_instagram_account when nothing was shared", async () => {
     vi.stubEnv("META_LOGIN_CONFIG_ID", "cfg_9");
     const response = await callback();
-    expect([response.statusCode, response.json().error]).toEqual([409, "no_instagram_account"]);
+    expect([response.statusCode, response.headers.location]).toEqual([302, "https://app.example.test/onboarding?step=connect&error=no_instagram_account"]);
     expect(db.connectGraphAccount).not.toHaveBeenCalled();
   });
 
