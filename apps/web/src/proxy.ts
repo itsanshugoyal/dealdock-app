@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 
 // A creator's rate-card link is opened by brands without an account: the token in the address is the access.
 // /pay is Paddle's payment link: Paddle emails it to payers (card updates) who may be signed out.
-const isPublicRoute = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)", "/rates/(.*)", "/pay"]);
+// /robots.txt tells crawlers to stay out; behind sign-in they'd only see a redirect.
+const isPublicRoute = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)", "/rates/(.*)", "/pay", "/robots.txt"]);
 
 /**
  * Next 16 proxy (formerly middleware.ts). Auth is ON by default and fails CLOSED. It's disabled only when
