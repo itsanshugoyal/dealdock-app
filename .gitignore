@@ -18,3 +18,6 @@ out/
 *.tsbuildinfo
 test-results/
 playwright-report/
+
+# local dev certificates (scripts/dev-services.mjs)
+.certs/

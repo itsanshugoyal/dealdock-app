@@ -43,6 +43,10 @@ npm run test:safety      # production auth fails closed; worker refuses API-only
 npm run test:ui          # explicit fictional-demo browser regressions; separate from the API-backed browser gate
 ```
 
+### Local sandbox without Docker (Windows)
+
+Portable Postgres + Redis started by `npm run dev`, env from Doppler `dev_*`, Razorpay test and Paddle sandbox: [docs/local-sandbox.md](docs/local-sandbox.md).
+
 ### Full local loop (requires Docker Desktop)
 
 ```bash

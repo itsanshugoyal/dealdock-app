@@ -138,7 +138,8 @@ async function main() {
   const emailSync = startEmailSync();
   app.addHook("onClose", async () => emailSync.close());
   const port = Number(process.env.PORT ?? 4000);
-  await app.listen({ port, host: "0.0.0.0" });
+  // Hosts need 0.0.0.0; local dev sets HOST=127.0.0.1 so the API isn't reachable from the network.
+  await app.listen({ port, host: process.env.HOST ?? "0.0.0.0" });
 }
 
 if (require.main === module) {
