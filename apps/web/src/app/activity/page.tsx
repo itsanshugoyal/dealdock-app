@@ -96,6 +96,8 @@ const ACTIONS: Record<AuditAction, Described> = {
   "account.deletion_cancelled": { kind: "settings", text: () => "cancelled account deletion" },
   "nudge.due": { kind: "sorting", text: (handle) => <>flagged a follow-up as due{handle ? <> for {handle}</> : null}</> },
   "digest.weekly_sent": { kind: "settings", text: () => "sent the weekly summary" },
+  "ig.deauthorized": { kind: "settings", text: () => "disconnected Instagram after it was removed in Instagram" },
+  "ig.data_deleted": { kind: "settings", text: () => "deleted an Instagram account's data, as asked through Instagram" },
 };
 
 /** Words for the row; an action this screen doesn't know yet (a newer API) still reads as plain words. */

@@ -20,7 +20,15 @@
     "design:package": "node design/studio/package.mjs",
     "test:safety": "node --test scripts/runtime-boundaries.test.mjs scripts/production-auth.test.mjs",
     "design:check": "node design/studio/verify.mjs",
-    "test:ui": "node scripts/run-ui-gate.mjs"
+    "test:ui": "node scripts/run-ui-gate.mjs",
+    "predev": "node scripts/dev-services.mjs start",
+    "services:start": "node scripts/dev-services.mjs start",
+    "services:stop": "node scripts/dev-services.mjs stop",
+    "services:status": "node scripts/dev-services.mjs status",
+    "dev:api": "node scripts/dev-services.mjs start && doppler run -p dealdock -c dev_api -- node --watch apps/api/dist/index.js",
+    "dev:worker": "node scripts/dev-services.mjs start && doppler run -p dealdock -c dev_worker -- node --watch apps/worker/dist/index.js",
+    "env:push": "node scripts/env-sync.mjs push",
+    "env:pull": "node scripts/env-sync.mjs pull"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",

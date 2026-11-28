@@ -9,7 +9,7 @@ Full lists of production values: section 4 of the go-live checklist in [pending.
 | File | What | Goes to |
 |---|---|---|
 | `.env.production.secrets.local` | `TOKEN_ENCRYPTION_KEY`, `MEDIA_SIGNING_KEY`, `META_WEBHOOK_VERIFY_TOKEN`, VAPID keys | Doppler prd configs (see the comments in the file), then delete the file |
-| `.env.live.local` | Paddle live price ids, webhook secret, client token | Doppler prd configs (plus `PADDLE_API_KEY` = `PADDLE_LIVE_API_KEY` from `.env`) |
+| `.env.live.local` | Paddle and Razorpay live keys, price/plan ids, webhook secrets, client token | Doppler prd configs (done 28 Nov) |
 | `.env` | Paddle sandbox values | Doppler stg configs, if you keep a staging environment |
 
 **Never rotate `TOKEN_ENCRYPTION_KEY` after creators connect:** every stored Instagram/Gmail token becomes unreadable.

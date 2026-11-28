@@ -35,3 +35,4 @@ export * from "./repos/audit";
 export * from "./repos/media";
 export * from "./repos/participants";
 export * from "./repos/comment-leads";
+export * from "./repos/meta-deletion";

@@ -27,6 +27,11 @@
 - ☐ Add products: **Instagram** (Instagram API with Instagram Login / Messaging).
 - ☐ Configure Instagram webhooks: callback `<approved API origin>/webhooks/instagram`, verify token from env (`META_WEBHOOK_VERIFY_TOKEN`), subscribe to `messages` field (and `comments` once comment leads are approved: `META_COMMENTS_ENABLED`).
 - ☐ App domains, privacy policy URL, data deletion callback URL (Settings → Basic). Privacy policy must explicitly cover DM processing (PRD §7.1 FAQ doubles as source).
+- ☐ Callbacks (built 28 Nov, `apps/api/src/routes/meta-callbacks.ts`). Enter both wherever the app asks: under Instagram Login, the Business login settings; under Unified Login, Facebook Login for Business settings and Settings → Basic.
+  - **Deauthorize callback URL:** `https://api.dealdock.io/meta/deauthorize`. Disconnects the matching Instagram accounts and drops their tokens at once.
+  - **Data deletion request URL:** `https://api.dealdock.io/meta/data-deletion`. Disconnects, then the worker deletes the account's data (usually within seconds; the daily retention tick is the fallback). It answers Meta with `{ url, confirmation_code }`, and the url is a public status page (`/meta/data-deletion/status?code=…`).
+  - Both verify Meta's `signed_request` with `META_APP_SECRET` (the Instagram app secret under Instagram Login). An account matches on `IgAccount.metaUserId` (saved at connect: Instagram Login's app-scoped `id`, or the Unified Login token's `/me` id) or on `igUserId`. Accounts connected before 28 Nov match only on `igUserId` until they reconnect. **Confirm with a real removal** which id Meta sends (pending.md, Unified Login questions).
+  - The `/data-deletion` page on dealdock.io should say: removing DealDock in Instagram (Settings → Apps and websites) deletes that account's data, and the deletion finishes within 30 days (usually within a day).
 
 ## 3. Permissions to request (Advanced Access)
 
@@ -65,7 +70,7 @@ Required: a video showing the full permission usage on a REAL test account.
 - Human approval before every send — enforced at API layer (ARCHITECTURE.md §6.2).
 - 24-hour messaging window respected; out-of-window sends rejected with user-facing messaging.
 - Rate limits respected via per-account budgeter (ARCHITECTURE.md §4.2).
-- Data deletion callback implemented (maps to our §6.11 deletion flow).
+- Deauthorize and data deletion callbacks implemented: removal disconnects at once and drops tokens; a deletion request deletes the Instagram account's messages, threads, drafts, deals, ledger, comment leads, audio and related audit rows, with a public status page (§2).
 - Comment leads: a keyword comment gets a *drafted* private reply that a person edits and sends, one per comment, within 7 days; nothing is sent automatically, so it is not an "automated chat experience". **Confirm in App Review** that no automation disclosure is needed for human-approved private replies, and that the comments field and private replies work for an Instagram Login (creator-side) app.
 
 ## 8. Timeline & fallback

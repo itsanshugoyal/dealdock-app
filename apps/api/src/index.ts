@@ -12,6 +12,7 @@ import { invoiceRoutes } from "./routes/invoices";
 import { onboardingRoutes } from "./routes/onboarding";
 import { settingsRoutes } from "./routes/settings";
 import { igRoutes } from "./routes/ig";
+import { metaCallbackRoutes } from "./routes/meta-callbacks";
 import { emailRoutes } from "./routes/email";
 import { billingRoutes } from "./routes/billing";
 import { seatRoutes } from "./routes/seats";
@@ -112,6 +113,7 @@ export function buildServer() {
   app.register(onboardingRoutes);
   app.register(settingsRoutes);
   app.register(igRoutes);
+  app.register(metaCallbackRoutes);
   app.register(emailRoutes);
   app.register(billingRoutes);
   app.register(seatRoutes);
@@ -138,7 +140,8 @@ async function main() {
   const emailSync = startEmailSync();
   app.addHook("onClose", async () => emailSync.close());
   const port = Number(process.env.PORT ?? 4000);
-  await app.listen({ port, host: "0.0.0.0" });
+  // Hosts need 0.0.0.0; local dev sets HOST=127.0.0.1 so the API isn't reachable from the network.
+  await app.listen({ port, host: process.env.HOST ?? "0.0.0.0" });
 }
 
 if (require.main === module) {

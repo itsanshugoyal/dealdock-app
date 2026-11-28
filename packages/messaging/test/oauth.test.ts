@@ -5,6 +5,7 @@ import {
   exchangeUnifiedCode,
   fetchIgProfile,
   fetchUnifiedAccounts,
+  fetchUnifiedMetaUserId,
   refreshLongLivedToken,
   subscribeToInstagramWebhooks,
 } from "../src/instagram/oauth";
@@ -107,5 +108,25 @@ describe("Unified Login OAuth helpers", () => {
     let called = "";
     await subscribeToInstagramWebhooks({ graphBase: "https://graph.facebook.com/v25.0", fetchImpl: fakeFetch((url) => { called = url; return { body: { success: true } }; }) }, "SUAT", "17841400000001");
     expect(called).toBe("https://graph.facebook.com/v25.0/17841400000001/subscribed_apps");
+  });
+});
+
+describe("ids for Meta's deauthorize and data-deletion callbacks", () => {
+  it("keeps Instagram Login's app-scoped id next to the professional account id", async () => {
+    const profile = await fetchIgProfile({ fetchImpl: fakeFetch((url) => {
+      expect(url).toContain("fields=id,user_id,username,account_type");
+      return { body: { id: "9001", user_id: "17841400000009", username: "solo", account_type: "MEDIA_CREATOR" } };
+    }) }, "token");
+    expect(profile).toMatchObject({ userId: "17841400000009", metaUserId: "9001" });
+  });
+
+  it("reads the Unified Login token's user, and gives null instead of failing the connection", async () => {
+    expect(await fetchUnifiedMetaUserId({ fetchImpl: fakeFetch((url) => {
+      expect(url).toContain("/me?fields=id");
+      return { body: { id: "61550000000001" } };
+    }) }, "SUAT")).toBe("61550000000001");
+    expect(await fetchUnifiedMetaUserId({ fetchImpl: fakeFetch(() => ({ status: 500, body: {} })) }, "SUAT")).toBeNull();
+    expect(await fetchUnifiedMetaUserId({ fetchImpl: fakeFetch(() => ({ body: { id: "../x" } })) }, "SUAT")).toBeNull();
+    expect(await fetchUnifiedMetaUserId({ fetchImpl: (async () => { throw new Error("network"); }) as typeof fetch }, "SUAT")).toBeNull();
   });
 });

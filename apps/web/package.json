@@ -6,7 +6,7 @@
     "build": "next build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "dev": "next dev",
+    "dev": "node ../../scripts/web-dev.mjs",
     "start": "next start"
   },
   "dependencies": {
