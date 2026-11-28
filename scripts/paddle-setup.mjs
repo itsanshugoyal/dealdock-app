@@ -8,7 +8,8 @@
  * Creates (or finds) the DealDock product, a monthly USD price per tier, the
  * webhook destination, the default payment link (<app>/pay) and a client-side
  * token, then prints the values to store in Doppler. It never prints the API key.
- * Options: --app https://app.dealdock.io  --api https://api.dealdock.io
+ * Options: --app <url> (default: live → https://app.dealdock.io, sandbox → https://localhost:3000)  --api <url> (default: live → https://api.dealdock.io,
+ * sandbox → https://api-dev.dealdock.io, the local tunnel in docs/local-sandbox.md)
  */
 import { createRequire } from "node:module";
 
@@ -20,8 +21,8 @@ const arg = (name, fallback) => {
   return i > -1 ? process.argv[i + 1] : fallback;
 };
 const env = arg("env");
-const app = arg("app", "https://app.dealdock.io").replace(/\/$/, "");
-const api = arg("api", "https://api.dealdock.io").replace(/\/$/, "");
+const app = arg("app", env === "live" ? "https://app.dealdock.io" : "https://localhost:3000").replace(/\/$/, "");
+const api = arg("api", env === "live" ? "https://api.dealdock.io" : "https://api-dev.dealdock.io").replace(/\/$/, "");
 const key = process.env.PADDLE_API_KEY ?? "";
 
 if (env !== "sandbox" && env !== "live") fail("Pass --env sandbox or --env live.");
