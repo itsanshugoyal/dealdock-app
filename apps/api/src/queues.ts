@@ -33,3 +33,13 @@ export function getNotificationsQueue(): Queue {
   }
   return notificationsQueue;
 }
+
+let retentionQueue: Queue | null = null;
+
+/** A one-off retention run (e.g. right after a Meta data-deletion request); the daily tick is the fallback. */
+export function getRetentionQueue(): Queue {
+  if (!retentionQueue) {
+    retentionQueue = new Queue(QUEUES.retention, { connection: redisConnection() });
+  }
+  return retentionQueue;
+}

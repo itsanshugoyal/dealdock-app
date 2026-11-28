@@ -7,6 +7,7 @@ import {
   exchangeUnifiedCode,
   fetchIgProfile,
   fetchUnifiedAccounts,
+  fetchUnifiedMetaUserId,
   IG_COMMENTS_SCOPE,
   IG_INSIGHTS_SCOPE,
   subscribeToInstagramWebhooks,
@@ -102,10 +103,13 @@ export async function igRoutes(app: FastifyInstance) {
     let accessToken: string;
     let expiresIn: number | null;
     let profiles: IgProfile[];
+    // The id Meta's deauthorize / data-deletion callbacks may carry (routes/meta-callbacks.ts).
+    let unifiedMetaUserId: string | null = null;
     try {
       if (unified) {
         ({ accessToken, expiresIn } = await exchangeUnifiedCode(cfg, code));
         profiles = await fetchUnifiedAccounts(cfg, accessToken);
+        unifiedMetaUserId = await fetchUnifiedMetaUserId({}, accessToken);
       } else {
         ({ accessToken, expiresIn } = await exchangeCodeForToken(cfg, code));
         profiles = [await fetchIgProfile({}, accessToken)];
@@ -133,6 +137,7 @@ export async function igRoutes(app: FastifyInstance) {
           accountType: type === "BUSINESS" ? "business" : "creator",
           accessToken,
           expiresIn,
+          metaUserId: unified ? unifiedMetaUserId : (profile.metaUserId ?? null),
         }));
       } catch (err) {
         // The first failure is the caller's answer (e.g. the tier cap); a later one keeps what's connected.

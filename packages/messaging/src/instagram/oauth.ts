@@ -32,6 +32,8 @@ export interface IgProfile {
   username: string;
   /** "BUSINESS" | "MEDIA_CREATOR" | "PERSONAL" */
   accountType: string;
+  /** Instagram Login's app-scoped id (`id`), which Meta's deauthorize / data-deletion callbacks may carry. */
+  metaUserId?: string;
 }
 
 export function buildAuthorizeUrl(cfg: Pick<IgOauthConfig, "appId" | "redirectUri">, state: string, extraScopes: readonly string[] = []): string {
@@ -120,7 +122,7 @@ export async function fetchIgProfile(
   accessToken: string
 ): Promise<IgProfile> {
   const res = await oauthFetch(cfg,
-    `${GRAPH_BASE}/me?fields=user_id,username,account_type&access_token=${accessToken}`
+    `${GRAPH_BASE}/me?fields=id,user_id,username,account_type&access_token=${accessToken}`
   );
   const body = (await res.json()) as {
     user_id?: string;
@@ -133,7 +135,24 @@ export async function fetchIgProfile(
     userId: String(body.user_id ?? body.id),
     username: body.username ?? "",
     accountType: body.account_type ?? "UNKNOWN",
+    ...(body.id ? { metaUserId: String(body.id) } : {}),
   };
+}
+
+/**
+ * Unified Login: the id of the user the token belongs to (`/me`), which Meta's
+ * deauthorize / data-deletion callbacks may carry. Best effort: null on failure,
+ * because connecting must not depend on it.
+ */
+export async function fetchUnifiedMetaUserId(cfg: Pick<IgOauthConfig, "fetchImpl" | "timeoutMs">, accessToken: string): Promise<string | null> {
+  try {
+    const res = await oauthFetch(cfg, `${UNIFIED_GRAPH_BASE}/me?fields=id`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const body = (await res.json().catch(() => ({}))) as { id?: unknown };
+    const id = typeof body.id === "string" || typeof body.id === "number" ? String(body.id) : "";
+    return res.ok && /^\d{1,32}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Instagram API with Unified Login (Meta apps created after ~Oct 2026) ──

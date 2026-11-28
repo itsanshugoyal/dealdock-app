@@ -17,9 +17,10 @@ vi.mock("@dealdock/db", async (importOriginal) => ({
 vi.mock("@dealdock/messaging", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@dealdock/messaging")>()),
   exchangeCodeForToken: vi.fn(async () => ({ accessToken: "IG-token", expiresIn: 5_184_000 })),
-  fetchIgProfile: vi.fn(async () => ({ userId: "17841400000009", username: "solo", accountType: "MEDIA_CREATOR" })),
+  fetchIgProfile: vi.fn(async () => ({ userId: "17841400000009", username: "solo", accountType: "MEDIA_CREATOR", metaUserId: "9001" })),
   exchangeUnifiedCode: vi.fn(async () => ({ accessToken: "SUAT", expiresIn: null })),
   fetchUnifiedAccounts: vi.fn(async () => []),
+  fetchUnifiedMetaUserId: vi.fn(async () => "61550000000001"),
   subscribeToInstagramWebhooks: vi.fn(async () => undefined),
   refreshLongLivedToken: vi.fn(async () => ({ accessToken: "refreshed", expiresIn: 1 })),
 }));
@@ -60,7 +61,7 @@ describe("Instagram Login (flag off)", () => {
     const response = await callback();
     expect(response.statusCode).toBe(302);
     expect(messaging.subscribeToInstagramWebhooks).toHaveBeenCalledWith({ graphBase: undefined }, "IG-token", "17841400000009", ["messages"]);
-    expect(db.connectGraphAccount).toHaveBeenCalledWith("org_1", expect.objectContaining({ igUserId: "17841400000009", accountType: "creator", expiresIn: 5_184_000 }));
+    expect(db.connectGraphAccount).toHaveBeenCalledWith("org_1", expect.objectContaining({ igUserId: "17841400000009", accountType: "creator", expiresIn: 5_184_000, metaUserId: "9001" }));
     expect(messaging.exchangeUnifiedCode).not.toHaveBeenCalled();
   });
 
@@ -97,7 +98,7 @@ describe("Unified Login (META_UNIFIED_LOGIN_ENABLED)", () => {
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toBe("https://app.example.test/onboarding?connected=one");
     expect(messaging.subscribeToInstagramWebhooks).toHaveBeenCalledWith({ graphBase: "https://graph.facebook.com/v25.0" }, "SUAT", "17841400000002", ["messages"]);
-    expect(vi.mocked(db.connectGraphAccount).mock.calls.map(([, input]) => [input.igUserId, input.expiresIn])).toEqual([["17841400000001", null], ["17841400000002", null]]);
+    expect(vi.mocked(db.connectGraphAccount).mock.calls.map(([, input]) => [input.igUserId, input.expiresIn, input.metaUserId])).toEqual([["17841400000001", null, "61550000000001"], ["17841400000002", null, "61550000000001"]]);
     expect(messaging.fetchIgProfile).not.toHaveBeenCalled();
   });
 

@@ -20,6 +20,8 @@ export async function connectGraphAccount(
     accessToken: string;
     /** Seconds; null = never expires (Unified Login system-user token); unset = Instagram Login's 60 days. */
     expiresIn?: number | null;
+    /** The id Meta's deauthorize / data-deletion callbacks may carry (see IgAccount.metaUserId). */
+    metaUserId?: string | null;
   }
 ) {
   const accessTokenEnc = encryptToken(input.accessToken);
@@ -46,6 +48,7 @@ export async function connectGraphAccount(
           status: "active",
           disconnectedAt: null,
           provider: "instagram_graph",
+          ...(input.metaUserId ? { metaUserId: input.metaUserId } : {}),
         },
       });
     }
@@ -60,6 +63,7 @@ export async function connectGraphAccount(
         platform: "instagram",
         provider: "instagram_graph",
         igUserId: input.igUserId,
+        metaUserId: input.metaUserId ?? null,
         handle: input.handle,
         accountType: input.accountType,
         accessTokenEnc,

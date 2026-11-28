@@ -12,6 +12,7 @@ import { invoiceRoutes } from "./routes/invoices";
 import { onboardingRoutes } from "./routes/onboarding";
 import { settingsRoutes } from "./routes/settings";
 import { igRoutes } from "./routes/ig";
+import { metaCallbackRoutes } from "./routes/meta-callbacks";
 import { emailRoutes } from "./routes/email";
 import { billingRoutes } from "./routes/billing";
 import { seatRoutes } from "./routes/seats";
@@ -112,6 +113,7 @@ export function buildServer() {
   app.register(onboardingRoutes);
   app.register(settingsRoutes);
   app.register(igRoutes);
+  app.register(metaCallbackRoutes);
   app.register(emailRoutes);
   app.register(billingRoutes);
   app.register(seatRoutes);

@@ -82,6 +82,9 @@ export const AUDIT_ACTIONS = [
   // System (no seat): scheduler bookkeeping
   "nudge.due",
   "digest.weekly_sent",
+  // System (no seat): Meta's deauthorize and data-deletion callbacks
+  "ig.deauthorized",
+  "ig.data_deleted",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

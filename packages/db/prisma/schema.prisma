@@ -321,6 +321,10 @@ model IgAccount {
   platform       Platform        @default(instagram)
   provider       MessagingProviderKind @default(mock)
   igUserId       String
+  // The id Meta may put in deauthorize / data-deletion signed_requests: Instagram
+  // Login's app-scoped user id, or the Unified Login token's user. Callbacks match
+  // it or igUserId. Null for accounts connected before 28 Nov 2026.
+  metaUserId     String?
   handle         String
   accountType    String // "business" | "creator" — personal rejected at connect (PRD §6.1)
   // AES-256-GCM encrypted at the application layer (ARCHITECTURE.md §8).
@@ -363,6 +367,23 @@ model IgAccount {
 
   @@unique([platform, igUserId])
   @@index([orgId])
+  @@index([metaUserId])
+}
+
+// A Meta data-deletion callback (a person removed DealDock in Instagram or Facebook
+// and asked for their data to be deleted). System-level: it may match no org.
+// The worker's retention job deletes the matched Instagram accounts' data.
+model MetaDeletionRequest {
+  id               String    @id @default(cuid())
+  // Shown to the person by Meta; looks up the status page. Random, unguessable.
+  confirmationCode String    @unique
+  metaUserId       String
+  status           String    @default("pending") // "pending" | "completed"
+  accountsDeleted  Int       @default(0)
+  createdAt        DateTime  @default(now())
+  completedAt      DateTime?
+
+  @@index([status, createdAt])
 }
 
 // ── Threads & messages ───────────────────────────────────────────────────
